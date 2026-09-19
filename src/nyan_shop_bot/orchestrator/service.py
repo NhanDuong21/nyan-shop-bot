@@ -12,6 +12,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+import yaml  # type: ignore[import-untyped]
+
 from nyan_shop_bot.orchestrator.activity import normalize_stream_line, redact_text
 from nyan_shop_bot.orchestrator.adapters import (
     AgentPaused,
@@ -134,6 +136,24 @@ OWNER_GATE_PHASES = {
 }
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):  # type: ignore[misc]
+    """Safe YAML loader that rejects duplicate and non-string mapping keys."""
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> dict[str, Any]:
+        if not isinstance(node, yaml.MappingNode):
+            raise ValueError("front matter mapping node is invalid")
+        self.flatten_mapping(node)
+        mapping: dict[str, Any] = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, str):
+                raise ValueError("front matter mapping keys must be strings")
+            if key in mapping:
+                raise ValueError(f"duplicate front matter key: {key}")
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
+
+
 def _validate_impeccable_skill_metadata(relative: str, content: bytes) -> None:
     """Require exact provider-specific values in the initial YAML front matter."""
 
@@ -149,30 +169,53 @@ def _validate_impeccable_skill_metadata(relative: str, content: bytes) -> None:
         raise RuntimeError(
             f"Impeccable worker skill has malformed front matter: {relative}"
         ) from error
-    front_matter = lines[1:closing]
-
-    name_lines = [line for line in front_matter if line.startswith("name:")]
-    if name_lines != ["name: impeccable"]:
+    front_matter_lines = lines[1:closing]
+    front_matter = "\n".join(front_matter_lines)
+    try:
+        metadata = yaml.load(front_matter, Loader=_UniqueKeyLoader)
+    except (ValueError, yaml.YAMLError) as error:
+        raise RuntimeError(
+            f"Impeccable worker skill has malformed front matter: {relative}"
+        ) from error
+    if not isinstance(metadata, dict):
+        raise RuntimeError(f"Impeccable worker skill has malformed front matter: {relative}")
+    if metadata.get("name") != "impeccable":
+        raise RuntimeError(f"Impeccable worker skill has an unexpected name: {relative}")
+    if [line for line in front_matter_lines if line.startswith("name:")] != ["name: impeccable"]:
         raise RuntimeError(f"Impeccable worker skill has an unexpected name: {relative}")
 
     if relative.startswith(".agents/"):
-        metadata_indexes = [
-            index for index, line in enumerate(front_matter) if line.startswith("metadata:")
-        ]
-        if len(metadata_indexes) != 1 or front_matter[metadata_indexes[0]] != "metadata:":
+        if set(metadata) != {"description", "metadata", "name"}:
             raise RuntimeError(f"Impeccable worker skill has malformed metadata: {relative}")
-        metadata_index = metadata_indexes[0]
-        version_lines = [line for line in front_matter if line.startswith("  version:")]
-        expected_version = f"  version: {IMPECCABLE_SKILL_VERSION}"
+        if not isinstance(metadata["description"], str) or not metadata["description"].strip():
+            raise RuntimeError(f"Impeccable worker skill has malformed metadata: {relative}")
+        provider_metadata = metadata["metadata"]
+        if not isinstance(provider_metadata, dict) or set(provider_metadata) != {"version"}:
+            raise RuntimeError(f"Impeccable worker skill has malformed metadata: {relative}")
         if (
-            version_lines != [expected_version]
-            or metadata_index + 1 >= len(front_matter)
-            or front_matter[metadata_index + 1] != expected_version
+            provider_metadata["version"] != IMPECCABLE_SKILL_VERSION
+            or [line for line in front_matter_lines if line.startswith("metadata:")]
+            != ["metadata:"]
+            or [line for line in front_matter_lines if line.startswith("  version:")]
+            != [f"  version: {IMPECCABLE_SKILL_VERSION}"]
         ):
             raise RuntimeError(f"Impeccable worker skill has an unexpected version: {relative}")
     else:
-        version_lines = [line for line in front_matter if line.startswith("version:")]
-        if version_lines != [f"version: {IMPECCABLE_SKILL_VERSION}"]:
+        if set(metadata) != {"allowed-tools", "description", "license", "name", "version"}:
+            raise RuntimeError(f"Impeccable worker skill has malformed metadata: {relative}")
+        if (
+            not isinstance(metadata["description"], str)
+            or not metadata["description"].strip()
+            or not isinstance(metadata["license"], str)
+            or not metadata["license"].strip()
+            or not isinstance(metadata["allowed-tools"], list)
+            or not metadata["allowed-tools"]
+            or not all(isinstance(tool, str) and tool.strip() for tool in metadata["allowed-tools"])
+        ):
+            raise RuntimeError(f"Impeccable worker skill has malformed metadata: {relative}")
+        if metadata["version"] != IMPECCABLE_SKILL_VERSION or [
+            line for line in front_matter_lines if line.startswith("version:")
+        ] != [f"version: {IMPECCABLE_SKILL_VERSION}"]:
             raise RuntimeError(f"Impeccable worker skill has an unexpected version: {relative}")
 
 
