@@ -5,6 +5,10 @@ import { App } from "./App";
 
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
+  document.documentElement.dataset.theme = "light";
+  document.documentElement.style.colorScheme = "light";
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -43,11 +47,32 @@ test("renders catalog returned by the backend without replacing API data", async
   expect(await screen.findByText("Sản phẩm kiểm thử")).toBeInTheDocument();
   expect(screen.getByText("Dữ liệu tổng hợp từ backend")).toBeInTheDocument();
   expect(screen.getAllByText("MOCK").length).toBeGreaterThanOrEqual(1);
-  expect(screen.getByText(/chỉ được bind vào localhost/i)).toBeInTheDocument();
+  expect(screen.getByText(/chỉ chạy trên localhost/i)).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/v1/catalog",
     expect.objectContaining({ method: "GET" }),
   );
+});
+
+test("filters injected catalog data without replacing the backend source", async () => {
+  const secondItem = {
+    ...catalogItem,
+    id: "second-item",
+    name: "Mục khác",
+    supplier: "fixture-supplier",
+  };
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(catalogResponse([catalogItem, secondItem])));
+
+  render(<App />);
+
+  expect(await screen.findByText("Sản phẩm kiểm thử")).toBeInTheDocument();
+  fireEvent.change(screen.getByRole("searchbox", { name: /Lọc catalog/i }), {
+    target: { value: "fixture-supplier" },
+  });
+
+  expect(screen.queryByText("Sản phẩm kiểm thử")).not.toBeInTheDocument();
+  expect(screen.getByText("Mục khác")).toBeInTheDocument();
+  expect(screen.getByText("1/2 sản phẩm")).toBeInTheDocument();
 });
 
 test("shows an explicit empty state", async () => {
