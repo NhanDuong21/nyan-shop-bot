@@ -69,6 +69,8 @@ pydantic-settings==2.15.0
     # via nyan-shop-bot (pyproject.toml)
 python-dotenv==1.2.3
     # via pydantic-settings
+pyyaml==6.0.3
+    # via nyan-shop-bot (pyproject.toml)
 sqlalchemy==2.0.54
     # via
     #   alembic

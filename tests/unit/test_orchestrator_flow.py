@@ -125,12 +125,14 @@ def initialize_task_repo(worktree: Path, task: TaskSpec) -> str:
             skill.parent.mkdir(parents=True, exist_ok=True)
             if provider == ".agents":
                 skill.write_text(
-                    "---\nname: impeccable\nmetadata:\n  version: 4.3.1\n---\n",
+                    "---\nname: impeccable\ndescription: Test skill\n"
+                    "metadata:\n  version: 4.3.1\n---\n",
                     encoding="utf-8",
                 )
             else:
                 skill.write_text(
-                    "---\nname: impeccable\nversion: 4.3.1\n---\n",
+                    "---\nname: impeccable\ndescription: Test skill\nversion: 4.3.1\n"
+                    "license: Apache 2.0\nallowed-tools:\n  - Bash(npx impeccable *)\n---\n",
                     encoding="utf-8",
                 )
             version = skill.parent / "scripts" / "VERSION"
@@ -736,23 +738,34 @@ def test_ui_worker_is_not_constructed_without_committed_workspace_rule(
     [
         (
             ".agent",
-            "---\nname: impeccable-other\nversion: 4.3.1\n---\n",
+            "---\nname: impeccable-other\ndescription: Test skill\nversion: 4.3.1\n"
+            "license: Apache 2.0\nallowed-tools:\n  - Bash(npx impeccable *)\n---\n",
             "unexpected name",
         ),
         (
             ".agent",
-            "---\nname: impeccable\nversion: 4.3.10\n---\n",
+            "---\nname: impeccable\ndescription: Test skill\nversion: 4.3.10\n"
+            "license: Apache 2.0\nallowed-tools:\n  - Bash(npx impeccable *)\n---\n",
             "unexpected version",
         ),
         (
             ".agent",
-            "---\nname: impeccable\nversion: 4.3.1 # trusted\n---\n",
+            "---\nname: impeccable\ndescription: Test skill\nversion: 4.3.1 # trusted\n"
+            "license: Apache 2.0\nallowed-tools:\n  - Bash(npx impeccable *)\n---\n",
             "unexpected version",
         ),
         (
             ".agents",
-            "---\nname: impeccable\nmetadata: duplicate\n  version: 4.3.1\n---\n",
-            "malformed metadata",
+            "---\nname: impeccable\ndescription: Test skill\n"
+            "metadata: duplicate\n  version: 4.3.1\n---\n",
+            "malformed front matter",
+        ),
+        (
+            ".agent",
+            "---\nname: impeccable\ndescription: Test skill\nversion: 4.3.1\n"
+            "license: Apache 2.0\nallowed-tools:\n  - Bash(npx impeccable *)\n"
+            '"name": impeccable-other\n"version": 4.3.10\n---\n',
+            "malformed front matter",
         ),
     ],
 )
