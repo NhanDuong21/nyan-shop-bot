@@ -14,6 +14,7 @@ from typing import Any
 
 from nyan_shop_bot.orchestrator.activity import normalize_stream_line, redact_text
 from nyan_shop_bot.orchestrator.adapters import (
+    AgentPaused,
     AgentStopped,
     AntigravityAdapter,
     CodexAdapter,
@@ -35,9 +36,11 @@ from nyan_shop_bot.orchestrator.gitops import (
     create_worktree,
     git,
     head_sha,
+    pending_files,
     push_branch,
     resolve_sha,
     validate_and_commit_worker_changes,
+    validate_changed_path_containment,
     validate_recovered_runner_commit,
     validate_ui_prelaunch_workspace,
     verify_tracked_task,
@@ -54,6 +57,7 @@ from nyan_shop_bot.orchestrator.models import (
     WorkerResult,
     WorkerStatus,
 )
+from nyan_shop_bot.orchestrator.policy import forbidden_ui_worker_paths, paths_are_allowed
 from nyan_shop_bot.orchestrator.queue import select_ready_task
 from nyan_shop_bot.orchestrator.store import StateStore, freeze_task, utc_now
 
@@ -240,7 +244,25 @@ class RunnerService:
         self._lease_tokens[run_id] = process_token
         self.store.append_event(run_id, "process.started", {"pid": os.getpid()})
         try:
-            self._run_loop(run_id)
+            while True:
+                try:
+                    self._run_loop(run_id)
+                    break
+                except AgentPaused as error:
+                    self.store.append_event(
+                        run_id, "process.checkpoint_exit", {"reason": str(error)}
+                    )
+                    desired = self.desired_state(run_id)
+                    if desired is DesiredState.RUNNING:
+                        self.store.append_event(
+                            run_id,
+                            "control.resume_reconciled",
+                            {"checkpoint": "active_agent_pause"},
+                        )
+                        continue
+                    if desired is DesiredState.STOPPED:
+                        self._stop_run(run_id)
+                    break
         except PauseRequested as error:
             self.store.append_event(run_id, "process.checkpoint_exit", {"reason": str(error)})
         except StopRequested as error:
@@ -515,6 +537,18 @@ class RunnerService:
                 return
 
         recovered_session = recover_session_id(events_path, task.worker)
+        if (
+            recovered is None
+            and recovered_session is not None
+            and task.worker is WorkerKind.ANTIGRAVITY
+        ):
+            _validate_antigravity_context(
+                events_path,
+                worktree=worktree,
+                expected_model=task.worker_model,
+                expected_schema=WorkerResult.model_json_schema(),
+                require_result=False,
+            )
         existing_session = (
             str(run["worker_session_id"]) if run["worker_session_id"] is not None else None
         )
@@ -532,7 +566,10 @@ class RunnerService:
                 "interrupted_events": str(events_path),
             },
         )
-        self.store.update_run(run_id, worker_parent_sha=None)
+        # Retain the expected parent as a durable marker that this checkpoint came from
+        # an interrupted invocation. A resumed writer may need to inspect and preserve
+        # valid partial in-scope edits before producing its structured result.
+        self.store.update_run(run_id, worker_parent_sha=expected_parent)
 
     def _run_worker(
         self,
@@ -548,10 +585,27 @@ class RunnerService:
             worktree,
             timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
         )
+        interrupted_resume = run.get("worker_parent_sha") == expected_parent
+        if interrupted_resume:
+            partial_files = pending_files(
+                worktree,
+                timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
+                timeout_reader=self._git_timeout_reader(run_id, task),
+            )
+            validate_changed_path_containment(worktree, partial_files)
+            if partial_files and not paths_are_allowed(partial_files, task.allowed_paths):
+                raise RuntimeError(
+                    f"interrupted worker changed files outside allowed scope: {partial_files}"
+                )
+            forbidden_ui = forbidden_ui_worker_paths(partial_files) if task.role == "ui" else []
+            if forbidden_ui:
+                raise RuntimeError(
+                    f"interrupted UI worker changed coordinator-owned files: {forbidden_ui}"
+                )
         if phase is RunPhase.FIX_REQUESTED:
             if expected_parent != str(run["head_sha"]):
                 raise RuntimeError("fix worktree no longer matches the failed/reviewed HEAD")
-            if git(
+            if not interrupted_resume and git(
                 worktree,
                 "status",
                 "--porcelain=v1",
@@ -1061,11 +1115,18 @@ empty list; put caveats that are not blockers in `summary` or NOT_RUN test evide
         else:
             raise RuntimeError("fix loop has no authenticated review or CI request")
         allowed = "\n".join(f"- {item}" for item in task.allowed_paths)
+        interrupted = (
+            "A prior invocation was safely interrupted. Inspect the current worktree first and "
+            "preserve any valid in-progress in-scope edits; do not repeat a change already "
+            "present.\n\n"
+            if run.get("worker_parent_sha") == run.get("head_sha")
+            else ""
+        )
         return f"""Continue the same {task.task_id} writer session in {worktree}.
 
 {reason}
 
-The frozen path grant is still exactly:
+{interrupted}The frozen path grant is still exactly:
 {allowed}
 
 Address only valid in-scope findings. Do not create, delegate to, or resume any subagent,
@@ -1112,22 +1173,31 @@ stale after the runner commits the fix.
             "failed_required_checks": list(failure.failed_checks),
             "failed_jobs": list(failure.failed_jobs),
         }
+        if failure.diagnostic_excerpt:
+            request["diagnostic_excerpt"] = failure.diagnostic_excerpt
         run_dir = self.state_dir / "runs" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / f"fix-{next_round}.request.json").write_text(
             json.dumps(request, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        self.store.record_ci_fix_request(
-            run_id,
-            expected_phase=phase,
-            expected_head=failure.head_sha,
-            expected_fix_rounds=fix_rounds,
-            next_fix_round=next_round,
-            ci_run_id=failure.run_id,
-            ci_url=failure.run_url,
-            request=request,
-        )
+        try:
+            self.store.record_ci_fix_request(
+                run_id,
+                expected_phase=phase,
+                expected_head=failure.head_sha,
+                expected_fix_rounds=fix_rounds,
+                next_fix_round=next_round,
+                ci_run_id=failure.run_id,
+                ci_url=failure.run_url,
+                request=request,
+            )
+        except RuntimeError:
+            # A PAUSE/STOP committed at the transaction boundary intentionally makes
+            # record_ci_fix_request's RUNNING compare-and-swap fail. Preserve that owner
+            # control outcome instead of converting it into a generic BLOCKED failure.
+            self._checkpoint_control(run_id)
+            raise
 
     def _resume_worker_prompt(self, task: TaskSpec, base_sha: str) -> str:
         allowed = "\n".join(f"- {item}" for item in task.allowed_paths)
@@ -1680,6 +1750,10 @@ string assertions whose quoting or Markdown punctuation can create false failure
         controller_live = (
             pid is not None and isinstance(identity, str) and process_matches(pid, identity)
         )
+        if desired is DesiredState.PAUSED and not controller_live:
+            self._stop_orphan_process(run_id)
+            self.prepare_process_launch(run_id)
+            return
         if desired is DesiredState.STOPPED and not controller_live:
             self._stop_orphan_process(run_id)
             self.prepare_process_launch(run_id)

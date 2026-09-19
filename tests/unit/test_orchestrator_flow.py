@@ -10,7 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from nyan_shop_bot.orchestrator import cli as runner_cli
 from nyan_shop_bot.orchestrator.adapters import (
+    AgentPaused,
     AgentStopped,
     CodexAdapter,
     _build_antigravity_command,
@@ -19,10 +21,16 @@ from nyan_shop_bot.orchestrator.adapters import (
     _run_monitored,
     _validate_antigravity_context,
     process_identity,
+    process_matches,
     recover_completed_result,
     sanitized_environment,
 )
-from nyan_shop_bot.orchestrator.github import CiFailed, GitHubClient, PauseRequested
+from nyan_shop_bot.orchestrator.github import (
+    CiFailed,
+    GitHubClient,
+    PauseRequested,
+    StopRequested,
+)
 from nyan_shop_bot.orchestrator.gitops import (
     git,
     head_sha,
@@ -178,6 +186,7 @@ def test_blocked_exact_head_ci_can_resume_into_same_writer_session(
                 run_url="https://github.com/NhanDuong21/nyan-shop-bot/actions/runs/9001",
                 failed_checks=["ci-gate"],
                 failed_jobs=["Admin lint, typecheck, test, and build", "ci-gate"],
+                diagnostic_excerpt="error TS2322: Type string is not assignable to type mock",
             )
 
         def ensure_claim(self, frozen_task: TaskSpec, run_id: str, base_sha: str) -> None:
@@ -202,6 +211,7 @@ def test_blocked_exact_head_ci_can_resume_into_same_writer_session(
     assert run["ended_at"] is None
     assert service.store.active_claims()[0]["run_id"] == "ci-repair-run"
     assert "Admin lint, typecheck, test, and build" in prompt
+    assert "error TS2322" in prompt
     assert "untrusted diagnostic metadata" in prompt
 
     with pytest.raises(RuntimeError, match="outside an allowed checkpoint"):
@@ -293,6 +303,59 @@ def test_ci_failure_handoff_rejects_changed_worktree_head(tmp_path: Path) -> Non
 
     run = service.store.get_run("stale-ci-fix")
     assert run["phase"] == RunPhase.CI_WAITING
+    assert run["fix_rounds"] == 0
+
+
+@pytest.mark.parametrize(
+    ("desired", "expected_error"),
+    [
+        (DesiredState.PAUSED, PauseRequested),
+        (DesiredState.STOPPED, StopRequested),
+    ],
+)
+def test_ci_fix_checkpoint_cas_preserves_concurrent_owner_control(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    desired: DesiredState,
+    expected_error: type[Exception],
+) -> None:
+    task = make_task()
+    worktree = tmp_path / "worktree"
+    current_head = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="ci-control-race",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=current_head,
+        worktree_path=worktree,
+        max_workers=1,
+    )
+    service.store.update_run(
+        "ci-control-race",
+        phase=RunPhase.CI_WAITING,
+        head_sha=current_head,
+    )
+    failure = CiFailed(
+        head_sha=current_head,
+        run_id=9004,
+        run_url="https://github.com/NhanDuong21/nyan-shop-bot/actions/runs/9004",
+        failed_checks=["ci-gate"],
+        failed_jobs=["ci-gate"],
+    )
+    record = service.store.record_ci_fix_request
+
+    def control_then_record(*args: object, **kwargs: object) -> None:
+        service.store.set_desired_state("ci-control-race", desired)
+        record(*args, **kwargs)
+
+    monkeypatch.setattr(service.store, "record_ci_fix_request", control_then_record)
+    with pytest.raises(expected_error):
+        service._request_ci_fix("ci-control-race", task, failure)
+
+    run = service.store.get_run("ci-control-race")
+    assert run["phase"] == RunPhase.CI_WAITING
+    assert run["desired_state"] == desired
     assert run["fix_rounds"] == 0
 
 
@@ -717,6 +780,29 @@ def test_monitored_process_reports_child_pid_lifecycle(tmp_path: Path) -> None:
     assert marker.read_text(encoding="utf-8") == "ok"
 
 
+def test_exited_process_no_longer_matches_its_creation_identity() -> None:
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.2)"])
+    identity = process_identity(process.pid)
+    assert identity is not None
+    process.wait(timeout=5)
+
+    assert process_identity(process.pid) is None
+    assert not process_matches(process.pid, identity)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows STILL_ACTIVE exit-code regression")
+def test_windows_exited_process_with_still_active_code_is_not_live() -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import os, time; time.sleep(0.2); os._exit(259)"]
+    )
+    identity = process_identity(process.pid)
+    assert identity is not None
+    process.wait(timeout=5)
+
+    assert process_identity(process.pid) is None
+    assert not process_matches(process.pid, identity)
+
+
 def test_stop_terminates_registered_process_tree(tmp_path: Path) -> None:
     sentinel = tmp_path / "detached-child-was-still-running.txt"
     grandchild = (
@@ -742,6 +828,41 @@ def test_stop_terminates_registered_process_tree(tmp_path: Path) -> None:
             stdin_text=None,
             stdout_path=tmp_path / "tree.events.jsonl",
             stderr_path=tmp_path / "tree.stderr.log",
+            control=control,
+            timeout_seconds=10,
+        )
+
+    time.sleep(3.5)
+    assert not sentinel.exists()
+
+
+def test_pause_terminates_registered_process_tree_for_resumable_checkpoint(
+    tmp_path: Path,
+) -> None:
+    sentinel = tmp_path / "paused-child-was-still-running.txt"
+    grandchild = (
+        "import time; from pathlib import Path; time.sleep(3); "
+        f"Path({str(sentinel)!r}).write_text('unsafe')"
+    )
+    agent = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}]); "
+        "time.sleep(30)"
+    )
+    calls = 0
+
+    def control() -> DesiredState:
+        nonlocal calls
+        calls += 1
+        return DesiredState.RUNNING if calls == 1 else DesiredState.PAUSED
+
+    with pytest.raises(AgentPaused, match="process tree"):
+        _run_monitored(
+            [sys.executable, "-c", agent],
+            cwd=tmp_path,
+            stdin_text=None,
+            stdout_path=tmp_path / "paused-tree.events.jsonl",
+            stderr_path=tmp_path / "paused-tree.stderr.log",
             control=control,
             timeout_seconds=10,
         )
@@ -931,11 +1052,13 @@ def test_ci_wait_considers_only_newest_exact_sha_run(
             return [
                 {
                     "databaseId": 200,
+                    "attempt": 1,
                     "headSha": "a" * 40,
                     "createdAt": "2026-09-19T12:00:00Z",
                 },
                 {
                     "databaseId": 100,
+                    "attempt": 1,
                     "headSha": "a" * 40,
                     "createdAt": "2026-09-19T11:00:00Z",
                 },
@@ -944,12 +1067,18 @@ def test_ci_wait_considers_only_newest_exact_sha_run(
         viewed.append(run_id)
         if run_id == 100:
             return {
+                "attempt": 1,
                 "headSha": "a" * 40,
+                "status": "completed",
+                "conclusion": "failure",
                 "url": "https://example.invalid/old",
                 "jobs": [{"name": "ci-gate", "conclusion": "failure"}],
             }
         return {
+            "attempt": 1,
             "headSha": "a" * 40,
+            "status": "in_progress",
+            "conclusion": "",
             "url": "https://example.invalid/new",
             "jobs": [{"name": "ci-gate", "status": "in_progress"}],
         }
@@ -971,6 +1100,250 @@ def test_ci_wait_considers_only_newest_exact_sha_run(
         )
 
     assert viewed == [200]
+
+
+def test_failed_ci_diagnostics_are_redacted_deduplicated_and_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = GitHubClient(tmp_path, "NhanDuong21/nyan-shop-bot")
+    secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+    duplicate = {
+        "annotation_level": "failure",
+        "path": "admin/src/example.test.tsx",
+        "start_line": 83,
+        "title": "typecheck",
+        "message": f'token="{secret}" error TS2322: Type string is not assignable',
+    }
+    annotations = [
+        duplicate,
+        duplicate,
+        {"annotation_level": "notice", "message": "ordinary successful setup output"},
+        *(
+            {
+                "annotation_level": "failure",
+                "path": "workflow",
+                "start_line": index,
+                "message": f"failure line {index} " + "x" * 1200,
+            }
+            for index in range(100)
+        ),
+    ]
+
+    monkeypatch.setattr(client, "json_command", lambda *args, **kwargs: annotations)
+    excerpt = client._failed_ci_diagnostics(
+        [{"databaseId": 9004, "name": "frontend", "conclusion": "failure"}],
+        control=lambda: DesiredState.RUNNING,
+        deadline=time.monotonic() + 15,
+    )
+
+    assert excerpt is not None
+    assert secret not in excerpt
+    assert "[REDACTED]" in excerpt
+    assert "ordinary successful setup output" not in excerpt
+    assert excerpt.count("error TS2322") == 1
+    assert len(excerpt) <= 12_000
+    assert len(excerpt.splitlines()) <= 40
+
+
+def test_failed_ci_diagnostics_stop_after_first_annotation_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = GitHubClient(tmp_path, "NhanDuong21/nyan-shop-bot")
+    requests: list[tuple[str, ...]] = []
+
+    def timeout(*arguments: str, **kwargs: object) -> object:
+        requests.append(arguments)
+        raise TimeoutError("bounded annotation request timed out")
+
+    monkeypatch.setattr(client, "json_command", timeout)
+    excerpt = client._failed_ci_diagnostics(
+        [
+            {"databaseId": 9004, "name": "frontend", "conclusion": "failure"},
+            {"databaseId": 9005, "name": "ci-gate", "conclusion": "failure"},
+        ],
+        control=lambda: DesiredState.RUNNING,
+        deadline=time.monotonic() + 15,
+    )
+
+    assert excerpt is None
+    assert len(requests) == 1
+
+
+def test_ci_failure_rechecks_control_and_newest_exact_sha_after_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = make_task()
+    client = GitHubClient(tmp_path, task.repository)
+    list_calls = 0
+
+    def json_command(*arguments: str) -> object:
+        nonlocal list_calls
+        if arguments[:2] == ("run", "list"):
+            list_calls += 1
+            run_id = 200 if list_calls == 1 else 201
+            return [
+                {
+                    "databaseId": run_id,
+                    "attempt": 1,
+                    "headSha": "a" * 40,
+                    "createdAt": f"2026-09-19T12:00:0{list_calls}Z",
+                }
+            ]
+        return {
+            "attempt": 1,
+            "headSha": "a" * 40,
+            "status": "completed",
+            "conclusion": "failure",
+            "url": "https://example.invalid/failed",
+            "jobs": [
+                {
+                    "databaseId": 300,
+                    "name": "ci-gate",
+                    "conclusion": "failure",
+                }
+            ],
+        }
+
+    control_calls = 0
+
+    def control() -> DesiredState:
+        nonlocal control_calls
+        control_calls += 1
+        return DesiredState.RUNNING if control_calls <= 2 else DesiredState.PAUSED
+
+    monkeypatch.setattr(client, "json_command", json_command)
+    monkeypatch.setattr(client, "_failed_ci_diagnostics", lambda jobs, **kwargs: "bounded failure")
+    with pytest.raises(PauseRequested):
+        client.wait_for_ci(
+            task=task,
+            head_sha="a" * 40,
+            control=control,
+            timeout_seconds=60,
+        )
+
+    assert list_calls == 2
+
+
+@pytest.mark.parametrize("initial_conclusion", ["failure", "success"])
+def test_ci_terminal_evidence_is_rejected_when_same_run_id_starts_new_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    initial_conclusion: str,
+) -> None:
+    task = make_task()
+    client = GitHubClient(tmp_path, task.repository)
+    list_calls = 0
+    detail_calls = 0
+
+    def json_command(*arguments: str) -> object:
+        nonlocal list_calls, detail_calls
+        if arguments[:2] == ("run", "list"):
+            list_calls += 1
+            return [
+                {
+                    "databaseId": 200,
+                    "attempt": 1 if list_calls == 1 else 2,
+                    "headSha": "a" * 40,
+                    "createdAt": "2026-09-19T12:00:00Z",
+                }
+            ]
+        detail_calls += 1
+        return {
+            "databaseId": 200,
+            "attempt": 1,
+            "headSha": "a" * 40,
+            "status": "completed",
+            "conclusion": initial_conclusion,
+            "url": "https://example.invalid/attempt-1",
+            "jobs": [
+                {
+                    "databaseId": 300,
+                    "name": "ci-gate",
+                    "conclusion": initial_conclusion,
+                }
+            ],
+        }
+
+    control_calls = 0
+
+    def control() -> DesiredState:
+        nonlocal control_calls
+        control_calls += 1
+        return DesiredState.RUNNING if control_calls <= 2 else DesiredState.PAUSED
+
+    monkeypatch.setattr(client, "json_command", json_command)
+    monkeypatch.setattr(
+        client, "_failed_ci_diagnostics", lambda jobs, **kwargs: "attempt-1 failure"
+    )
+    with pytest.raises(PauseRequested):
+        client.wait_for_ci(
+            task=task,
+            head_sha="a" * 40,
+            control=control,
+            timeout_seconds=60,
+        )
+
+    assert list_calls == 2
+    assert detail_calls == 1
+
+
+def test_ci_failure_is_rejected_when_same_attempt_is_now_in_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = make_task()
+    client = GitHubClient(tmp_path, task.repository)
+    detail_calls = 0
+
+    def json_command(*arguments: str) -> object:
+        nonlocal detail_calls
+        if arguments[:2] == ("run", "list"):
+            return [
+                {
+                    "databaseId": 200,
+                    "attempt": 1,
+                    "headSha": "a" * 40,
+                    "createdAt": "2026-09-19T12:00:00Z",
+                }
+            ]
+        detail_calls += 1
+        if detail_calls == 1:
+            return {
+                "databaseId": 200,
+                "attempt": 1,
+                "headSha": "a" * 40,
+                "status": "completed",
+                "conclusion": "failure",
+                "url": "https://example.invalid/failed",
+                "jobs": [{"databaseId": 300, "name": "ci-gate", "conclusion": "failure"}],
+            }
+        return {
+            "databaseId": 200,
+            "attempt": 1,
+            "headSha": "a" * 40,
+            "status": "in_progress",
+            "conclusion": "",
+            "url": "https://example.invalid/rerunning",
+            "jobs": [{"databaseId": 301, "name": "ci-gate", "status": "in_progress"}],
+        }
+
+    control_calls = 0
+
+    def control() -> DesiredState:
+        nonlocal control_calls
+        control_calls += 1
+        return DesiredState.RUNNING if control_calls <= 2 else DesiredState.PAUSED
+
+    monkeypatch.setattr(client, "json_command", json_command)
+    monkeypatch.setattr(client, "_failed_ci_diagnostics", lambda jobs, **kwargs: "stale failure")
+    with pytest.raises(PauseRequested):
+        client.wait_for_ci(
+            task=task,
+            head_sha="a" * 40,
+            control=control,
+            timeout_seconds=60,
+        )
+
+    assert detail_calls == 2
 
 
 def test_auto_merge_command_fails_closed_without_atomic_base_binding(
@@ -1039,6 +1412,248 @@ def test_interrupted_worker_recovers_explicit_session(tmp_path: Path) -> None:
     run = service.store.get_run("recovery-run")
     assert run["phase"] == RunPhase.CLAIMED
     assert run["worker_session_id"] == "durable-session"
+    assert run["worker_parent_sha"] == parent
+
+
+def test_paused_fix_worker_resumes_same_session_with_partial_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = make_task()
+    worktree = tmp_path / "worktree"
+    parent = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="paused-fix-run",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=1,
+    )
+    service.store.update_run(
+        "paused-fix-run",
+        head_sha=parent,
+        fix_rounds=1,
+        worker_session_id="same-paused-session",
+        worker_parent_sha=parent,
+    )
+    service.store.transition("paused-fix-run", RunPhase.WORKER_RUNNING)
+    run_dir = service.state_dir / "runs" / "paused-fix-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "worker-fix-1.events.jsonl").write_text(
+        json.dumps({"type": "thread.started", "thread_id": "same-paused-session"}),
+        encoding="utf-8",
+    )
+    (run_dir / "fix-1.request.json").write_text(
+        json.dumps(
+            {
+                "kind": "ci_failure",
+                "fix_round": 1,
+                "head_sha": parent,
+                "run_id": 9005,
+                "run_url": "https://github.com/example/actions/runs/9005",
+                "failed_required_checks": ["ci-gate"],
+                "failed_jobs": ["frontend"],
+                "diagnostic_excerpt": "error TS2322",
+            }
+        ),
+        encoding="utf-8",
+    )
+    partial = worktree / "docs" / "runner-demo.md"
+    partial.parent.mkdir(exist_ok=True)
+    partial.write_text("partial fix\n", encoding="utf-8")
+
+    service._recover_interrupted_worker("paused-fix-run", task, worktree)
+
+    class ExpectedResume(RuntimeError):
+        pass
+
+    class FakeCodexAdapter:
+        def worker(self, **kwargs: object) -> object:
+            assert kwargs["resume_session_id"] == "same-paused-session"
+            assert "safely interrupted" in str(kwargs["prompt"])
+            assert partial.read_text(encoding="utf-8") == "partial fix\n"
+            raise ExpectedResume
+
+    monkeypatch.setattr("nyan_shop_bot.orchestrator.service.CodexAdapter", FakeCodexAdapter)
+    with pytest.raises(ExpectedResume):
+        service._run_worker("paused-fix-run", task, worktree, parent, RunPhase.FIX_REQUESTED)
+
+    run = service.store.get_run("paused-fix-run")
+    assert run["worker_session_id"] == "same-paused-session"
+    assert run["phase"] == RunPhase.WORKER_RUNNING
+
+
+def test_paused_fix_worker_rejects_partial_changes_outside_frozen_scope(
+    tmp_path: Path,
+) -> None:
+    task = make_task()
+    worktree = tmp_path / "worktree"
+    parent = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="unsafe-paused-fix",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=1,
+    )
+    service.store.update_run(
+        "unsafe-paused-fix",
+        phase=RunPhase.FIX_REQUESTED,
+        head_sha=parent,
+        fix_rounds=1,
+        worker_session_id="same-paused-session",
+        worker_parent_sha=parent,
+    )
+    (worktree / "README.md").write_text("out of scope\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="outside allowed scope"):
+        service._run_worker("unsafe-paused-fix", task, worktree, parent, RunPhase.FIX_REQUESTED)
+
+    assert service.store.get_run("unsafe-paused-fix")["phase"] == RunPhase.FIX_REQUESTED
+
+
+def test_paused_initial_worker_rejects_partial_changes_outside_frozen_scope(
+    tmp_path: Path,
+) -> None:
+    task = make_task()
+    worktree = tmp_path / "worktree"
+    parent = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="unsafe-paused-initial",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=1,
+    )
+    service.store.update_run(
+        "unsafe-paused-initial",
+        phase=RunPhase.CLAIMED,
+        worker_session_id="same-paused-session",
+        worker_parent_sha=parent,
+    )
+    (worktree / "README.md").write_text("out of scope\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="outside allowed scope"):
+        service._run_worker("unsafe-paused-initial", task, worktree, parent, RunPhase.CLAIMED)
+
+
+def test_paused_fix_worker_can_resume_before_creating_partial_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = make_task()
+    worktree = tmp_path / "worktree"
+    parent = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="empty-paused-fix",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=1,
+    )
+    service.store.update_run(
+        "empty-paused-fix",
+        phase=RunPhase.FIX_REQUESTED,
+        head_sha=parent,
+        fix_rounds=1,
+        worker_session_id="same-paused-session",
+        worker_parent_sha=parent,
+    )
+    run_dir = service.state_dir / "runs" / "empty-paused-fix"
+    run_dir.mkdir(parents=True)
+    (run_dir / "fix-1.request.json").write_text(
+        json.dumps(
+            {
+                "kind": "ci_failure",
+                "fix_round": 1,
+                "head_sha": parent,
+                "run_id": 9006,
+                "run_url": "https://github.com/example/actions/runs/9006",
+                "failed_required_checks": ["ci-gate"],
+                "failed_jobs": ["frontend"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class ExpectedResume(RuntimeError):
+        pass
+
+    class FakeCodexAdapter:
+        def worker(self, **kwargs: object) -> object:
+            assert kwargs["resume_session_id"] == "same-paused-session"
+            raise ExpectedResume
+
+    monkeypatch.setattr("nyan_shop_bot.orchestrator.service.CodexAdapter", FakeCodexAdapter)
+    with pytest.raises(ExpectedResume):
+        service._run_worker("empty-paused-fix", task, worktree, parent, RunPhase.FIX_REQUESTED)
+
+
+def test_agent_pause_race_with_resume_continues_existing_controller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = make_task()
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="pause-resume-race",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha="b" * 40,
+        worktree_path=tmp_path / "worktree",
+        max_workers=1,
+    )
+    service.store.set_desired_state("pause-resume-race", DesiredState.PAUSED)
+    calls = 0
+
+    def run_loop(run_id: str) -> None:
+        nonlocal calls
+        calls += 1
+        assert run_id == "pause-resume-race"
+        if calls == 1:
+            service.store.set_desired_state(run_id, DesiredState.RUNNING)
+            raise AgentPaused("contained paused agent")
+
+    monkeypatch.setattr(service, "_run_loop", run_loop)
+    service.run("pause-resume-race")
+
+    assert calls == 2
+    assert service.store.get_run("pause-resume-race")["desired_state"] == DesiredState.RUNNING
+    assert any(
+        event["kind"] == "control.resume_reconciled"
+        for event in service.store.events("pause-resume-race")
+    )
+
+
+def test_agent_pause_race_with_stop_completes_terminal_transition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = make_task()
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="pause-stop-race",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha="b" * 40,
+        worktree_path=tmp_path / "worktree",
+        max_workers=1,
+    )
+
+    def run_loop(run_id: str) -> None:
+        service.store.set_desired_state(run_id, DesiredState.STOPPED)
+        raise AgentPaused("contained paused agent")
+
+    monkeypatch.setattr(service, "_run_loop", run_loop)
+    service.run("pause-stop-race")
+
+    run = service.store.get_run("pause-stop-race")
+    assert run["desired_state"] == DesiredState.STOPPED
+    assert run["phase"] == RunPhase.STOPPED
 
 
 def test_interrupted_worker_reconciles_existing_runner_commit(tmp_path: Path) -> None:
@@ -1350,6 +1965,57 @@ def test_antigravity_recovery_reuses_full_context_validation(tmp_path: Path) -> 
     assert head_sha(worktree) == parent
 
 
+def test_antigravity_partial_recovery_validates_context_before_resume(tmp_path: Path) -> None:
+    task_value = task_data()
+    task_value.update(
+        {
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/recovery-proof/**"],
+        }
+    )
+    task = TaskSpec.model_validate(task_value)
+    worktree = tmp_path / "worktree"
+    parent = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="unsafe-partial-agy-recovery",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=1,
+    )
+    service.store.update_run("unsafe-partial-agy-recovery", worker_parent_sha=parent)
+    service.store.transition("unsafe-partial-agy-recovery", RunPhase.WORKER_RUNNING)
+    conversation = "00000000-0000-4000-8000-000000000045"
+    run_dir = service.state_dir / "runs" / "unsafe-partial-agy-recovery"
+    run_dir.mkdir(parents=True)
+    (run_dir / "worker-initial.events.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "init",
+                "conversation_id": conversation,
+                "init": {
+                    "cwd": str(tmp_path / "wrong-workspace"),
+                    "permission_mode": "request-review",
+                    "model": task.worker_model,
+                    "json_schema": WorkerResult.model_json_schema(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="different workspace"):
+        service._recover_interrupted_worker("unsafe-partial-agy-recovery", task, worktree)
+
+    run = service.store.get_run("unsafe-partial-agy-recovery")
+    assert run["phase"] == RunPhase.WORKER_RUNNING
+    assert run["worker_session_id"] == conversation
+
+
 def test_worker_recovery_accounts_usage_before_enforcing_budget(tmp_path: Path) -> None:
     task = make_task()
     worktree = tmp_path / "worktree"
@@ -1532,6 +2198,84 @@ def test_prepare_launch_refuses_live_orphan_agent(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="live agent process"):
         service.prepare_process_launch("orphan-run")
+
+
+def test_pause_contains_orphan_agent_after_controller_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = make_task()
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="pause-orphan-run",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha="b" * 40,
+        worktree_path=tmp_path / "worktree",
+        max_workers=1,
+    )
+    service.store.acquire_process_lease(
+        "pause-orphan-run", pid=111, identity="dead-controller", token="old-owner"
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "nyan_shop_bot.orchestrator.service.process_matches", lambda pid, identity: False
+    )
+    monkeypatch.setattr(
+        service, "_stop_orphan_process", lambda run_id: calls.append(f"contain:{run_id}")
+    )
+    monkeypatch.setattr(
+        service, "prepare_process_launch", lambda run_id: calls.append(f"clear:{run_id}")
+    )
+
+    service.set_control("pause-orphan-run", DesiredState.PAUSED)
+
+    assert calls == ["contain:pause-orphan-run", "clear:pause-orphan-run"]
+    assert service.store.get_run("pause-orphan-run")["desired_state"] == DesiredState.PAUSED
+
+
+def test_pause_cli_reconciles_orphan_after_controller_drain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[DesiredState] = []
+
+    class FakeService:
+        def status(self, run_id: str) -> dict[str, object]:
+            assert run_id == "pause-race"
+            if len(calls) < 2:
+                return {
+                    "phase": RunPhase.WORKER_RUNNING,
+                    "desired_state": DesiredState.PAUSED,
+                    "process_alive": True,
+                    "active_agent_alive": True,
+                }
+            return {
+                "phase": RunPhase.WORKER_RUNNING,
+                "desired_state": DesiredState.PAUSED,
+                "process_alive": False,
+                "active_agent_alive": False,
+            }
+
+        def set_control(self, run_id: str, desired: DesiredState) -> None:
+            assert run_id == "pause-race"
+            calls.append(desired)
+
+    service = FakeService()
+    monkeypatch.setattr(runner_cli, "_service", lambda root, state_dir: service)
+    monkeypatch.setattr(
+        runner_cli,
+        "_wait_for_controller_settle",
+        lambda selected, run_id: {
+            "phase": RunPhase.WORKER_RUNNING,
+            "desired_state": DesiredState.PAUSED,
+            "process_alive": False,
+            "active_agent_alive": True,
+        },
+    )
+
+    assert runner_cli.main(["--root", str(tmp_path), "pause", "--run-id", "pause-race"]) == 0
+
+    assert calls == [DesiredState.PAUSED, DesiredState.PAUSED]
+    assert json.loads(capsys.readouterr().out)["active_agent_alive"] is False
 
 
 def test_agent_finish_rejects_a_spoofed_containment_nonce(tmp_path: Path) -> None:

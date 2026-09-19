@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 import time
@@ -10,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from nyan_shop_bot.orchestrator.activity import redact_text
 from nyan_shop_bot.orchestrator.models import SHA_PATTERN, CiEvidence, DesiredState, TaskSpec
 
 ControlReader = Callable[[], DesiredState]
@@ -38,12 +40,14 @@ class CiFailed(RuntimeError):
         run_url: str,
         failed_checks: list[str],
         failed_jobs: list[str],
+        diagnostic_excerpt: str | None = None,
     ) -> None:
         self.head_sha = head_sha
         self.run_id = run_id
         self.run_url = run_url
         self.failed_checks = tuple(failed_checks)
         self.failed_jobs = tuple(failed_jobs)
+        self.diagnostic_excerpt = diagnostic_excerpt
         super().__init__(f"required CI failed for {head_sha}: {failed_checks} ({run_url})")
 
 
@@ -63,10 +67,17 @@ class GitHubClient:
         self.repository = repository
         self.timeout_reader = timeout_reader
 
-    def command(self, *arguments: str, input_text: str | None = None) -> str:
-        timeout_seconds = 60
+    def command(
+        self,
+        *arguments: str,
+        input_text: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> str:
+        effective_timeout = 60
         if self.timeout_reader is not None:
-            timeout_seconds = max(1, min(60, self.timeout_reader()))
+            effective_timeout = max(1, min(60, self.timeout_reader()))
+        if timeout_seconds is not None:
+            effective_timeout = max(1, min(effective_timeout, timeout_seconds))
         try:
             completed = subprocess.run(
                 (self.executable, *arguments),
@@ -76,18 +87,79 @@ class GitHubClient:
                 text=True,
                 encoding="utf-8",
                 input=input_text,
-                timeout=timeout_seconds,
+                timeout=effective_timeout,
             )
         except subprocess.TimeoutExpired as error:
-            raise TimeoutError(f"gh {' '.join(arguments)} exceeded {timeout_seconds}s") from error
+            raise TimeoutError(f"gh {' '.join(arguments)} exceeded {effective_timeout}s") from error
         if completed.returncode:
             detail = completed.stderr.strip() or completed.stdout.strip()
             raise RuntimeError(f"gh {' '.join(arguments)} failed: {detail}")
         return completed.stdout.strip()
 
-    def json_command(self, *arguments: str) -> Any:
-        output = self.command(*arguments)
+    def json_command(self, *arguments: str, timeout_seconds: int | None = None) -> Any:
+        output = self.command(*arguments, timeout_seconds=timeout_seconds)
         return json.loads(output) if output else None
+
+    def _failed_ci_diagnostics(
+        self,
+        jobs: list[object],
+        *,
+        control: ControlReader,
+        deadline: float,
+    ) -> str | None:
+        """Return a bounded redacted projection of failed check-run annotations."""
+
+        selected: list[str] = []
+        seen: set[str] = set()
+        failed_jobs = [
+            job
+            for job in jobs
+            if isinstance(job, dict)
+            and job.get("conclusion") not in {"success", "skipped", None}
+            and isinstance(job.get("databaseId"), int)
+        ][:8]
+        for job in failed_jobs:
+            assert isinstance(job, dict)
+            self._check_control(control)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                annotations = self.json_command(
+                    "api",
+                    f"repos/{self.repository}/check-runs/{job['databaseId']}/annotations"
+                    "?per_page=20",
+                    timeout_seconds=min(5, max(1, math.ceil(remaining))),
+                )
+            except TimeoutError:
+                break
+            except (RuntimeError, json.JSONDecodeError):
+                continue
+            for annotation in annotations if isinstance(annotations, list) else []:
+                if not isinstance(annotation, dict) or annotation.get("annotation_level") not in {
+                    "failure",
+                    "warning",
+                }:
+                    continue
+                location = str(annotation.get("path") or "workflow")
+                if annotation.get("start_line") is not None:
+                    location += f":{annotation['start_line']}"
+                candidate = redact_text(
+                    f"{job.get('name', 'failed job')} [{location}] "
+                    f"{annotation.get('title') or ''}: {annotation.get('message') or ''}",
+                    limit=1000,
+                )
+                if not candidate or candidate in seen:
+                    continue
+                seen.add(candidate)
+                selected.append(candidate)
+                if len(selected) >= 40:
+                    break
+            if len(selected) >= 40:
+                break
+        if not selected:
+            return None
+        return "\n".join(selected)[:12_000]
 
     def validate_issue(self, task: TaskSpec) -> None:
         issue = self.json_command(
@@ -341,63 +413,64 @@ class GitHubClient:
         seen_run = False
         while time.monotonic() < deadline:
             self._check_control(control)
-            runs = self.json_command(
-                "run",
-                "list",
-                "--repo",
-                self.repository,
-                "--branch",
-                task.branch,
-                "--event",
-                "pull_request",
-                "--limit",
-                "20",
-                "--json",
-                "databaseId,headSha,status,conclusion,url,workflowName,createdAt",
-            )
-            matches = [
-                item
-                for item in (runs if isinstance(runs, list) else [])
-                if isinstance(item, dict) and item.get("headSha") == head_sha
-            ]
-            matches.sort(key=lambda item: str(item.get("createdAt", "")), reverse=True)
+            matches = self._exact_sha_runs(task, head_sha)
             for run in matches[:1]:
                 seen_run = True
-                run_id = int(run["databaseId"])
-                detail = self.json_command(
-                    "run",
-                    "view",
-                    str(run_id),
-                    "--repo",
-                    self.repository,
-                    "--json",
-                    "status,conclusion,url,headSha,jobs",
-                )
-                if not isinstance(detail, dict) or detail.get("headSha") != head_sha:
+                run_id_value = run.get("databaseId")
+                attempt_value = run.get("attempt")
+                if not isinstance(run_id_value, int) or not isinstance(attempt_value, int):
+                    continue
+                run_id = run_id_value
+                attempt = attempt_value
+                detail = self._run_detail(run_id)
+                if (
+                    detail is None
+                    or detail.get("headSha") != head_sha
+                    or detail.get("attempt") != attempt
+                ):
                     continue
                 jobs = detail.get("jobs")
-                checks = {
-                    str(job.get("name")): str(job.get("conclusion") or job.get("status"))
-                    for job in (jobs if isinstance(jobs, list) else [])
-                    if isinstance(job, dict)
-                }
-                missing = [name for name in task.required_checks if name not in checks]
-                pending = [
-                    name
-                    for name in task.required_checks
-                    if checks.get(name) in {"queued", "in_progress", "waiting", "pending"}
-                ]
-                failed = [
-                    name
-                    for name in task.required_checks
-                    if name in checks
-                    and checks[name]
-                    not in {"success", "queued", "in_progress", "waiting", "pending"}
-                ]
+                checks = self._job_checks(jobs)
+                failed = self._failed_required_checks(task, checks)
+                succeeded = (
+                    detail.get("status") == "completed"
+                    and detail.get("conclusion") == "success"
+                    and all(checks.get(name) == "success" for name in task.required_checks)
+                )
+                if detail.get("status") != "completed" or (not failed and not succeeded):
+                    continue
+                diagnostic_excerpt: str | None = None
                 if failed:
+                    diagnostic_excerpt = self._failed_ci_diagnostics(
+                        jobs if isinstance(jobs, list) else [],
+                        control=control,
+                        deadline=min(deadline, time.monotonic() + 15),
+                    )
+
+                self._check_control(control)
+                refreshed_matches = self._exact_sha_runs(task, head_sha)
+                if not refreshed_matches or (
+                    refreshed_matches[0].get("databaseId"),
+                    refreshed_matches[0].get("attempt"),
+                ) != (run_id, attempt):
+                    continue
+                refreshed_detail = self._run_detail(run_id)
+                if (
+                    refreshed_detail is None
+                    or refreshed_detail.get("headSha") != head_sha
+                    or refreshed_detail.get("attempt") != attempt
+                    or refreshed_detail.get("status") != "completed"
+                ):
+                    continue
+                refreshed_jobs = refreshed_detail.get("jobs")
+                refreshed_checks = self._job_checks(refreshed_jobs)
+                refreshed_failed = self._failed_required_checks(task, refreshed_checks)
+                if refreshed_failed:
+                    if not failed:
+                        continue
                     failed_jobs = sorted(
                         name
-                        for name, conclusion in checks.items()
+                        for name, conclusion in refreshed_checks.items()
                         if conclusion
                         not in {
                             "success",
@@ -411,25 +484,76 @@ class GitHubClient:
                     raise CiFailed(
                         head_sha=head_sha,
                         run_id=run_id,
-                        run_url=str(detail["url"]),
-                        failed_checks=failed,
+                        run_url=str(refreshed_detail["url"]),
+                        failed_checks=refreshed_failed,
                         failed_jobs=failed_jobs,
+                        diagnostic_excerpt=diagnostic_excerpt,
                     )
-                if (
-                    not missing
-                    and not pending
-                    and all(checks[name] == "success" for name in task.required_checks)
+                if refreshed_detail.get("conclusion") == "success" and all(
+                    refreshed_checks.get(name) == "success" for name in task.required_checks
                 ):
                     return CiEvidence(
                         head_sha=head_sha,
                         run_id=run_id,
-                        run_url=str(detail["url"]),
-                        checks={name: checks[name] for name in task.required_checks},
+                        run_url=str(refreshed_detail["url"]),
+                        checks={name: refreshed_checks[name] for name in task.required_checks},
                     )
             self._controlled_sleep(control, min(delay, max(1, int(deadline - time.monotonic()))))
             delay = min(task.budget.poll_max_seconds, delay * 2)
         qualifier = "after observing a run" if seen_run else "before any exact-HEAD run appeared"
         raise TimeoutError(f"CI timed out for {head_sha} {qualifier}")
+
+    def _exact_sha_runs(self, task: TaskSpec, head_sha: str) -> list[dict[str, Any]]:
+        runs = self.json_command(
+            "run",
+            "list",
+            "--repo",
+            self.repository,
+            "--branch",
+            task.branch,
+            "--event",
+            "pull_request",
+            "--limit",
+            "20",
+            "--json",
+            "databaseId,attempt,headSha,status,conclusion,url,workflowName,createdAt",
+        )
+        matches = [
+            item
+            for item in (runs if isinstance(runs, list) else [])
+            if isinstance(item, dict) and item.get("headSha") == head_sha
+        ]
+        matches.sort(key=lambda item: str(item.get("createdAt", "")), reverse=True)
+        return matches
+
+    def _run_detail(self, run_id: int) -> dict[str, Any] | None:
+        detail = self.json_command(
+            "run",
+            "view",
+            str(run_id),
+            "--repo",
+            self.repository,
+            "--json",
+            "databaseId,attempt,status,conclusion,url,headSha,jobs",
+        )
+        return detail if isinstance(detail, dict) else None
+
+    @staticmethod
+    def _job_checks(jobs: object) -> dict[str, str]:
+        return {
+            str(job.get("name")): str(job.get("conclusion") or job.get("status"))
+            for job in (jobs if isinstance(jobs, list) else [])
+            if isinstance(job, dict)
+        }
+
+    @staticmethod
+    def _failed_required_checks(task: TaskSpec, checks: dict[str, str]) -> list[str]:
+        non_terminal = {"success", "queued", "in_progress", "waiting", "pending"}
+        return [
+            name
+            for name in task.required_checks
+            if name in checks and checks[name] not in non_terminal
+        ]
 
     @staticmethod
     def _check_control(control: ControlReader) -> None:

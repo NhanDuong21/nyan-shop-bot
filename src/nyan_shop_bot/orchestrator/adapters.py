@@ -107,6 +107,10 @@ class AgentStopped(RuntimeError):
     """Raised when an owner stop request terminates an active agent."""
 
 
+class AgentPaused(RuntimeError):
+    """Raised after an owner pause safely contains an active agent process tree."""
+
+
 def process_is_running(pid: int) -> bool:
     """Return whether a PID still represents an executing process."""
 
@@ -116,13 +120,21 @@ def process_is_running(pid: int) -> bool:
         import ctypes  # noqa: PLC0415 - Windows-only import
 
         process_query_limited_information = 0x1000
+        synchronize = 0x00100000
         still_active = 259
+        wait_object_0 = 0
+        wait_timeout = 258
         kernel32 = cast(Any, ctypes).windll.kernel32
-        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        handle = kernel32.OpenProcess(process_query_limited_information | synchronize, False, pid)
         if not handle:
             return False
         exit_code = ctypes.c_ulong()
         try:
+            wait_result = int(kernel32.WaitForSingleObject(handle, 0))
+            if wait_result == wait_object_0:
+                return False
+            if wait_result != wait_timeout:
+                return False
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
                 return False
             return exit_code.value == still_active
@@ -145,6 +157,7 @@ def process_identity(pid: int) -> str | None:
         from ctypes import wintypes  # noqa: PLC0415 - Windows-only import
 
         process_query_limited_information = 0x1000
+        synchronize = 0x00100000
         ctypes_api = cast(Any, ctypes)
         kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
         kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
@@ -157,8 +170,12 @@ def process_identity(pid: int) -> str | None:
             ctypes.POINTER(wintypes.FILETIME),
         )
         kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
         kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        handle = kernel32.OpenProcess(process_query_limited_information | synchronize, False, pid)
         if not handle:
             error_code = ctypes_api.get_last_error()
             if error_code in {6, 87}:
@@ -168,7 +185,22 @@ def process_identity(pid: int) -> str | None:
         exited = wintypes.FILETIME()
         kernel = wintypes.FILETIME()
         user = wintypes.FILETIME()
+        exit_code = wintypes.DWORD()
         try:
+            wait_result = int(kernel32.WaitForSingleObject(handle, 0))
+            if wait_result == 0:
+                return None
+            if wait_result != 258:
+                raise RuntimeError(
+                    f"could not read wait state for Windows PID {pid}: result {wait_result}"
+                )
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                raise RuntimeError(
+                    f"could not read exit state for Windows PID {pid}: "
+                    f"error {ctypes_api.get_last_error()}"
+                )
+            if int(exit_code.value) != 259:
+                return None
             if not kernel32.GetProcessTimes(
                 handle,
                 ctypes.byref(created),
@@ -737,6 +769,10 @@ def _run_monitored(
                 )
                 process_attached = True
             desired = control()
+            if desired is DesiredState.PAUSED:
+                if not _terminate_attached_process(process):
+                    raise RuntimeError("could not pause the registered launcher at its barrier")
+                raise AgentPaused("owner pause prevented the agent process from starting")
             if desired is DesiredState.STOPPED:
                 if not _terminate_attached_process(process):
                     raise RuntimeError("could not stop the registered launcher at its barrier")
@@ -748,6 +784,10 @@ def _run_monitored(
             launch_start.write_text("start", encoding="utf-8")
             while process.poll() is None:
                 desired = control()
+                if desired is DesiredState.PAUSED:
+                    if not _terminate_attached_process(process):
+                        raise RuntimeError("could not pause the registered agent process tree")
+                    raise AgentPaused("owner pause terminated the active agent process tree")
                 if desired is DesiredState.STOPPED:
                     if not _terminate_attached_process(process):
                         raise RuntimeError("could not terminate the registered agent process tree")
@@ -1049,8 +1089,9 @@ def _validate_antigravity_context(
     worktree: Path,
     expected_model: str | None,
     expected_schema: dict[str, Any],
+    require_result: bool = True,
 ) -> None:
-    """Reject a write run whose observed context is broader or different than requested."""
+    """Reject a full or resumable write stream with broader/different context."""
 
     init_events: list[dict[str, Any]] = []
     result_events: list[dict[str, Any]] = []
@@ -1073,20 +1114,18 @@ def _validate_antigravity_context(
             init_events.append(event)
         elif event.get("event") == "result":
             result_events.append(event)
-    if len(init_events) != 1 or len(result_events) != 1:
-        raise RuntimeError("Antigravity stream must contain exactly one init and one result")
+    if len(init_events) != 1:
+        raise RuntimeError("Antigravity stream must contain exactly one init")
+    if len(result_events) > 1 or (require_result and len(result_events) != 1):
+        raise RuntimeError("Antigravity stream has an invalid terminal result count")
     init_event = init_events[0]
-    result_event = result_events[0]
     conversation_id = init_event.get("conversation_id")
-    result = result_event.get("result")
     if not isinstance(conversation_id, str) or not conversation_id:
         raise RuntimeError("Antigravity init omitted its conversation ID")
     try:
         uuid.UUID(conversation_id)
     except ValueError as error:
         raise RuntimeError("Antigravity conversation ID is not a UUID") from error
-    if not isinstance(result, dict) or result.get("conversation_id") != conversation_id:
-        raise RuntimeError("Antigravity result conversation did not match init")
     if any(value != conversation_id for value in step_conversations):
         raise RuntimeError("Antigravity step conversation did not match init")
     init = init_event.get("init")
@@ -1104,7 +1143,14 @@ def _validate_antigravity_context(
         )
     if expected_model is not None and init.get("model") != expected_model:
         raise RuntimeError("Antigravity did not use the pinned task model")
-    if init.get("json_schema") != expected_schema or result.get("json_schema") != expected_schema:
+    if init.get("json_schema") != expected_schema:
+        raise RuntimeError("Antigravity did not bind the exact requested JSON schema")
+    if not result_events:
+        return
+    result = result_events[0].get("result")
+    if not isinstance(result, dict) or result.get("conversation_id") != conversation_id:
+        raise RuntimeError("Antigravity result conversation did not match init")
+    if result.get("json_schema") != expected_schema:
         raise RuntimeError("Antigravity did not bind the exact requested JSON schema")
     raw_usage = result.get("usage")
     if not isinstance(raw_usage, dict) or int(raw_usage.get("total_tokens", 0)) <= 0:
