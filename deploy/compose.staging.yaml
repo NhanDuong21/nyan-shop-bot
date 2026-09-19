@@ -1,0 +1,54 @@
+name: nyan-shop-bot-staging
+
+# Blueprint only. No host, ingress, or credentials are configured in Phase 0.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: nyan_shop_bot
+      POSTGRES_USER: nyan_staging
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a staging-only PostgreSQL password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nyan_staging -d nyan_shop_bot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [runtime]
+
+  migrate:
+    image: ${API_IMAGE:?Use the tested API image by immutable digest}
+    command: ["alembic", "upgrade", "head"]
+    environment: &safe_staging_environment
+      APP_ENV: local
+      DATABASE_URL: postgresql+asyncpg://nyan_staging:${POSTGRES_PASSWORD}@db:5432/nyan_shop_bot
+      SUPPLIER_MODE: mock
+      PAYMENT_MODE: disabled
+      ALLOW_REAL_PURCHASES: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [runtime]
+
+  api:
+    image: ${API_IMAGE:?Use the tested API image by immutable digest}
+    environment: *safe_staging_environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [runtime]
+
+  admin:
+    image: ${ADMIN_IMAGE:?Use the tested admin image by immutable digest}
+    depends_on:
+      api:
+        condition: service_started
+    networks: [runtime]
+
+volumes:
+  postgres_data:
+
+networks:
+  runtime:
+    internal: true
