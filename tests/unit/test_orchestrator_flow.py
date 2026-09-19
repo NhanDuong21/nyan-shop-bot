@@ -16,6 +16,7 @@ from nyan_shop_bot.orchestrator.adapters import (
     _parse_antigravity_events,
     _parse_codex_events,
     _run_monitored,
+    _validate_antigravity_context,
     process_identity,
     recover_completed_result,
     sanitized_environment,
@@ -26,6 +27,8 @@ from nyan_shop_bot.orchestrator.gitops import (
     head_sha,
     pending_files,
     validate_and_commit_worker_changes,
+    validate_changed_path_containment,
+    validate_ui_prelaunch_workspace,
 )
 from nyan_shop_bot.orchestrator.models import (
     AgentInvocation,
@@ -46,6 +49,7 @@ from nyan_shop_bot.orchestrator.service import (
 from tests.unit.test_orchestrator_models import task_data
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "orchestrator" / "review_changes_requested.json"
+SCOPE_FIXTURE = Path(__file__).parents[1] / "fixtures" / "orchestrator" / "ui_scope_violation.json"
 
 
 def make_task() -> TaskSpec:
@@ -58,7 +62,21 @@ def initialize_task_repo(worktree: Path, task: TaskSpec) -> str:
     git(worktree, "config", "user.name", "Nyan Test")
     git(worktree, "config", "user.email", "nyan-test@example.invalid")
     (worktree / "README.md").write_text("base\n", encoding="utf-8")
-    git(worktree, "add", "README.md")
+    if task.role == "ui":
+        (worktree / "AGENTS.md").write_text("NYAN-UI-RULESET-V1\n", encoding="utf-8")
+        rule = worktree / ".agents" / "rules" / "ui-worker.md"
+        rule.parent.mkdir(parents=True)
+        rule.write_text(
+            "---\ntrigger: always_on\n---\nNYAN-ANTIGRAVITY-RULE-V1\n",
+            encoding="utf-8",
+        )
+        feature_root = worktree / task.allowed_paths[0][:-3]
+        feature_root.mkdir(parents=True)
+        (feature_root / "CoordinatorSkeleton.tsx").write_text(
+            "export const CoordinatorSkeleton = true;\n",
+            encoding="utf-8",
+        )
+    git(worktree, "add", ".")
     git(worktree, "commit", "-m", "base")
     git(worktree, "branch", "-M", task.branch)
     return head_sha(worktree)
@@ -258,6 +276,194 @@ def test_service_progresses_fix_ci_and_rereview_on_distinct_heads(
     assert review_heads == ci_heads
     assert run["reviewed_head_sha"] == ci_heads[-1]
     assert git(worktree, "rev-list", "--count", f"{base}..HEAD") == "2"
+
+
+def test_ui_findings_return_to_same_antigravity_conversation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw_task = task_data()
+    raw_task.update(
+        {
+            "task_id": "NSB-014",
+            "issue_number": 6,
+            "issue_url": "https://github.com/NhanDuong21/nyan-shop-bot/issues/6",
+            "branch": "nyan/nsb-014-ui-fix-fixture",
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/admin-dashboard/**"],
+        }
+    )
+    task = TaskSpec.model_validate(raw_task)
+    worktree = tmp_path / "worktree"
+    parent = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="ui-fix-flow",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=2,
+    )
+    service.store.update_run(
+        "ui-fix-flow",
+        worker_session_id="ui-conversation-123",
+        head_sha=parent,
+        fix_rounds=1,
+    )
+    service.store.transition("ui-fix-flow", RunPhase.FIX_REQUESTED)
+    run_dir = service.state_dir / "runs" / "ui-fix-flow"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    review = ReviewResult(
+        verdict="CHANGES_REQUESTED",
+        reviewed_head_sha=parent,
+        findings=[
+            {
+                "severity": "medium",
+                "file": "admin/src/features/admin-dashboard/AdminDashboard.tsx",
+                "line": 1,
+                "message": "Expose an explicit empty state.",
+                "evidence": "The feature renders nothing when the catalog is empty.",
+            }
+        ],
+        tests=[],
+        blockers=[],
+        summary="One in-scope UX finding.",
+    )
+    (run_dir / "review-0.result.json").write_text(review.model_dump_json(), encoding="utf-8")
+    observed: dict[str, object] = {}
+
+    class FakeAntigravityAdapter:
+        def worker(self, **kwargs: object) -> tuple[WorkerResult, AgentInvocation]:
+            observed["resume_session_id"] = kwargs.get("resume_session_id")
+            observed["prompt"] = kwargs.get("prompt")
+            feature = worktree / "admin" / "src" / "features" / "admin-dashboard"
+            feature.mkdir(parents=True, exist_ok=True)
+            changed = feature / "AdminDashboard.tsx"
+            changed.write_text("export const AdminDashboard = () => 'Empty';\n", encoding="utf-8")
+            result = WorkerResult(
+                status="SUCCESS",
+                issue=6,
+                branch=task.branch,
+                head_sha=parent,
+                changed_files=["admin/src/features/admin-dashboard/AdminDashboard.tsx"],
+                tests=[
+                    {
+                        "command": "npm test",
+                        "result": "NOT_RUN",
+                        "evidence": "Headless permission policy denied shell execution.",
+                    }
+                ],
+                blockers=[],
+                summary="Applied the reviewer finding inside the existing feature boundary.",
+            )
+            result_path = run_dir / "worker-fix-1.result.json"
+            events_path = run_dir / "worker-fix-1.events.jsonl"
+            stderr_path = run_dir / "worker-fix-1.stderr.log"
+            result_path.write_text(result.model_dump_json(), encoding="utf-8")
+            events_path.write_text("same-conversation-fix\n", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+            return result, AgentInvocation(
+                session_id="ui-conversation-123",
+                result_path=str(result_path),
+                events_path=str(events_path),
+                stderr_path=str(stderr_path),
+                usage=Usage(
+                    input_tokens=10,
+                    output_tokens=2,
+                    reported_total_tokens=12,
+                ),
+            )
+
+    monkeypatch.setattr(
+        "nyan_shop_bot.orchestrator.service.AntigravityAdapter", FakeAntigravityAdapter
+    )
+
+    service._run_worker("ui-fix-flow", task, worktree, parent, RunPhase.FIX_REQUESTED)
+
+    assert observed["resume_session_id"] == "ui-conversation-123"
+    assert "Expose an explicit empty state" in str(observed["prompt"])
+    assert service.store.get_run("ui-fix-flow")["worker_session_id"] == "ui-conversation-123"
+    assert head_sha(worktree) != parent
+
+
+def test_ui_worker_is_not_constructed_without_committed_workspace_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw_task = task_data()
+    raw_task.update(
+        {
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/rule-proof/**"],
+        }
+    )
+    task = TaskSpec.model_validate(raw_task)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    git(worktree, "init")
+    git(worktree, "config", "user.name", "Nyan Test")
+    git(worktree, "config", "user.email", "nyan-test@example.invalid")
+    (worktree / "README.md").write_text("base\n", encoding="utf-8")
+    git(worktree, "add", "README.md")
+    git(worktree, "commit", "-m", "base without UI rules")
+    git(worktree, "branch", "-M", task.branch)
+    parent = head_sha(worktree)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="missing-ui-rule",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=2,
+    )
+    service.store.transition("missing-ui-rule", RunPhase.CLAIMED)
+    constructed = False
+
+    class ForbiddenAdapter:
+        def __init__(self) -> None:
+            nonlocal constructed
+            constructed = True
+
+    monkeypatch.setattr("nyan_shop_bot.orchestrator.service.AntigravityAdapter", ForbiddenAdapter)
+
+    with pytest.raises(RuntimeError, match="UI policy file is not tracked"):
+        service._run_worker("missing-ui-rule", task, worktree, parent, RunPhase.CLAIMED)
+
+    assert not constructed
+
+
+def test_ui_prelaunch_requires_tracked_skeleton_and_non_reparse_ancestors(
+    tmp_path: Path,
+) -> None:
+    raw_task = task_data()
+    raw_task.update(
+        {
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/preflight-proof/**"],
+        }
+    )
+    task = TaskSpec.model_validate(raw_task)
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    with pytest.raises(RuntimeError, match="real directory"):
+        validate_ui_prelaunch_workspace(missing, task)
+
+    worktree = tmp_path / "reparse"
+    outside = tmp_path / "outside-features"
+    (worktree / "admin" / "src").mkdir(parents=True)
+    outside.mkdir()
+    try:
+        (worktree / "admin" / "src" / "features").symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory symlink unavailable: {error}")
+    with pytest.raises(RuntimeError, match="ancestor is a symlink or reparse"):
+        validate_ui_prelaunch_workspace(worktree, task)
 
 
 def test_fix_loop_blocks_after_three_rounds() -> None:
@@ -790,7 +996,14 @@ def test_worker_recovery_rejects_a_different_persisted_session(tmp_path: Path) -
 
 def test_antigravity_terminal_stream_recovers_without_result_file(tmp_path: Path) -> None:
     task_value = task_data()
-    task_value.update({"worker": "antigravity", "role": "ui"})
+    task_value.update(
+        {
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/recovery-proof/**"],
+        }
+    )
     task = TaskSpec.model_validate(task_value)
     worktree = tmp_path / "worktree"
     parent = initialize_task_repo(worktree, task)
@@ -805,15 +1018,15 @@ def test_antigravity_terminal_stream_recovers_without_result_file(tmp_path: Path
     )
     service.store.update_run("antigravity-terminal-recovery", worker_parent_sha=parent)
     service.store.transition("antigravity-terminal-recovery", RunPhase.WORKER_RUNNING)
-    docs = worktree / "docs"
-    docs.mkdir()
-    (docs / "runner-demo.md").write_text("proof\n", encoding="utf-8")
+    feature = worktree / "admin" / "src" / "features" / "recovery-proof"
+    feature.mkdir(parents=True, exist_ok=True)
+    (feature / "Proof.tsx").write_text("export const Proof = true;\n", encoding="utf-8")
     structured = {
         "status": "SUCCESS",
         "issue": task.issue_number,
         "branch": task.branch,
         "head_sha": parent,
-        "changed_files": ["docs/runner-demo.md"],
+        "changed_files": ["admin/src/features/recovery-proof/Proof.tsx"],
         "tests": [
             {
                 "command": "git diff --check",
@@ -824,24 +1037,44 @@ def test_antigravity_terminal_stream_recovers_without_result_file(tmp_path: Path
         "blockers": [],
         "summary": "Recovered from the terminal Antigravity event.",
     }
+    conversation = "00000000-0000-4000-8000-000000000042"
+    worker_schema = WorkerResult.model_json_schema()
     run_dir = service.state_dir / "runs" / "antigravity-terminal-recovery"
     run_dir.mkdir(parents=True)
     (run_dir / "worker-initial.events.jsonl").write_text(
-        json.dumps(
-            {
-                "event": "result",
-                "result": {
-                    "conversation_id": "completed-conversation",
-                    "status": "SUCCESS",
-                    "usage": {
-                        "input_tokens": 11,
-                        "output_tokens": 5,
-                        "thinking_tokens": 2,
-                        "cache_read_tokens": 3,
-                    },
-                    "structured_output": structured,
-                },
-            }
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "event": "init",
+                        "conversation_id": conversation,
+                        "init": {
+                            "cwd": str(worktree),
+                            "permission_mode": "request-review",
+                            "model": task.worker_model,
+                            "json_schema": worker_schema,
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "result",
+                        "result": {
+                            "conversation_id": conversation,
+                            "status": "SUCCESS",
+                            "usage": {
+                                "input_tokens": 11,
+                                "output_tokens": 5,
+                                "thinking_tokens": 2,
+                                "cache_read_tokens": 3,
+                                "total_tokens": 16,
+                            },
+                            "json_schema": worker_schema,
+                            "structured_output": structured,
+                        },
+                    }
+                ),
+            )
         ),
         encoding="utf-8",
     )
@@ -850,9 +1083,86 @@ def test_antigravity_terminal_stream_recovers_without_result_file(tmp_path: Path
 
     run = service.store.get_run("antigravity-terminal-recovery")
     assert run["phase"] == RunPhase.WORKER_COMPLETE
-    assert run["worker_session_id"] == "completed-conversation"
-    assert run["total_tokens"] == 18
+    assert run["worker_session_id"] == conversation
+    assert run["total_tokens"] == 16
     assert (run_dir / "worker-initial.result.json").is_file()
+
+
+def test_antigravity_recovery_reuses_full_context_validation(tmp_path: Path) -> None:
+    task_value = task_data()
+    task_value.update(
+        {
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/recovery-proof/**"],
+        }
+    )
+    task = TaskSpec.model_validate(task_value)
+    worktree = tmp_path / "worktree"
+    parent = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="unsafe-agy-recovery",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=2,
+    )
+    service.store.update_run("unsafe-agy-recovery", worker_parent_sha=parent)
+    service.store.transition("unsafe-agy-recovery", RunPhase.WORKER_RUNNING)
+    conversation = "00000000-0000-4000-8000-000000000044"
+    schema = WorkerResult.model_json_schema()
+    structured = {
+        "status": "BLOCKED",
+        "issue": task.issue_number,
+        "branch": task.branch,
+        "head_sha": parent,
+        "changed_files": [],
+        "tests": [],
+        "blockers": ["fixture"],
+        "summary": "Unsafe context must be rejected before result handling.",
+    }
+    run_dir = service.state_dir / "runs" / "unsafe-agy-recovery"
+    run_dir.mkdir(parents=True)
+    (run_dir / "worker-initial.events.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "event": "init",
+                        "conversation_id": conversation,
+                        "init": {
+                            "cwd": str(tmp_path / "wrong-workspace"),
+                            "permission_mode": "request-review",
+                            "model": task.worker_model,
+                            "json_schema": schema,
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "result",
+                        "result": {
+                            "conversation_id": conversation,
+                            "status": "SUCCESS",
+                            "usage": {"total_tokens": 10},
+                            "json_schema": schema,
+                            "structured_output": structured,
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="different workspace"):
+        service._recover_interrupted_worker("unsafe-agy-recovery", task, worktree)
+
+    assert service.store.get_run("unsafe-agy-recovery")["total_tokens"] == 0
+    assert head_sha(worktree) == parent
 
 
 def test_worker_recovery_accounts_usage_before_enforcing_budget(tmp_path: Path) -> None:
@@ -1408,6 +1718,121 @@ def test_runner_owns_commit_after_validating_worker_paths(tmp_path: Path) -> Non
     assert git(worktree, "status", "--porcelain=v1") == ""
 
 
+def test_antigravity_scope_violation_fixture_is_never_committed(tmp_path: Path) -> None:
+    raw_task = task_data()
+    raw_task.update(
+        {
+            "task_id": "NSB-014",
+            "issue_number": 6,
+            "issue_url": "https://github.com/NhanDuong21/nyan-shop-bot/issues/6",
+            "branch": "nyan/nsb-014-ui-scope-fixture",
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/ui-proof/**"],
+        }
+    )
+    task = TaskSpec.model_validate(raw_task)
+    worktree = tmp_path / "repo"
+    parent = initialize_task_repo(worktree, task)
+    feature = worktree / "admin" / "src" / "features" / "ui-proof"
+    feature.mkdir(parents=True, exist_ok=True)
+    (feature / "CatalogPanel.tsx").write_text("export const CatalogPanel = 1;\n", encoding="utf-8")
+    (worktree / "admin" / "package.json").write_text("{}\n", encoding="utf-8")
+    raw_result = json.loads(SCOPE_FIXTURE.read_text(encoding="utf-8"))
+    raw_result["head_sha"] = parent
+    result = WorkerResult.model_validate(raw_result)
+
+    with pytest.raises(RuntimeError, match="outside allowed scope"):
+        validate_and_commit_worker_changes(
+            worktree,
+            task=task,
+            expected_parent=parent,
+            result=result,
+        )
+
+    assert head_sha(worktree) == parent
+    assert git(worktree, "diff", "--cached", "--name-only") == ""
+
+
+def test_ui_nested_config_and_ignored_env_are_rejected_before_staging(tmp_path: Path) -> None:
+    raw_task = task_data()
+    raw_task.update(
+        {
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/ui-proof/**"],
+        }
+    )
+    task = TaskSpec.model_validate(raw_task)
+    worktree = tmp_path / "repo"
+    initialize_task_repo(worktree, task)
+    (worktree / ".gitignore").write_text("*.local\n", encoding="utf-8")
+    git(worktree, "add", ".gitignore")
+    git(worktree, "commit", "-m", "ignore local files")
+    parent = head_sha(worktree)
+    feature = worktree / "admin" / "src" / "features" / "ui-proof"
+    feature.mkdir(parents=True, exist_ok=True)
+    (feature / ".env.local").write_text("PRIVATE=not-for-ui\n", encoding="utf-8")
+    (feature / "package.json").write_text("{}\n", encoding="utf-8")
+    result = WorkerResult(
+        status="SUCCESS",
+        issue=task.issue_number,
+        branch=task.branch,
+        head_sha=parent,
+        changed_files=["admin/src/features/ui-proof/package.json"],
+        tests=[{"command": "npm test", "result": "NOT_RUN", "evidence": "fixture"}],
+        blockers=[],
+        summary="Synthetic policy bypass attempt.",
+    )
+
+    with pytest.raises(RuntimeError, match="UI workspace contains"):
+        validate_and_commit_worker_changes(
+            worktree,
+            task=task,
+            expected_parent=parent,
+            result=result,
+        )
+
+    assert head_sha(worktree) == parent
+    assert git(worktree, "diff", "--cached", "--name-only") == ""
+
+
+def test_changed_path_containment_rejects_symlink_component(tmp_path: Path) -> None:
+    worktree = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    worktree.mkdir()
+    outside.mkdir()
+    link = worktree / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory symlink unavailable: {error}")
+
+    with pytest.raises(RuntimeError, match="escapes|symlink or reparse"):
+        validate_changed_path_containment(worktree, ["linked/file.tsx"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_changed_path_containment_rejects_in_root_junction(tmp_path: Path) -> None:
+    worktree = tmp_path / "repo"
+    target = worktree / "target"
+    junction = worktree / "junction"
+    target.mkdir(parents=True)
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode:
+        pytest.skip(f"junction unavailable: {completed.stderr or completed.stdout}")
+
+    with pytest.raises(RuntimeError, match="symlink or reparse"):
+        validate_changed_path_containment(worktree, ["junction/file.tsx"])
+
+
 def test_codex_jsonl_exposes_session_and_usage(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     path.write_text(
@@ -1490,6 +1915,7 @@ def test_antigravity_stream_exposes_conversation_schema_and_usage(tmp_path: Path
                         "output_tokens": 5,
                         "thinking_tokens": 2,
                         "cache_read_tokens": 3,
+                        "total_tokens": 16,
                     },
                     "structured_output": {"status": "BLOCKED"},
                 },
@@ -1501,8 +1927,189 @@ def test_antigravity_stream_exposes_conversation_schema_and_usage(tmp_path: Path
     session, usage, output = _parse_antigravity_events(path)
 
     assert session == "conversation-1"
-    assert usage.total == 18
+    assert usage.total == 16
     assert output == {"status": "BLOCKED"}
+
+
+def test_antigravity_cumulative_usage_accounts_only_same_session_delta(tmp_path: Path) -> None:
+    raw_task = task_data()
+    raw_task.update(
+        {
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/usage-proof/**"],
+        }
+    )
+    task = TaskSpec.model_validate(raw_task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="agy-usage",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha="a" * 40,
+        worktree_path=tmp_path / "worktree",
+        max_workers=2,
+    )
+    first = tmp_path / "first.events.jsonl"
+    second = tmp_path / "second.events.jsonl"
+    decrease = tmp_path / "decrease.events.jsonl"
+    first.write_text("first\n", encoding="utf-8")
+    second.write_text("second\n", encoding="utf-8")
+    decrease.write_text("decrease\n", encoding="utf-8")
+
+    service._account_invocation(
+        "agy-usage",
+        task,
+        role="worker",
+        session_id="same-session",
+        usage=Usage(reported_total_tokens=100),
+        events_path=first,
+    )
+    service._account_invocation(
+        "agy-usage",
+        task,
+        role="worker",
+        session_id="same-session",
+        usage=Usage(reported_total_tokens=140),
+        events_path=second,
+    )
+    service._account_invocation(
+        "agy-usage",
+        task,
+        role="worker",
+        session_id="same-session",
+        usage=Usage(reported_total_tokens=140),
+        events_path=second,
+    )
+
+    run = service.store.get_run("agy-usage")
+    assert run["total_tokens"] == 140
+    assert run["worker_cumulative_tokens"] == 140
+    with pytest.raises(RuntimeError, match="moved backwards"):
+        service._account_invocation(
+            "agy-usage",
+            task,
+            role="worker",
+            session_id="same-session",
+            usage=Usage(reported_total_tokens=130),
+            events_path=decrease,
+        )
+
+
+def test_antigravity_context_requires_isolated_permission_and_exact_workspace(
+    tmp_path: Path,
+) -> None:
+    conversation = "00000000-0000-4000-8000-000000000001"
+    expected_schema = {"type": "object", "required": ["status"]}
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "event": "init",
+                        "conversation_id": conversation,
+                        "init": {
+                            "cwd": str(tmp_path),
+                            "permission_mode": "request-review",
+                            "model": "gemini-3.8-flash-low",
+                            "json_schema": expected_schema,
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "result",
+                        "result": {
+                            "conversation_id": conversation,
+                            "status": "SUCCESS",
+                            "usage": {"total_tokens": 10},
+                            "json_schema": expected_schema,
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    _validate_antigravity_context(
+        path,
+        worktree=tmp_path,
+        expected_model="gemini-3.8-flash-low",
+        expected_schema=expected_schema,
+    )
+    unsafe = path.read_text(encoding="utf-8").replace("request-review", "always-proceed")
+    path.write_text(unsafe, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="least-privilege"):
+        _validate_antigravity_context(
+            path,
+            worktree=tmp_path,
+            expected_model="gemini-3.8-flash-low",
+            expected_schema=expected_schema,
+        )
+
+
+def test_antigravity_context_rejects_subagent_and_malformed_stdout(tmp_path: Path) -> None:
+    conversation = "00000000-0000-4000-8000-000000000043"
+    expected_schema = {"type": "object"}
+    init = {
+        "event": "init",
+        "conversation_id": conversation,
+        "init": {
+            "cwd": str(tmp_path),
+            "permission_mode": "request-review",
+            "model": "gemini-3.8-flash-low",
+            "json_schema": expected_schema,
+        },
+    }
+    result = {
+        "event": "result",
+        "result": {
+            "conversation_id": conversation,
+            "status": "SUCCESS",
+            "usage": {"total_tokens": 10},
+            "json_schema": expected_schema,
+        },
+    }
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        "\n".join(
+            (
+                json.dumps(init),
+                json.dumps(
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "conversation_id": conversation,
+                            "subagent_info": {"name": "unauthorized-writer"},
+                        },
+                    }
+                ),
+                json.dumps(result),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="delegate to a subagent"):
+        _validate_antigravity_context(
+            path,
+            worktree=tmp_path,
+            expected_model="gemini-3.8-flash-low",
+            expected_schema=expected_schema,
+        )
+
+    path.write_text(json.dumps(init) + "\nnot-json\n" + json.dumps(result), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="malformed JSON"):
+        _validate_antigravity_context(
+            path,
+            worktree=tmp_path,
+            expected_model="gemini-3.8-flash-low",
+            expected_schema=expected_schema,
+        )
 
 
 def test_agent_environment_removes_ambient_secrets(
@@ -1539,6 +2146,24 @@ def test_agent_environment_removes_ambient_secrets(
     assert result["SUPPLIER_MODE"] == "mock"
     assert result["PAYMENT_MODE"] == "disabled"
     assert result["ALLOW_REAL_PURCHASES"] == "false"
+
+
+def test_antigravity_environment_uses_per_run_safe_profile(tmp_path: Path) -> None:
+    result = sanitized_environment(tmp_path, isolate_antigravity=True)
+    profile = tmp_path / "antigravity-profile"
+    settings_path = profile / ".gemini" / "antigravity-cli" / "settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+
+    assert result["HOME"] == str(profile)
+    assert result["USERPROFILE"] == str(profile)
+    assert settings == {
+        "allowNonWorkspaceAccess": False,
+        "artifactReviewPolicy": "asks-for-review",
+        "enableTelemetry": False,
+        "enableTerminalSandbox": True,
+        "toolPermission": "request-review",
+        "useG1Credits": False,
+    }
 
 
 def test_agent_environment_preserves_posix_venv_symlink_parent(
@@ -1593,8 +2218,19 @@ def test_codex_reviewer_keeps_worktree_read_only_with_writable_temp(
         timeout_seconds: int,
         on_process_start: object = None,
         on_process_end: object = None,
+        on_stream_line: object = None,
+        isolate_antigravity: bool = False,
     ) -> None:
-        del stdin_text, stderr_path, control, timeout_seconds, on_process_start, on_process_end
+        del (
+            stdin_text,
+            stderr_path,
+            control,
+            timeout_seconds,
+            on_process_start,
+            on_process_end,
+            on_stream_line,
+            isolate_antigravity,
+        )
         captured["command"] = command
         captured["cwd"] = cwd
         result_path = Path(command[command.index("-o") + 1])

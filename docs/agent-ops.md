@@ -10,10 +10,10 @@ One writer owns each issue. Writers use separate branches/worktrees and may not 
 
 - Coordinator: loads only committed trusted task specs, reconciles GitHub metadata, grants durable claims, owns shared contracts, verifies evidence, and opens PRs.
 - Backend: works only in the assigned backend/bot boundary and adds tests. No workflow, lockfile, or shared migration edits unless explicitly assigned.
-- UI: reads the backend-generated OpenAPI/fixture, stays in `admin/`, and covers MOCK, loading, error, empty, responsive, keyboard, and reduced-motion behavior.
+- UI: starts only after a Codex-owned runnable skeleton exists, changes only its exact `admin/src/features/<task>/**` grant, and covers MOCK, loading, error, empty, success, responsive, keyboard, and reduced-motion behavior. Architecture, contracts, adapters, dependencies, config, CI, and runner policy remain coordinator-owned.
 - Reviewer: checks an exact HEAD SHA read-only, runs safe verification independently, and reports findings before summaries. A reviewer does not fix the author's branch or approve their own work.
 
-Antigravity UI work uses the installed Google-signed `agy` CLI in print/headless mode with stream JSON, JSON Schema, a finite timeout, sandboxing, and a separate worktree. Do not use GUI clicks, the IDE `chat` wrapper, or an internal endpoint. If headless authentication or generation fails, mark that UI issue BLOCKED and do not substitute Codex while claiming Antigravity did the work.
+Antigravity UI work uses the installed Google-signed `agy` CLI in print/headless mode with stream JSON, JSON Schema, a finite timeout, sandboxing, and a separate worktree. Each invocation gets an ignored per-run profile that sets shell/tool permission to `request-review`, terminal sandboxing, artifact review, no telemetry, no non-workspace access, and no personal-credit fallback; the runner rejects an observed `init` with another cwd, model, schema, permission mode, or a subagent event. `--mode accept-edits` is a separate documented control that permits edits inside the workspace; it does not relax shell/tool review. The post-write frozen-diff gate remains authoritative. This does not edit user-global settings. Do not use GUI clicks, the IDE `chat` wrapper, or an internal endpoint. If headless authentication, workspace trust, or generation fails, mark that UI issue BLOCKED and do not substitute Codex while claiming Antigravity did the work.
 
 ## Branch and review loop
 
@@ -21,7 +21,9 @@ Antigravity UI work uses the installed Google-signed `agy` CLI in print/headless
 2. Create `nyan/<issue>-short-name` (or an agreed branch) from the recorded base in a separate worktree.
 3. Writer changes only allowed files and runs verification inside its worktree. It cannot write
    linked-worktree Git metadata; the coordinator validates the reported pre-commit SHA and exact
-   paths, then stages and creates the scoped commit.
+   paths, rejects symlink/path escapes, applies the fixed role ceiling, then stages and creates the
+   scoped commit. Prompt/rule scope is preventive guidance; this independent actual-diff check is
+   the authoritative post-write enforcement.
 4. The runner waits for required CI on that exact HEAD without model polling, then launches a separate read-only reviewer session.
 5. `CHANGES_REQUESTED` findings are returned to the exact writer session; any new commit invalidates old CI/review and starts another gate/review cycle. Three fix rounds is the hard maximum.
 6. Every PASS stops at `READY_FOR_OWNER`. Automatic merge remains fail-closed because GitHub cannot atomically bind both reviewed head and base. The owner merges through normal branch protection; no admin bypass.
@@ -36,4 +38,4 @@ Project-scoped custom agents use the current documented `.codex/agents/*.toml` f
 
 ## Local runner controls
 
-See [orchestration.md](orchestration.md). Durable state and logs live under ignored `.nyan-runner/`; writer worktrees live in a sibling `nyan-shop-bot-nsb-040-worktrees/` directory. `pause` is cooperative for an active bounded model turn and takes effect at the next safe checkpoint. `stop` terminates the registered OS containment boundary and requires an identity-and-nonce acknowledgement before releasing the claim, including when the controller has already died. `resume` uses the persisted run and exact session ID rather than creating a new issue or PR; after a manual owner merge it can reconcile the exact reviewed head and trusted base. A matching live launcher identity always blocks a duplicate launch; an unreadable identity fails closed.
+See [orchestration.md](orchestration.md). Durable state and logs live under ignored `.nyan-runner/`; writer worktrees live in a sibling `nyan-shop-bot-nsb-040-worktrees/` directory. `watch` is a separate read-only process: it opens SQLite with `mode=ro`, can follow all runs or one worker/reviewer, and never invokes start/resume/pause/stop. `pause` is cooperative for an active bounded model turn and takes effect at the next safe checkpoint. `stop` terminates the registered OS containment boundary and requires an identity-and-nonce acknowledgement before releasing the claim, including when the controller has already died. `resume` uses the persisted run and exact session ID rather than creating a new issue or PR; after a manual owner merge it can reconcile the exact reviewed head and trusted base. A matching live launcher identity always blocks a duplicate launch; an unreadable identity fails closed.

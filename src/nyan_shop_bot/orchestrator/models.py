@@ -163,8 +163,18 @@ class TaskSpec(StrictModel):
         expected = f"https://github.com/{self.repository}/issues/{self.issue_number}"
         if self.issue_url != expected:
             raise ValueError(f"issue_url must equal {expected}")
-        if self.role == "ui" and self.worker is not WorkerKind.ANTIGRAVITY:
-            raise ValueError("UI tasks must not silently substitute another worker")
+        if (self.role == "ui") != (self.worker is WorkerKind.ANTIGRAVITY):
+            raise ValueError("UI tasks and Antigravity workers must map to each other exactly")
+        if self.worker is WorkerKind.ANTIGRAVITY and self.worker_model is None:
+            raise ValueError("Antigravity tasks must pin a discovered worker_model")
+        if self.role == "ui":
+            exact_feature_grant = re.compile(r"^admin/src/features/[a-z0-9][a-z0-9-]*/\*\*$")
+            if len(self.allowed_paths) != 1 or not exact_feature_grant.fullmatch(
+                self.allowed_paths[0]
+            ):
+                raise ValueError(
+                    "UI worker scope must be one exact admin/src/features/<slug>/** grant"
+                )
         if self.queue_eligible and self.queue_phase == "demo":
             raise ValueError("demo tasks cannot enter the automatic queue")
         if self.auto_merge_eligible and self.risk is not Risk.LOW:
@@ -248,9 +258,12 @@ class Usage(StrictModel):
     cached_input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     reasoning_output_tokens: int = Field(default=0, ge=0)
+    reported_total_tokens: int | None = Field(default=None, ge=0)
 
     @property
     def total(self) -> int:
+        if self.reported_total_tokens is not None:
+            return self.reported_total_tokens
         return self.input_tokens + self.output_tokens + self.reasoning_output_tokens
 
 
@@ -260,6 +273,10 @@ class AgentInvocation(StrictModel):
     events_path: str
     stderr_path: str
     usage: Usage
+    activity_delivered: int = Field(default=0, ge=0)
+    activity_dropped: int = Field(default=0, ge=0)
+    activity_errors: int = Field(default=0, ge=0)
+    activity_clean_shutdown: bool = True
 
 
 class CiEvidence(StrictModel):

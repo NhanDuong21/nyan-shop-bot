@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 from pydantic import BaseModel
 
+from nyan_shop_bot.orchestrator.activity import redact_text
 from nyan_shop_bot.orchestrator.models import (
     AgentInvocation,
     DesiredState,
@@ -28,7 +32,25 @@ from nyan_shop_bot.orchestrator.models import (
 ControlReader = Callable[[], DesiredState]
 ProcessStarted = Callable[[int, str, str, str], None]
 ProcessFinished = Callable[[int, str, str, str], None]
+StreamLine = Callable[[str, str, int], None]
 WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
+ACTIVITY_QUEUE_CAPACITY = 512
+SUPPORTED_ANTIGRAVITY_VERSION = "1.2.7"
+
+
+@dataclass(frozen=True)
+class ActivityDelivery:
+    """Best-effort live projection delivery; raw protocol files remain authoritative."""
+
+    delivered: int = 0
+    dropped: int = 0
+    errors: int = 0
+    clean_shutdown: bool = True
+
+    @property
+    def degraded(self) -> bool:
+        return self.dropped > 0 or self.errors > 0 or not self.clean_shutdown
+
 
 if sys.platform == "win32":
 
@@ -306,7 +328,11 @@ def _terminate_attached_process(process: subprocess.Popen[str]) -> bool:
     return True
 
 
-def sanitized_environment(isolation_dir: Path | None = None) -> dict[str, str]:
+def sanitized_environment(
+    isolation_dir: Path | None = None,
+    *,
+    isolate_antigravity: bool = False,
+) -> dict[str, str]:
     """Allow only process basics and force non-production application endpoints."""
 
     clean = {
@@ -359,6 +385,43 @@ def sanitized_environment(isolation_dir: Path | None = None) -> dict[str, str]:
                 "TMPDIR": str(temporary_dir),
             }
         )
+        if isolate_antigravity:
+            clean.pop("CODEX_HOME", None)
+            profile = isolation_dir / "antigravity-profile"
+            settings_dir = profile / ".gemini" / "antigravity-cli"
+            settings_dir.mkdir(parents=True, exist_ok=True)
+            (settings_dir / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "allowNonWorkspaceAccess": False,
+                        "artifactReviewPolicy": "asks-for-review",
+                        "enableTelemetry": False,
+                        "enableTerminalSandbox": True,
+                        "toolPermission": "request-review",
+                        "useG1Credits": False,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            roaming = profile / "AppData" / "Roaming"
+            local = profile / "AppData" / "Local"
+            roaming.mkdir(parents=True, exist_ok=True)
+            local.mkdir(parents=True, exist_ok=True)
+            clean.update(
+                {
+                    "APPDATA": str(roaming),
+                    "HOME": str(profile),
+                    "LOCALAPPDATA": str(local),
+                    "USERPROFILE": str(profile),
+                    "XDG_CACHE_HOME": str(profile / ".cache"),
+                    "XDG_CONFIG_HOME": str(profile / ".config"),
+                    "XDG_DATA_HOME": str(profile / ".local" / "share"),
+                }
+            )
+            if os.name == "nt":
+                clean["HOMEDRIVE"] = profile.drive
+                clean["HOMEPATH"] = str(profile)[len(profile.drive) :]
     return clean
 
 
@@ -407,7 +470,9 @@ def _run_monitored(
     timeout_seconds: int,
     on_process_start: ProcessStarted | None = None,
     on_process_end: ProcessFinished | None = None,
-) -> None:
+    on_stream_line: StreamLine | None = None,
+    isolate_antigravity: bool = False,
+) -> ActivityDelivery:
     launch_stem = stdout_path.stem
     launch_spec = stdout_path.parent / f"{launch_stem}.launch.json"
     launch_stdin = stdout_path.parent / f"{launch_stem}.stdin.txt"
@@ -450,6 +515,70 @@ def _run_monitored(
         containment_nonce,
     ]
     started = time.monotonic()
+    activity_queue: queue.Queue[tuple[str, str, int]] = queue.Queue(maxsize=ACTIVITY_QUEUE_CAPACITY)
+    activity_stop = threading.Event()
+    tail_stop = threading.Event()
+    finish_called = threading.Event()
+    activity_lock = threading.Lock()
+    activity_counts = {"delivered": 0, "dropped": 0, "errors": 0}
+
+    def count(name: str, amount: int = 1) -> None:
+        with activity_lock:
+            activity_counts[name] += amount
+
+    def enqueue_activity(channel: str, line: str, sequence: int) -> None:
+        try:
+            activity_queue.put_nowait((channel, line, sequence))
+        except queue.Full:
+            count("dropped")
+
+    def dispatch_activity() -> None:
+        while not activity_stop.is_set():
+            try:
+                item = activity_queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if activity_stop.is_set():
+                count("dropped")
+                return
+            if on_stream_line is None:
+                count("delivered")
+                continue
+            try:
+                on_stream_line(*item)
+                count("delivered")
+            except BaseException:
+                # Visibility is deliberately fail-open. The raw stream is still durable and
+                # service-level catch-up can ingest it after the child exits or on resume.
+                count("errors")
+
+    def tail_output(path: Path, channel: str, process: subprocess.Popen[str]) -> None:
+        buffer = ""
+        sequence = 0
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as stream:
+                while not tail_stop.is_set():
+                    chunk = stream.read(65_536)
+                    if chunk:
+                        buffer += chunk
+                        lines = buffer.splitlines(keepends=True)
+                        buffer = ""
+                        for line in lines:
+                            if line.endswith(("\n", "\r")):
+                                sequence += 1
+                                enqueue_activity(channel, line, sequence)
+                            else:
+                                buffer = line
+                    elif process.poll() is not None:
+                        if buffer:
+                            sequence += 1
+                            enqueue_activity(channel, buffer, sequence)
+                        return
+                    else:
+                        time.sleep(0.02)
+        except BaseException:
+            count("errors")
+
     with (
         stdout_path.open("w", encoding="utf-8") as stdout_file,
         stderr_path.open("w", encoding="utf-8") as stderr_file,
@@ -462,13 +591,80 @@ def _run_monitored(
             stderr=stderr_file,
             text=True,
             encoding="utf-8",
-            env=sanitized_environment(stdout_path.parent / "isolated-environment"),
+            env=sanitized_environment(
+                stdout_path.parent / "isolated-environment",
+                isolate_antigravity=isolate_antigravity,
+            ),
             creationflags=WINDOWS_CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             start_new_session=os.name != "nt",
         )
+        dispatcher = threading.Thread(
+            target=dispatch_activity,
+            name=f"{launch_stem}-activity-dispatch",
+            daemon=True,
+        )
+        stdout_tailer = threading.Thread(
+            target=tail_output,
+            args=(stdout_path, "stdout", process),
+            name=f"{launch_stem}-stdout-tail",
+            daemon=True,
+        )
+        stderr_tailer = threading.Thread(
+            target=tail_output,
+            args=(stderr_path, "stderr", process),
+            name=f"{launch_stem}-stderr-tail",
+            daemon=True,
+        )
+        dispatcher.start()
+        stdout_tailer.start()
+        stderr_tailer.start()
+
+        def finish_activity() -> ActivityDelivery:
+            if finish_called.is_set():
+                with activity_lock:
+                    return ActivityDelivery(
+                        delivered=activity_counts["delivered"],
+                        dropped=activity_counts["dropped"],
+                        errors=activity_counts["errors"],
+                        clean_shutdown=not any(
+                            thread.is_alive()
+                            for thread in (stdout_tailer, stderr_tailer, dispatcher)
+                        ),
+                    )
+            finish_called.set()
+            deadline = time.monotonic() + 0.75
+            for tailer in (stdout_tailer, stderr_tailer):
+                tailer.join(timeout=max(0.0, deadline - time.monotonic()))
+            if stdout_tailer.is_alive() or stderr_tailer.is_alive():
+                tail_stop.set()
+                count("errors")
+            while (
+                not activity_queue.empty() and dispatcher.is_alive() and time.monotonic() < deadline
+            ):
+                dispatcher.join(timeout=min(0.05, max(0.0, deadline - time.monotonic())))
+            if not activity_queue.empty():
+                count("dropped", activity_queue.qsize())
+            activity_stop.set()
+            dispatcher.join(timeout=0.1)
+            clean_shutdown = not any(
+                thread.is_alive() for thread in (stdout_tailer, stderr_tailer, dispatcher)
+            )
+            if not clean_shutdown:
+                count("errors")
+            with activity_lock:
+                report = ActivityDelivery(
+                    delivered=activity_counts["delivered"],
+                    dropped=activity_counts["dropped"],
+                    errors=activity_counts["errors"],
+                    clean_shutdown=clean_shutdown,
+                )
+            return report
+
         launcher_identity = process_identity(process.pid)
         if launcher_identity is None:
             process.kill()
+            process.wait(timeout=5)
+            finish_activity()
             raise RuntimeError("could not capture launcher creation identity")
         process_attached = False
         containment_confirmed = False
@@ -526,32 +722,38 @@ def _run_monitored(
             containment_confirmed = True
             if process.returncode != 0:
                 tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
-                raise RuntimeError(f"agent exited {process.returncode}: {tail}")
-        finally:
-            if process.poll() is None:
-                _terminate_attached_process(process)
-            if process_attached and process.poll() is not None and not containment_confirmed:
-                containment_deadline = time.monotonic() + 5
-                while time.monotonic() < containment_deadline:
-                    if (
-                        launch_complete.is_file()
-                        and launch_complete.read_text(encoding="utf-8") == containment_nonce
-                    ):
-                        containment_confirmed = True
-                        break
-                    time.sleep(0.02)
-            if (
-                process_attached
-                and containment_confirmed
-                and process.poll() is not None
-                and on_process_end is not None
-            ):
-                on_process_end(
-                    process.pid,
-                    launcher_identity,
-                    str(launch_complete),
-                    containment_nonce,
+                raise RuntimeError(
+                    f"agent exited {process.returncode}: {redact_text(tail, limit=4000)}"
                 )
+        finally:
+            try:
+                if process.poll() is None:
+                    _terminate_attached_process(process)
+                if process_attached and process.poll() is not None and not containment_confirmed:
+                    containment_deadline = time.monotonic() + 5
+                    while time.monotonic() < containment_deadline:
+                        if (
+                            launch_complete.is_file()
+                            and launch_complete.read_text(encoding="utf-8") == containment_nonce
+                        ):
+                            containment_confirmed = True
+                            break
+                        time.sleep(0.02)
+                if (
+                    process_attached
+                    and containment_confirmed
+                    and process.poll() is not None
+                    and on_process_end is not None
+                ):
+                    on_process_end(
+                        process.pid,
+                        launcher_identity,
+                        str(launch_complete),
+                        containment_nonce,
+                    )
+            finally:
+                activity_report = finish_activity()
+    return activity_report
 
 
 def _load_final[ResultModel: BaseModel](path: Path, model: type[ResultModel]) -> ResultModel:
@@ -616,6 +818,7 @@ class CodexAdapter:
         model: str | None = None,
         on_process_start: ProcessStarted | None = None,
         on_process_end: ProcessFinished | None = None,
+        on_stream_line: StreamLine | None = None,
     ) -> tuple[ResultModel, AgentInvocation]:
         run_dir.mkdir(parents=True, exist_ok=True)
         schema_path = run_dir / f"{name}.schema.json"
@@ -658,7 +861,7 @@ class CodexAdapter:
             command.append(resume_session_id)
         command.append("-")
 
-        _run_monitored(
+        activity = _run_monitored(
             command,
             cwd=worktree,
             stdin_text=prompt,
@@ -668,7 +871,10 @@ class CodexAdapter:
             timeout_seconds=timeout_seconds,
             on_process_start=on_process_start,
             on_process_end=on_process_end,
+            on_stream_line=on_stream_line,
         )
+        if activity is None:  # compatibility with narrow unit-test fakes
+            activity = ActivityDelivery()
         result = _load_final(result_path, result_model)
         session_id, usage = _parse_codex_events(events_path)
         if resume_session_id is not None and session_id != resume_session_id:
@@ -679,6 +885,10 @@ class CodexAdapter:
             events_path=str(events_path),
             stderr_path=str(stderr_path),
             usage=usage,
+            activity_delivered=activity.delivered,
+            activity_dropped=activity.dropped,
+            activity_errors=activity.errors,
+            activity_clean_shutdown=activity.clean_shutdown,
         )
         return result, invocation
 
@@ -695,6 +905,7 @@ class CodexAdapter:
         model: str | None = None,
         on_process_start: ProcessStarted | None = None,
         on_process_end: ProcessFinished | None = None,
+        on_stream_line: StreamLine | None = None,
     ) -> tuple[WorkerResult, AgentInvocation]:
         return self.invoke(
             worktree=worktree,
@@ -709,6 +920,7 @@ class CodexAdapter:
             model=model,
             on_process_start=on_process_start,
             on_process_end=on_process_end,
+            on_stream_line=on_stream_line,
         )
 
     def reviewer(
@@ -723,6 +935,7 @@ class CodexAdapter:
         model: str | None = None,
         on_process_start: ProcessStarted | None = None,
         on_process_end: ProcessFinished | None = None,
+        on_stream_line: StreamLine | None = None,
     ) -> tuple[ReviewResult, AgentInvocation]:
         return self.invoke(
             worktree=worktree,
@@ -736,6 +949,7 @@ class CodexAdapter:
             model=model,
             on_process_start=on_process_start,
             on_process_end=on_process_end,
+            on_stream_line=on_stream_line,
         )
 
 
@@ -748,10 +962,10 @@ def _parse_antigravity_events(path: Path) -> tuple[str, Usage, dict[str, Any]]:
             continue
         try:
             event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Antigravity stdout contained malformed JSON") from error
         if not isinstance(event, dict):
-            continue
+            raise RuntimeError("Antigravity stdout contained a non-object JSON value")
         if isinstance(event.get("conversation_id"), str):
             conversation_id = str(event["conversation_id"])
         if event.get("event") == "result" and isinstance(event.get("result"), dict):
@@ -767,6 +981,9 @@ def _parse_antigravity_events(path: Path) -> tuple[str, Usage, dict[str, Any]]:
                     cached_input_tokens=int(raw_usage.get("cache_read_tokens", 0)),
                     output_tokens=int(raw_usage.get("output_tokens", 0)),
                     reasoning_output_tokens=int(raw_usage.get("thinking_tokens", 0)),
+                    reported_total_tokens=(
+                        int(raw_usage["total_tokens"]) if "total_tokens" in raw_usage else None
+                    ),
                 )
             raw_output = result.get("structured_output")
             if isinstance(raw_output, dict):
@@ -778,6 +995,74 @@ def _parse_antigravity_events(path: Path) -> tuple[str, Usage, dict[str, Any]]:
     return conversation_id, usage, structured_output
 
 
+def _validate_antigravity_context(
+    path: Path,
+    *,
+    worktree: Path,
+    expected_model: str | None,
+    expected_schema: dict[str, Any],
+) -> None:
+    """Reject a write run whose observed context is broader or different than requested."""
+
+    init_events: list[dict[str, Any]] = []
+    result_events: list[dict[str, Any]] = []
+    step_conversations: list[object] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Antigravity stdout contained malformed JSON") from error
+        if not isinstance(event, dict):
+            raise RuntimeError("Antigravity stdout contained a non-object JSON value")
+        step_update = event.get("step_update")
+        if isinstance(step_update, dict):
+            step_conversations.append(step_update.get("conversation_id"))
+            if step_update.get("subagent_info") is not None:
+                raise RuntimeError("Antigravity UI writer attempted to delegate to a subagent")
+        if event.get("event") == "init":
+            init_events.append(event)
+        elif event.get("event") == "result":
+            result_events.append(event)
+    if len(init_events) != 1 or len(result_events) != 1:
+        raise RuntimeError("Antigravity stream must contain exactly one init and one result")
+    init_event = init_events[0]
+    result_event = result_events[0]
+    conversation_id = init_event.get("conversation_id")
+    result = result_event.get("result")
+    if not isinstance(conversation_id, str) or not conversation_id:
+        raise RuntimeError("Antigravity init omitted its conversation ID")
+    try:
+        uuid.UUID(conversation_id)
+    except ValueError as error:
+        raise RuntimeError("Antigravity conversation ID is not a UUID") from error
+    if not isinstance(result, dict) or result.get("conversation_id") != conversation_id:
+        raise RuntimeError("Antigravity result conversation did not match init")
+    if any(value != conversation_id for value in step_conversations):
+        raise RuntimeError("Antigravity step conversation did not match init")
+    init = init_event.get("init")
+    if not isinstance(init, dict):
+        raise RuntimeError("Antigravity init payload is missing")
+    observed_cwd = init.get("cwd")
+    if not isinstance(observed_cwd, str) or os.path.normcase(
+        str(Path(observed_cwd).resolve(strict=False))
+    ) != os.path.normcase(str(worktree.resolve())):
+        raise RuntimeError("Antigravity observed a different workspace root")
+    permission_mode = init.get("permission_mode")
+    if permission_mode not in {"request-review", "strict"}:
+        raise RuntimeError(
+            f"Antigravity permission mode is not least-privilege: {permission_mode!r}"
+        )
+    if expected_model is not None and init.get("model") != expected_model:
+        raise RuntimeError("Antigravity did not use the pinned task model")
+    if init.get("json_schema") != expected_schema or result.get("json_schema") != expected_schema:
+        raise RuntimeError("Antigravity did not bind the exact requested JSON schema")
+    raw_usage = result.get("usage")
+    if not isinstance(raw_usage, dict) or int(raw_usage.get("total_tokens", 0)) <= 0:
+        raise RuntimeError("Antigravity generation did not report positive token usage")
+
+
 class AntigravityAdapter:
     """Google agy 1.2.7 print-mode adapter; no GUI or internal endpoint automation."""
 
@@ -785,6 +1070,22 @@ class AntigravityAdapter:
         executable = shutil.which("agy")
         if executable is None:
             raise RuntimeError("Antigravity agy CLI is not installed")
+        completed = subprocess.run(
+            (executable, "--version"),
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=sanitized_environment(),
+            timeout=10,
+        )
+        observed_version = completed.stdout.strip()
+        if completed.returncode or observed_version != SUPPORTED_ANTIGRAVITY_VERSION:
+            raise RuntimeError(
+                "Antigravity CLI version changed; revalidate its stream/permission contract "
+                f"before use (expected {SUPPORTED_ANTIGRAVITY_VERSION}, observed "
+                f"{observed_version or 'unavailable'})"
+            )
         self.executable = executable
 
     def worker(
@@ -800,6 +1101,7 @@ class AntigravityAdapter:
         model: str | None = None,
         on_process_start: ProcessStarted | None = None,
         on_process_end: ProcessFinished | None = None,
+        on_stream_line: StreamLine | None = None,
     ) -> tuple[WorkerResult, AgentInvocation]:
         run_dir.mkdir(parents=True, exist_ok=True)
         schema_path = run_dir / f"{name}.schema.json"
@@ -834,7 +1136,7 @@ class AntigravityAdapter:
                 f"{timeout_minutes}m",
             )
         )
-        _run_monitored(
+        activity = _run_monitored(
             command,
             cwd=worktree,
             stdin_text=None,
@@ -844,6 +1146,16 @@ class AntigravityAdapter:
             timeout_seconds=timeout_seconds,
             on_process_start=on_process_start,
             on_process_end=on_process_end,
+            on_stream_line=on_stream_line,
+            isolate_antigravity=True,
+        )
+        if activity is None:  # compatibility with narrow unit-test fakes
+            activity = ActivityDelivery()
+        _validate_antigravity_context(
+            events_path,
+            worktree=worktree,
+            expected_model=model,
+            expected_schema=WorkerResult.model_json_schema(),
         )
         session_id, usage, raw_output = _parse_antigravity_events(events_path)
         if resume_session_id is not None and session_id != resume_session_id:
@@ -856,6 +1168,10 @@ class AntigravityAdapter:
             events_path=str(events_path),
             stderr_path=str(stderr_path),
             usage=usage,
+            activity_delivered=activity.delivered,
+            activity_dropped=activity.dropped,
+            activity_errors=activity.errors,
+            activity_clean_shutdown=activity.clean_shutdown,
         )
         return result, invocation
 

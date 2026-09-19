@@ -48,8 +48,67 @@ def test_task_spec_rejects_silent_ui_worker_substitution() -> None:
     value = task_data()
     value.update({"role": "ui", "worker": "codex"})
 
-    with pytest.raises(ValidationError, match="must not silently substitute"):
+    with pytest.raises(ValidationError, match="map to each other exactly"):
         TaskSpec.model_validate(value)
+
+
+def test_ui_task_rejects_admin_wide_scope_before_adapter_launch() -> None:
+    value = task_data()
+    value.update(
+        {
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/**"],
+        }
+    )
+
+    with pytest.raises(ValidationError, match="admin/src/features"):
+        TaskSpec.model_validate(value)
+
+
+@pytest.mark.parametrize(
+    "allowed_paths",
+    [
+        ["admin/src/features/**"],
+        ["admin/src/features/*/**"],
+        [
+            "admin/src/features/catalog-proof/**",
+            "admin/src/features/second-proof/**",
+        ],
+    ],
+)
+def test_ui_task_rejects_broad_or_multi_root_grants(allowed_paths: list[str]) -> None:
+    value = task_data()
+    value.update(
+        {
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": allowed_paths,
+        }
+    )
+
+    with pytest.raises(ValidationError, match="one exact"):
+        TaskSpec.model_validate(value)
+
+
+def test_antigravity_worker_requires_ui_role_and_pinned_model() -> None:
+    backend = task_data()
+    backend.update({"worker": "antigravity", "worker_model": "gemini-3.8-flash-low"})
+    with pytest.raises(ValidationError, match="map to each other exactly"):
+        TaskSpec.model_validate(backend)
+
+    unpinned = task_data()
+    unpinned.update(
+        {
+            "worker": "antigravity",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/catalog-proof/**"],
+        }
+    )
+    with pytest.raises(ValidationError, match="pin a discovered"):
+        TaskSpec.model_validate(unpinned)
 
 
 def test_task_spec_rejects_untrusted_path_escape() -> None:

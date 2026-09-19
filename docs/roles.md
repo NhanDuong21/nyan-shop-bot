@@ -10,7 +10,7 @@ Input: claimed issue plus allowed modules. Output: code, migrations only when as
 
 ## UI writer
 
-Input: claimed UI issue, generated backend OpenAPI/fixtures, and explicit repository instructions. The automation worker is the verified `agy` print/headless CLI, not GUI clicking or an internal endpoint; if it cannot run, report BLOCKED without substitution. Output: code under `admin/`, interaction/accessibility evidence, and HEAD SHA. Supplier keys and delivery credentials never enter browser code.
+Input: claimed UI issue, a Codex-owned mounted frontend skeleton, generated backend OpenAPI/fixtures, and explicit repository instructions. The automation worker is the verified `agy` print/headless CLI, not GUI clicking or an internal endpoint; if it cannot run, report BLOCKED without substitution. Output: code only under the single literal `admin/src/features/<task>/**` grant, interaction/accessibility evidence, and HEAD SHA. It never creates subagents. Supplier keys and delivery credentials never enter browser code.
 
 ## Reviewer
 

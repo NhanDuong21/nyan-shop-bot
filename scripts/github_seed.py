@@ -231,7 +231,7 @@ ISSUES = (
         (
             "Frontend unit/component tests, accessibility checks, typecheck, lint, and production build.",
         ),
-        ("admin/** only; generated client/fixture path must be granted by coordinator"),
+        ("admin/src/features/admin-dashboard/**",),
     ),
     IssueSpec(
         "NSB-015",
@@ -421,6 +421,25 @@ ISSUES = (
         ("docs/runner-demo.md",),
     ),
 )
+
+
+def validate_issue_specs() -> None:
+    """Catch accidental string-as-sequence issue fields before any GitHub mutation."""
+
+    tuple_fields = (
+        "areas",
+        "dependencies",
+        "scope",
+        "out_of_scope",
+        "acceptance",
+        "tests",
+        "files",
+    )
+    for spec in ISSUES:
+        for field in tuple_fields:
+            value = getattr(spec, field)
+            if not isinstance(value, tuple) or any(not isinstance(item, str) for item in value):
+                raise TypeError(f"{spec.code}.{field} must be a tuple of strings")
 
 
 def gh(*arguments: str, input_value: dict[str, Any] | None = None) -> Any:
@@ -675,6 +694,8 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="Apply changes to GitHub")
     parser.add_argument("--run-id", default="phase0-20260919-local")
     args = parser.parse_args()
+
+    validate_issue_specs()
 
     base_sha = git_value("merge-base", "HEAD", "origin/main")
     branch = git_value("branch", "--show-current")

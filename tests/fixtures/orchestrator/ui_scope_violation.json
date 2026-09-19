@@ -1,0 +1,19 @@
+{
+  "status": "SUCCESS",
+  "issue": 6,
+  "branch": "nyan/nsb-014-ui-scope-fixture",
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "changed_files": [
+    "admin/package.json",
+    "admin/src/features/ui-proof/CatalogPanel.tsx"
+  ],
+  "tests": [
+    {
+      "command": "npm test",
+      "result": "NOT_RUN",
+      "evidence": "The fixture simulates a permission-denied UI worker command."
+    }
+  ],
+  "blockers": [],
+  "summary": "Synthetic worker result containing one forbidden manifest change."
+}

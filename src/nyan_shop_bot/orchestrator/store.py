@@ -27,6 +27,7 @@ RUN_FIELDS = {
     "review_started_head_sha",
     "worker_accounted_events_sha256",
     "reviewer_accounted_events_sha256",
+    "worker_cumulative_tokens",
     "worker_session_id",
     "reviewer_session_id",
     "head_sha",
@@ -125,6 +126,7 @@ class StateStore:
                     review_started_head_sha TEXT,
                     worker_accounted_events_sha256 TEXT,
                     reviewer_accounted_events_sha256 TEXT,
+                    worker_cumulative_tokens INTEGER NOT NULL DEFAULT 0,
                     last_error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -147,11 +149,13 @@ class StateStore:
                     run_id TEXT NOT NULL REFERENCES runs(run_id),
                     created_at TEXT NOT NULL,
                     kind TEXT NOT NULL,
-                    payload_json TEXT NOT NULL
+                    payload_json TEXT NOT NULL,
+                    source_key TEXT
                 );
                 """
             )
             self._ensure_run_columns(connection)
+            self._ensure_event_columns(connection)
 
     @staticmethod
     def _ensure_run_columns(connection: sqlite3.Connection) -> None:
@@ -176,10 +180,25 @@ class StateStore:
             "review_started_head_sha": "TEXT",
             "worker_accounted_events_sha256": "TEXT",
             "reviewer_accounted_events_sha256": "TEXT",
+            "worker_cumulative_tokens": "INTEGER NOT NULL DEFAULT 0",
         }
         for name, kind in additions.items():
             if name not in columns:
                 connection.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
+
+    @staticmethod
+    def _ensure_event_columns(connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(events)").fetchall()
+        }
+        if "source_key" not in columns:
+            connection.execute("ALTER TABLE events ADD COLUMN source_key TEXT")
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS one_event_per_stream_position
+            ON events(run_id, source_key) WHERE source_key IS NOT NULL
+            """
+        )
 
     def create_run(
         self,
@@ -476,6 +495,55 @@ class StateStore:
     def append_event(self, run_id: str, kind: str, payload: dict[str, object]) -> None:
         with self.connect() as connection:
             self._append_event(connection, run_id, kind, payload)
+
+    def append_activity_event(
+        self,
+        run_id: str,
+        payload: dict[str, object],
+        *,
+        source_key: str,
+        session_field: str | None = None,
+        session_id: str | None = None,
+    ) -> bool:
+        """Insert one idempotent live event with a short lock budget."""
+
+        if session_field not in {None, "worker_session_id", "reviewer_session_id"}:
+            raise ValueError("invalid live session field")
+        connection = sqlite3.connect(self.db_path, timeout=0.1)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 100")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            if session_field is not None and session_id is not None:
+                row = connection.execute(
+                    f"SELECT {session_field} FROM runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                if row is None:
+                    raise KeyError(f"unknown run: {run_id}")
+                persisted = row[0]
+                if persisted is not None and str(persisted) != session_id:
+                    raise RuntimeError("live stream changed the persisted session")
+                if persisted is None:
+                    connection.execute(
+                        f"UPDATE runs SET {session_field} = ?, updated_at = ? WHERE run_id = ?",
+                        (session_id, utc_now(), run_id),
+                    )
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO events(
+                    run_id, created_at, kind, payload_json, source_key
+                ) VALUES (?, ?, 'agent.activity', ?, ?)
+                """,
+                (run_id, utc_now(), json.dumps(payload, sort_keys=True), source_key),
+            )
+            connection.commit()
+            return cursor.rowcount == 1
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     @staticmethod
     def _append_event(

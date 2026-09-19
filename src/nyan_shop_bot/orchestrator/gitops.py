@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
 from nyan_shop_bot.orchestrator.models import SHA_PATTERN, TaskSpec, WorkerResult, WorkerStatus
-from nyan_shop_bot.orchestrator.policy import paths_are_allowed
+from nyan_shop_bot.orchestrator.policy import forbidden_ui_worker_paths, paths_are_allowed
 
 TimeoutReader = Callable[[], int]
 
@@ -18,6 +20,7 @@ def git(
     check: bool = True,
     timeout_seconds: int = 60,
     timeout_reader: TimeoutReader | None = None,
+    raw: bool = False,
 ) -> str:
     command_timeout = max(1, timeout_seconds)
     if timeout_reader is not None:
@@ -37,7 +40,11 @@ def git(
     if check and completed.returncode:
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise RuntimeError(f"git {' '.join(arguments)} failed: {detail}")
-    return completed.stdout.strip()
+    return completed.stdout if raw else completed.stdout.strip()
+
+
+def _nul_paths(output: str) -> list[str]:
+    return sorted(value.replace("\\", "/") for value in output.split("\0") if value)
 
 
 def resolve_sha(
@@ -192,11 +199,13 @@ def changed_files(
         worktree,
         "diff",
         "--name-only",
+        "-z",
         f"{base_sha}...{head}",
         timeout_seconds=timeout_seconds,
         timeout_reader=timeout_reader,
+        raw=True,
     )
-    return sorted(line.strip().replace("\\", "/") for line in output.splitlines() if line.strip())
+    return _nul_paths(output)
 
 
 def pending_files(
@@ -209,34 +218,142 @@ def pending_files(
         worktree,
         "diff",
         "--name-only",
+        "-z",
         "HEAD",
         timeout_seconds=timeout_seconds,
         timeout_reader=timeout_reader,
+        raw=True,
     )
     staged = git(
         worktree,
         "diff",
         "--cached",
         "--name-only",
+        "-z",
         timeout_seconds=timeout_seconds,
         timeout_reader=timeout_reader,
+        raw=True,
     )
     untracked = git(
         worktree,
         "ls-files",
         "--others",
         "--exclude-standard",
+        "-z",
         timeout_seconds=timeout_seconds,
         timeout_reader=timeout_reader,
+        raw=True,
     )
-    return sorted(
-        {
-            line.strip().replace("\\", "/")
-            for output in (tracked, staged, untracked)
-            for line in output.splitlines()
-            if line.strip()
-        }
+    return sorted({path for output in (tracked, staged, untracked) for path in _nul_paths(output)})
+
+
+def _is_reparse_component(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if callable(is_junction) and is_junction():
+        return True
+    try:
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0))
+    except (FileNotFoundError, OSError):
+        return False
+    return bool(attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)))
+
+
+def validate_changed_path_containment(worktree: Path, changed_files: list[str]) -> None:
+    """Reject symlink/path tricks before the runner stages a worker change."""
+
+    root = worktree.resolve()
+    for relative in changed_files:
+        candidate = root / relative
+        try:
+            candidate.resolve(strict=False).relative_to(root)
+        except ValueError as error:
+            raise RuntimeError(f"worker path escapes its worktree: {relative}") from error
+        current = candidate
+        while current != root and current != current.parent:
+            if _is_reparse_component(current):
+                raise RuntimeError(f"worker path uses a symlink or reparse point: {relative}")
+            current = current.parent
+
+
+def validate_ui_workspace_control_files(worktree: Path, task: TaskSpec) -> None:
+    """Detect ignored or untracked policy/config files hidden inside a UI grant."""
+
+    if task.role != "ui":
+        return
+    feature_root = worktree / task.allowed_paths[0][:-3]
+    if not feature_root.exists():
+        return
+    if _is_reparse_component(feature_root):
+        raise RuntimeError("UI feature root is a symlink or reparse point")
+    suspicious: list[str] = []
+    for current_root, directories, files in os.walk(feature_root, followlinks=False):
+        current = Path(current_root)
+        for directory in list(directories):
+            candidate = current / directory
+            relative = candidate.relative_to(worktree).as_posix()
+            if _is_reparse_component(candidate):
+                suspicious.append(relative)
+                directories.remove(directory)
+                continue
+            if forbidden_ui_worker_paths([f"{relative}/placeholder"]):
+                suspicious.append(relative)
+                directories.remove(directory)
+        for filename in files:
+            candidate = current / filename
+            relative = candidate.relative_to(worktree).as_posix()
+            if _is_reparse_component(candidate) or forbidden_ui_worker_paths([relative]):
+                suspicious.append(relative)
+    if suspicious:
+        raise RuntimeError(
+            f"UI workspace contains coordinator-owned or reparse files: {sorted(suspicious)}"
+        )
+
+
+def validate_ui_prelaunch_workspace(
+    worktree: Path,
+    task: TaskSpec,
+    *,
+    timeout_seconds: int = 60,
+    timeout_reader: TimeoutReader | None = None,
+) -> None:
+    """Require a real, tracked Codex skeleton below non-reparse ancestors."""
+
+    if task.role != "ui":
+        return
+    root = worktree.resolve()
+    feature_root = worktree / task.allowed_paths[0][:-3]
+    current = worktree
+    for part in feature_root.relative_to(worktree).parts:
+        current /= part
+        if current.exists() and _is_reparse_component(current):
+            raise RuntimeError(f"UI skeleton ancestor is a symlink or reparse point: {part}")
+    try:
+        feature_root.resolve(strict=True).relative_to(root)
+    except (FileNotFoundError, ValueError) as error:
+        raise RuntimeError(
+            "UI feature root must be a real directory inside the worktree"
+        ) from error
+    if not feature_root.is_dir():
+        raise RuntimeError("UI feature root must be a real directory inside the worktree")
+    relative_root = feature_root.relative_to(worktree).as_posix()
+    tracked = _nul_paths(
+        git(
+            worktree,
+            "ls-files",
+            "-z",
+            "--",
+            f"{relative_root}/",
+            timeout_seconds=timeout_seconds,
+            timeout_reader=timeout_reader,
+            raw=True,
+        )
     )
+    if not tracked:
+        raise RuntimeError("UI feature root has no tracked Codex-owned starter file")
+    validate_changed_path_containment(worktree, tracked)
+    validate_ui_workspace_control_files(worktree, task)
 
 
 def validate_and_commit_worker_changes(
@@ -277,12 +394,17 @@ def validate_and_commit_worker_changes(
         timeout_seconds=timeout_seconds,
         timeout_reader=timeout_reader,
     )
+    validate_ui_workspace_control_files(worktree, task)
     if not actual_files:
         raise RuntimeError("worker reported success without scoped working-tree changes")
     if sorted(result.changed_files) != actual_files:
         raise RuntimeError("worker changed_files does not match the working tree")
+    validate_changed_path_containment(worktree, actual_files)
     if not paths_are_allowed(actual_files, task.allowed_paths):
         raise RuntimeError(f"worker changed files outside allowed scope: {actual_files}")
+    forbidden_ui = forbidden_ui_worker_paths(actual_files) if task.role == "ui" else []
+    if forbidden_ui:
+        raise RuntimeError(f"UI worker changed coordinator-owned files: {forbidden_ui}")
     git(
         worktree,
         "add",
@@ -291,17 +413,17 @@ def validate_and_commit_worker_changes(
         timeout_seconds=timeout_seconds,
         timeout_reader=timeout_reader,
     )
-    staged_files = sorted(
-        line.strip().replace("\\", "/")
-        for line in git(
+    staged_files = _nul_paths(
+        git(
             worktree,
             "diff",
             "--cached",
             "--name-only",
+            "-z",
             timeout_seconds=timeout_seconds,
             timeout_reader=timeout_reader,
-        ).splitlines()
-        if line.strip()
+            raw=True,
+        )
     )
     if staged_files != actual_files:
         raise RuntimeError("runner staging did not match the validated worker paths")
@@ -401,6 +523,7 @@ def validate_recovered_runner_commit(
         timeout_reader=timeout_reader,
     ):
         raise RuntimeError("recovered runner commit did not leave a clean worktree")
+    validate_ui_workspace_control_files(worktree, task)
     files = changed_files(
         worktree,
         expected_parent,
@@ -408,8 +531,12 @@ def validate_recovered_runner_commit(
         timeout_seconds=timeout_seconds,
         timeout_reader=timeout_reader,
     )
+    validate_changed_path_containment(worktree, files)
     if files != sorted(result.changed_files) or not paths_are_allowed(files, task.allowed_paths):
         raise RuntimeError("recovered commit paths do not match the validated worker result")
+    forbidden_ui = forbidden_ui_worker_paths(files) if task.role == "ui" else []
+    if forbidden_ui:
+        raise RuntimeError(f"recovered UI commit changed coordinator-owned files: {forbidden_ui}")
     return current_head, files
 
 

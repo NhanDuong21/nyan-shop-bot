@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
 from nyan_shop_bot.orchestrator.launcher import spawn_background
 from nyan_shop_bot.orchestrator.models import DesiredState
 from nyan_shop_bot.orchestrator.service import AUTO_MERGE_BLOCKER, RunnerService, process_alive
+from nyan_shop_bot.orchestrator.viewer import watch_activity
 
 
 def _service(root: Path, state_dir: Path | None) -> RunnerService:
@@ -65,6 +67,20 @@ def build_parser() -> argparse.ArgumentParser:
         control = subparsers.add_parser(name)
         control.add_argument("--run-id")
 
+    watch = subparsers.add_parser(
+        "watch",
+        help="Read-only live activity viewer; never starts or controls a worker",
+    )
+    watch_target = watch.add_mutually_exclusive_group(required=True)
+    watch_target.add_argument("--run-id")
+    watch_target.add_argument("--all", action="store_true", dest="watch_all")
+    watch.add_argument("--role", choices=("all", "runner", "worker", "reviewer"), default="all")
+    watch.add_argument("--history", type=int, default=30)
+    watch.add_argument("--after-cursor", type=int)
+    watch.add_argument("--poll-seconds", type=float, default=0.25)
+    watch.add_argument("--idle-seconds", type=float, default=15.0)
+    watch.add_argument("--once", action="store_true", help="Print a snapshot and exit")
+
     authorize = subparsers.add_parser(
         "authorize-auto-merge",
         help="Fail-closed diagnostic; atomic head-and-base merge binding is unavailable",
@@ -81,6 +97,27 @@ def main(arguments: list[str] | None = None) -> int:
     args = build_parser().parse_args(arguments)
     root = args.root.resolve()
     state_dir = args.state_dir.resolve() if args.state_dir else None
+
+    if args.command == "watch":
+        if args.history < 0:
+            raise SystemExit("--history must be zero or greater")
+        if args.after_cursor is not None and args.after_cursor < 0:
+            raise SystemExit("--after-cursor must be zero or greater")
+        if args.poll_seconds <= 0 or args.idle_seconds <= 0:
+            raise SystemExit("viewer intervals must be positive")
+        watch_activity(
+            state_dir or root / ".nyan-runner",
+            run_id=None if args.watch_all else args.run_id,
+            role=args.role,
+            history=args.history,
+            after_cursor=args.after_cursor,
+            follow=not args.once,
+            poll_seconds=args.poll_seconds,
+            idle_seconds=args.idle_seconds,
+            output=sys.stdout,
+        )
+        return 0
+
     service = _service(root, state_dir)
 
     if args.command == "start":
