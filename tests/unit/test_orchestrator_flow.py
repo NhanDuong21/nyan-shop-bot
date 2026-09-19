@@ -12,6 +12,7 @@ import pytest
 
 from nyan_shop_bot.orchestrator.adapters import (
     AgentStopped,
+    CodexAdapter,
     _parse_antigravity_events,
     _parse_codex_events,
     _run_monitored,
@@ -1524,6 +1525,10 @@ def test_agent_environment_removes_ambient_secrets(
     assert result["DOCKER_CONFIG"] == str(isolation_dir / "docker")
     assert "DOCKER_AUTH_CONFIG" not in result
     assert result["GH_CONFIG_DIR"] == str(isolation_dir / "gh")
+    assert result["TEMP"] == str(isolation_dir / "tmp")
+    assert result["TMP"] == str(isolation_dir / "tmp")
+    assert result["TMPDIR"] == str(isolation_dir / "tmp")
+    assert (isolation_dir / "tmp").is_dir()
     assert "PYTHONPATH" not in result
     path_entries = result["PATH"].split(os.pathsep)
     assert path_entries[0] == str(Path(sys.executable).absolute().parent)
@@ -1565,3 +1570,75 @@ def test_review_prompt_exposes_fail_closed_test_evidence_contract() -> None:
     assert "Confirm prerequisites before running a check" in prompt
     assert "a PASS verdict cannot contain failed test evidence" in prompt
     assert "does not erase an executed failure" in prompt
+    assert "do not rerun the full suite" in prompt
+    assert "brittle literal" in prompt
+
+
+def test_codex_reviewer_keeps_worktree_read_only_with_writable_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    run_dir = tmp_path / "run"
+    captured: dict[str, object] = {}
+
+    def fake_run_monitored(
+        command: list[str],
+        *,
+        cwd: Path,
+        stdin_text: str | None,
+        stdout_path: Path,
+        stderr_path: Path,
+        control: object,
+        timeout_seconds: int,
+        on_process_start: object = None,
+        on_process_end: object = None,
+    ) -> None:
+        del stdin_text, stderr_path, control, timeout_seconds, on_process_start, on_process_end
+        captured["command"] = command
+        captured["cwd"] = cwd
+        result_path = Path(command[command.index("-o") + 1])
+        result_path.write_text(
+            ReviewResult(
+                verdict="PASS",
+                reviewed_head_sha="b" * 40,
+                findings=[],
+                tests=[],
+                blockers=[],
+                summary="reviewed",
+            ).model_dump_json(),
+            encoding="utf-8",
+        )
+        stdout_path.write_text(
+            "\n".join(
+                (
+                    json.dumps({"type": "thread.started", "thread_id": "review-session"}),
+                    json.dumps({"type": "turn.completed", "usage": {}}),
+                )
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr("nyan_shop_bot.orchestrator.adapters._run_monitored", fake_run_monitored)
+    adapter = object.__new__(CodexAdapter)
+    adapter.executable = "codex"
+
+    result, invocation = adapter.reviewer(
+        worktree=worktree,
+        run_dir=run_dir,
+        name="review-0",
+        prompt="review",
+        control=lambda: DesiredState.RUNNING,
+        timeout_seconds=60,
+        model="codex-auto-review",
+    )
+
+    command = captured["command"]
+    assert isinstance(command, list)
+    temporary_dir = run_dir / "isolated-environment" / "tmp"
+    assert command[command.index("-s") + 1] == "read-only"
+    assert command[command.index("--add-dir") + 1] == str(temporary_dir)
+    assert temporary_dir.is_dir()
+    assert captured["cwd"] == worktree
+    assert result.verdict == "PASS"
+    assert invocation.session_id == "review-session"

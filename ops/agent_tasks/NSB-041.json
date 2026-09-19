@@ -7,7 +7,7 @@
   "title": "Prove runner with a no-money operator quickstart",
   "base_ref": "nyan/nsb-040-agent-runner",
   "pr_base": "nyan/nsb-040-agent-runner",
-  "branch": "nyan/nsb-041-runner-demo-v9",
+  "branch": "nyan/nsb-041-runner-demo-v10",
   "worker": "codex",
   "worker_model": "gpt-5.6-luna",
   "reviewer_model": "codex-auto-review",
@@ -33,7 +33,7 @@
   "auto_merge_eligible": false,
   "budget": {
     "max_agent_invocations": 5,
-    "max_total_tokens": 1000000,
+    "max_total_tokens": 1500000,
     "max_elapsed_seconds": 7200,
     "max_fix_rounds": 3,
     "ci_timeout_seconds": 3600,

@@ -334,6 +334,8 @@ def sanitized_environment(isolation_dir: Path | None = None) -> dict[str, str]:
     )
     if isolation_dir is not None:
         isolation_dir.mkdir(parents=True, exist_ok=True)
+        temporary_dir = isolation_dir / "tmp"
+        temporary_dir.mkdir(exist_ok=True)
         empty_config = isolation_dir / "empty.config"
         empty_config.touch(exist_ok=True)
         docker_config = isolation_dir / "docker"
@@ -352,6 +354,9 @@ def sanitized_environment(isolation_dir: Path | None = None) -> dict[str, str]:
                 "NPM_CONFIG_USERCONFIG": str(empty_config),
                 "PGPASSFILE": str(empty_config),
                 "PIP_CONFIG_FILE": str(empty_config),
+                "TEMP": str(temporary_dir),
+                "TMP": str(temporary_dir),
+                "TMPDIR": str(temporary_dir),
             }
         )
     return clean
@@ -636,6 +641,10 @@ class CodexAdapter:
             command.append("--strict-config")
         if model is not None:
             command.extend(("--model", model))
+        if sandbox == "read-only":
+            temporary_dir = run_dir / "isolated-environment" / "tmp"
+            temporary_dir.mkdir(parents=True, exist_ok=True)
+            command.extend(("--add-dir", str(temporary_dir)))
         command.extend(
             (
                 "--json",

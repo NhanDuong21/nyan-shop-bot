@@ -903,7 +903,10 @@ evidence. BLOCKED is for missing evidence or an external condition that prevents
 reviewed_head_sha to exactly {current_head}. Confirm prerequisites before running a check; record a
 check as NOT_RUN when its prerequisites are absent. Every command actually run that fails must be
 reported as FAIL, and a PASS verdict cannot contain failed test evidence. A later alternative check
-does not erase an executed failure.
+does not erase an executed failure. The runner invoked this review only after all required CI checks
+passed for this exact HEAD, so do not rerun the full suite; run a targeted check only to resolve a
+concrete concern. For documentation, inspect meaning directly instead of inventing brittle literal
+string assertions whose quoting or Markdown punctuation can create false failures.
 """
 
     def _check_budget(self, run: dict[str, Any], task: TaskSpec) -> None:
