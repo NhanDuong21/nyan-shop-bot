@@ -4,7 +4,7 @@
 
 The CI workflow verifies PRs and every `main` push. Only the trusted `main` publish job receives `packages: write`, and it runs after the same commit's aggregate `ci-gate`. It publishes API/admin images tagged with the full commit SHA and records digests in the Actions summary. PR builds never log in or push.
 
-`deploy/compose.staging.yaml` is a mock-only blueprint that requires immutable image references and a staging-only database password. It has no host ports, domain, ingress, admin authentication, or production profile.
+`deploy/compose.staging.yaml` is a mock-only blueprint that requires immutable image references, an external `postgres_password` secret for PostgreSQL, and a `DATABASE_URL` injected by the staging secret store for the application. It has no host ports, domain, ingress, admin authentication, or production profile. No credential value belongs in a Compose environment file or in Git.
 
 ## BLOCKED: staging deployment
 
