@@ -231,8 +231,11 @@ class ReviewResult(StrictModel):
 
     @model_validator(mode="after")
     def validate_verdict(self) -> Self:
-        if self.verdict is ReviewVerdict.PASS and (self.findings or self.blockers):
-            raise ValueError("PASS cannot include findings or blockers")
+        if self.verdict is ReviewVerdict.PASS:
+            if self.findings or self.blockers:
+                raise ValueError("PASS cannot include findings or blockers")
+            if any(test.result is EvidenceResult.FAIL for test in self.tests):
+                raise ValueError("PASS cannot include a failed test")
         if self.verdict is ReviewVerdict.CHANGES_REQUESTED and not self.findings:
             raise ValueError("CHANGES_REQUESTED must include findings")
         if self.verdict is ReviewVerdict.BLOCKED and not self.blockers:

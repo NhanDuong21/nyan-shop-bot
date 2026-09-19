@@ -552,6 +552,7 @@ def _load_final[ResultModel: BaseModel](path: Path, model: type[ResultModel]) ->
 
 def _parse_codex_events(path: Path) -> tuple[str, Usage]:
     session_id: str | None = None
+    terminal = False
     usage = Usage()
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
@@ -564,16 +565,20 @@ def _parse_codex_events(path: Path) -> tuple[str, Usage]:
             continue
         if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
             session_id = str(event["thread_id"])
-        if event.get("type") == "turn.completed" and isinstance(event.get("usage"), dict):
-            raw = event["usage"]
-            usage = Usage(
-                input_tokens=int(raw.get("input_tokens", 0)),
-                cached_input_tokens=int(raw.get("cached_input_tokens", 0)),
-                output_tokens=int(raw.get("output_tokens", 0)),
-                reasoning_output_tokens=int(raw.get("reasoning_output_tokens", 0)),
-            )
+        if event.get("type") == "turn.completed":
+            terminal = True
+            if isinstance(event.get("usage"), dict):
+                raw = event["usage"]
+                usage = Usage(
+                    input_tokens=int(raw.get("input_tokens", 0)),
+                    cached_input_tokens=int(raw.get("cached_input_tokens", 0)),
+                    output_tokens=int(raw.get("output_tokens", 0)),
+                    reasoning_output_tokens=int(raw.get("reasoning_output_tokens", 0)),
+                )
     if session_id is None:
         raise RuntimeError("Codex JSONL did not expose thread.started.thread_id")
+    if not terminal:
+        raise RuntimeError("Codex JSONL did not expose a terminal turn.completed event")
     return session_id, usage
 
 
@@ -879,7 +884,24 @@ def _codex_terminal_output(path: Path) -> str | None:
     return message
 
 
+def _codex_has_terminal_turn(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "turn.completed":
+            return True
+    return False
+
+
 def _antigravity_has_terminal_result(path: Path) -> bool:
+    if not path.is_file():
+        return False
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
             continue
@@ -906,6 +928,10 @@ def recover_completed_result[ResultModel: BaseModel](
     """Recover a terminal structured result without launching another agent."""
 
     if result_path.is_file():
+        if worker is WorkerKind.CODEX and not _codex_has_terminal_turn(events_path):
+            return None
+        if worker is WorkerKind.ANTIGRAVITY and not _antigravity_has_terminal_result(events_path):
+            return None
         result = result_model.model_validate_json(result_path.read_text(encoding="utf-8"))
         session_id, usage = recover_completed_invocation(events_path, worker)
         return result, session_id, usage

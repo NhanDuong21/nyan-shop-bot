@@ -16,6 +16,7 @@ from nyan_shop_bot.orchestrator.adapters import (
     _parse_codex_events,
     _run_monitored,
     process_identity,
+    recover_completed_result,
     sanitized_environment,
 )
 from nyan_shop_bot.orchestrator.github import GitHubClient, PauseRequested
@@ -33,6 +34,7 @@ from nyan_shop_bot.orchestrator.models import (
     RunPhase,
     TaskSpec,
     Usage,
+    WorkerKind,
     WorkerResult,
 )
 from nyan_shop_bot.orchestrator.service import (
@@ -1431,6 +1433,46 @@ def test_codex_jsonl_exposes_session_and_usage(tmp_path: Path) -> None:
 
     assert session == "session-1"
     assert usage.total == 15
+
+
+def test_codex_completion_parser_rejects_non_terminal_stream(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        json.dumps({"type": "thread.started", "thread_id": "partial-session"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="terminal turn.completed"):
+        _parse_codex_events(path)
+
+
+def test_codex_recovery_ignores_result_until_turn_is_terminal(tmp_path: Path) -> None:
+    events_path = tmp_path / "review.events.jsonl"
+    result_path = tmp_path / "review.result.json"
+    events_path.write_text(
+        json.dumps({"type": "thread.started", "thread_id": "partial-session"}),
+        encoding="utf-8",
+    )
+    result_path.write_text(
+        ReviewResult(
+            verdict="PASS",
+            reviewed_head_sha="a" * 40,
+            findings=[],
+            tests=[],
+            blockers=[],
+            summary="This durable file is not enough without a terminal stream.",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    recovered = recover_completed_result(
+        events_path=events_path,
+        result_path=result_path,
+        worker=WorkerKind.CODEX,
+        result_model=ReviewResult,
+    )
+
+    assert recovered is None
 
 
 def test_antigravity_stream_exposes_conversation_schema_and_usage(tmp_path: Path) -> None:

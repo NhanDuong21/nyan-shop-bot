@@ -385,7 +385,7 @@ ISSUES = (
             "Worker/reviewer outputs are schema validated and bound to the current exact HEAD.",
             "At most two writers, three fix rounds, bounded invocations/time/tokens, and backoff without model polling are enforced.",
             "Start/status/pause/resume/stop work from durable state without duplicate issue/PR creation.",
-            "Auto-merge remains disabled until one-time owner confirmation; high-risk/protected changes remain owner reviewed.",
+            "Auto-merge remains blocked because GitHub cannot atomically bind both reviewed head and base; every PASS stops at READY_FOR_OWNER.",
         ),
         (
             "Schema, claim, resume, stale-SHA, protected-path, limits, backoff, no-secret, and CHANGES_REQUESTED fixture tests.",

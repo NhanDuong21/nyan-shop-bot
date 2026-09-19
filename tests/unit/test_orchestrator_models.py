@@ -98,6 +98,26 @@ def test_review_pass_cannot_hide_findings() -> None:
         )
 
 
+def test_review_pass_cannot_hide_failed_test_evidence() -> None:
+    with pytest.raises(ValidationError, match="PASS cannot include a failed test"):
+        ReviewResult.model_validate(
+            {
+                "verdict": "PASS",
+                "reviewed_head_sha": "a" * 40,
+                "findings": [],
+                "tests": [
+                    {
+                        "command": "pytest",
+                        "result": "FAIL",
+                        "evidence": "One regression failed.",
+                    }
+                ],
+                "blockers": [],
+                "summary": "incorrect pass",
+            }
+        )
+
+
 def test_generated_schemas_forbid_unknown_fields() -> None:
     worker_schema = WorkerResult.model_json_schema()
     review_schema = ReviewResult.model_json_schema()
