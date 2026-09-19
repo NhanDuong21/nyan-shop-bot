@@ -312,7 +312,7 @@ def sanitized_environment(isolation_dir: Path | None = None) -> dict[str, str]:
     clean = {
         name: value for name, value in os.environ.items() if name.upper() in SAFE_INHERITED_ENV
     }
-    runtime_dir = str(Path(sys.executable).resolve().parent)
+    runtime_dir = str(Path(sys.executable).absolute().parent)
     inherited_path = clean.get("PATH")
     clean["PATH"] = (
         os.pathsep.join((runtime_dir, inherited_path)) if inherited_path else runtime_dir

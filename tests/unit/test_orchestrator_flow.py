@@ -1526,7 +1526,7 @@ def test_agent_environment_removes_ambient_secrets(
     assert result["GH_CONFIG_DIR"] == str(isolation_dir / "gh")
     assert "PYTHONPATH" not in result
     path_entries = result["PATH"].split(os.pathsep)
-    assert path_entries[0] == str(Path(sys.executable).resolve().parent)
+    assert path_entries[0] == str(Path(sys.executable).absolute().parent)
     assert path_entries[1:] == ["safe-path"]
     assert result["DATABASE_URL"].startswith(
         "postgresql+asyncpg://nyan_agent:nyan_agent_local_only@127.0.0.1:55432/"
@@ -1534,6 +1534,27 @@ def test_agent_environment_removes_ambient_secrets(
     assert result["SUPPLIER_MODE"] == "mock"
     assert result["PAYMENT_MODE"] == "disabled"
     assert result["ALLOW_REAL_PURCHASES"] == "false"
+
+
+def test_agent_environment_preserves_posix_venv_symlink_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if not sys.platform.startswith("linux"):
+        pytest.skip("POSIX virtualenv launcher regression")
+    system_bin = tmp_path / "system" / "bin"
+    system_bin.mkdir(parents=True)
+    real_python = system_bin / "python3"
+    real_python.touch()
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    venv_python = venv_bin / "python"
+    venv_python.symlink_to(real_python)
+    monkeypatch.setattr(sys, "executable", str(venv_python))
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    result = sanitized_environment()
+
+    assert result["PATH"].split(os.pathsep)[0] == str(venv_bin.absolute())
 
 
 def test_review_prompt_exposes_fail_closed_test_evidence_contract() -> None:
