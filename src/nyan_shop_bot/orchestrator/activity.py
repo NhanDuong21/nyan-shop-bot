@@ -19,7 +19,8 @@ _SECRET_PATTERNS = (
 )
 _ASSIGNMENT_PATTERN = re.compile(
     r"(?i)\b(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|"
-    r"password|passwd|secret|token)\b(\s*[:=]\s*)(?:bearer\s+|basic\s+)?([^\s,;]+)"
+    r"password|passwd|secret|token)\b(\s*[:=]\s*)(?:bearer\s+|basic\s+)?"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
 )
 _CLI_SECRET_PATTERN = re.compile(
     r"(?i)(--?(?:api[-_]?key|access[-_]?token|refresh[-_]?token|password|passwd|secret|token))"

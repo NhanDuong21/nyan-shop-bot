@@ -152,11 +152,14 @@ def test_redaction_covers_headers_flags_dsns_cloud_keys_and_stderr(tmp_path: Pat
     values = [
         "Authorization: Bearer " + "synthetic-secret-value",
         "tool --token " + "synthetic-secret-value",
+        'password="correct horse battery staple" trailing-safe-text',
         "postgresql://user:" + "synthetic-secret-value" + "@db.invalid/name",
         "AK" + "IA" + "1234567890ABCDEF",
     ]
     rendered = " ".join(redact_text(value) for value in values)
     assert "synthetic-secret-value" not in rendered
+    assert "correct horse battery staple" not in rendered
+    assert "trailing-safe-text" in rendered
     assert "AK" + "IA" + "1234567890ABCDEF" not in rendered
 
     stderr = normalize_stream_line(

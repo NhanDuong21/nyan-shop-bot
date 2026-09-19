@@ -50,6 +50,22 @@ def _resolve_run_id(service: RunnerService, value: str | None) -> str:
     return value or service.store.latest_run_id()
 
 
+def _wait_for_controller_settle(
+    service: RunnerService,
+    run_id: str,
+    *,
+    timeout_seconds: float = 10.0,
+) -> dict[str, object]:
+    """Bound a control race while an active agent's containment callback drains."""
+
+    deadline = time.monotonic() + timeout_seconds
+    status = service.status(run_id)
+    while bool(status["process_alive"]) and time.monotonic() < deadline:
+        time.sleep(0.1)
+        status = service.status(run_id)
+    return status
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
@@ -158,6 +174,7 @@ def main(arguments: list[str] | None = None) -> int:
         print(json.dumps(service.status(run_id), indent=2, default=str))
         return 0
 
+    before = service.status(run_id)
     if args.command == "resume":
         service.resume_run(run_id)
     else:
@@ -167,6 +184,25 @@ def main(arguments: list[str] | None = None) -> int:
         }[args.command]
         service.set_control(run_id, desired)
     status = service.status(run_id)
+    if args.command in {"pause", "stop"} and bool(status["process_alive"]):
+        status = _wait_for_controller_settle(service, run_id)
+    if (
+        args.command == "resume"
+        and before["desired_state"] == DesiredState.PAUSED
+        and bool(before["process_alive"])
+    ):
+        status = _wait_for_controller_settle(service, run_id)
+    if (
+        args.command in {"pause", "stop"}
+        and not bool(status["process_alive"])
+        and status["phase"]
+        not in {"BLOCKED", "COMPLETED", "MERGE_PENDING_CONFIRMATION", "READY_FOR_OWNER", "STOPPED"}
+    ):
+        # Reconcile a control request that arrived after the first liveness check but
+        # before the controller lease disappeared. The second call sees no live
+        # controller, contains any registered child, and clears stale process state.
+        service.set_control(run_id, desired)
+        status = service.status(run_id)
     if args.command == "resume" and not bool(status["process_alive"]):
         status.update(_start_background(service, run_id))
     print(json.dumps(status, indent=2, default=str))
