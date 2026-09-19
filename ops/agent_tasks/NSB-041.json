@@ -10,7 +10,7 @@
   "branch": "nyan/nsb-041-runner-demo-v10",
   "worker": "codex",
   "worker_model": "gpt-5.6-luna",
-  "reviewer_model": "codex-auto-review",
+  "reviewer_model": "gpt-5.6-luna",
   "role": "backend",
   "risk": "low",
   "queue_phase": "demo",
@@ -33,7 +33,7 @@
   "auto_merge_eligible": false,
   "budget": {
     "max_agent_invocations": 5,
-    "max_total_tokens": 1500000,
+    "max_total_tokens": 1000000,
     "max_elapsed_seconds": 7200,
     "max_fix_rounds": 3,
     "ci_timeout_seconds": 3600,
