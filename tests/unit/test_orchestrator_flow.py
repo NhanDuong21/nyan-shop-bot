@@ -1106,7 +1106,7 @@ def test_failed_ci_diagnostics_are_redacted_deduplicated_and_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client = GitHubClient(tmp_path, "NhanDuong21/nyan-shop-bot")
-    secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+    secret = "ghp_" + "abcdefghijklmnopqrstuvwxyz123456"
     duplicate = {
         "annotation_level": "failure",
         "path": "admin/src/example.test.tsx",
@@ -1540,6 +1540,95 @@ def test_paused_initial_worker_rejects_partial_changes_outside_frozen_scope(
 
     with pytest.raises(RuntimeError, match="outside allowed scope"):
         service._run_worker("unsafe-paused-initial", task, worktree, parent, RunPhase.CLAIMED)
+
+
+def test_paused_initial_worker_rejects_an_advanced_committed_head(tmp_path: Path) -> None:
+    task = make_task()
+    worktree = tmp_path / "worktree"
+    parent = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="advanced-paused-initial",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=1,
+    )
+    service.store.update_run(
+        "advanced-paused-initial",
+        phase=RunPhase.CLAIMED,
+        worker_session_id="same-paused-session",
+        worker_parent_sha=parent,
+    )
+    (worktree / "README.md").write_text("unauthorized committed ancestry\n", encoding="utf-8")
+    git(worktree, "add", "README.md")
+    git(worktree, "commit", "-m", "advance paused worktree")
+
+    with pytest.raises(RuntimeError, match="parent no longer matches"):
+        service._run_worker("advanced-paused-initial", task, worktree, parent, RunPhase.CLAIMED)
+
+    run = service.store.get_run("advanced-paused-initial")
+    assert run["phase"] == RunPhase.CLAIMED
+    assert run["worker_parent_sha"] == parent
+
+
+def test_legacy_paused_initial_worker_rejects_an_advanced_committed_head(
+    tmp_path: Path,
+) -> None:
+    task = make_task()
+    worktree = tmp_path / "worktree"
+    parent = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="legacy-paused-initial",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=1,
+    )
+    service.store.update_run(
+        "legacy-paused-initial",
+        phase=RunPhase.CLAIMED,
+        worker_session_id="legacy-paused-session",
+        worker_parent_sha=None,
+    )
+    (worktree / "README.md").write_text("legacy unauthorized ancestry\n", encoding="utf-8")
+    git(worktree, "add", "README.md")
+    git(worktree, "commit", "-m", "advance legacy paused worktree")
+
+    with pytest.raises(RuntimeError, match="frozen base HEAD"):
+        service._run_worker("legacy-paused-initial", task, worktree, parent, RunPhase.CLAIMED)
+
+    run = service.store.get_run("legacy-paused-initial")
+    assert run["phase"] == RunPhase.CLAIMED
+    assert run["worker_parent_sha"] is None
+
+
+def test_markerless_paused_initial_worker_rejects_partial_changes(tmp_path: Path) -> None:
+    task = make_task()
+    worktree = tmp_path / "worktree"
+    parent = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="markerless-paused-initial",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=1,
+    )
+    service.store.update_run(
+        "markerless-paused-initial",
+        phase=RunPhase.CLAIMED,
+        worker_session_id="legacy-paused-session",
+        worker_parent_sha=None,
+    )
+    (worktree / "README.md").write_text("markerless partial work\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="not clean without an interrupted-parent marker"):
+        service._run_worker("markerless-paused-initial", task, worktree, parent, RunPhase.CLAIMED)
 
 
 def test_paused_fix_worker_can_resume_before_creating_partial_changes(

@@ -585,7 +585,23 @@ class RunnerService:
             worktree,
             timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
         )
-        interrupted_resume = run.get("worker_parent_sha") == expected_parent
+        persisted_parent = run.get("worker_parent_sha")
+        if persisted_parent is not None and persisted_parent != expected_parent:
+            raise RuntimeError("interrupted worker parent no longer matches worktree HEAD")
+        if phase is RunPhase.CLAIMED and expected_parent != base_sha:
+            raise RuntimeError("CLAIMED worktree no longer matches its frozen base HEAD")
+        interrupted_resume = persisted_parent is not None
+        if (
+            phase is RunPhase.CLAIMED
+            and not interrupted_resume
+            and git(
+                worktree,
+                "status",
+                "--porcelain=v1",
+                timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
+            )
+        ):
+            raise RuntimeError("worker worktree is not clean without an interrupted-parent marker")
         if interrupted_resume:
             partial_files = pending_files(
                 worktree,
