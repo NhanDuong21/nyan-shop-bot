@@ -3,7 +3,7 @@
     "enabled": true,
     "PreToolUse": [
       {
-        "matcher": "^(run_command|manage_task|schedule|ask_permission|invoke_subagent|define_subagent|send_message|manage_subagents|browser_subagent|command_status|send_command_input|call_mcp_tool)$",
+        "matcher": "^(write_to_file|replace_file_content|multi_replace_file_content|run_command|manage_task|schedule|ask_permission|invoke_subagent|define_subagent|send_message|manage_subagents|browser_subagent|command_status|send_command_input|call_mcp_tool)$",
         "hooks": [
           {
             "type": "command",
