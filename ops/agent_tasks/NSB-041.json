@@ -7,7 +7,7 @@
   "title": "Prove runner with a no-money operator quickstart",
   "base_ref": "nyan/nsb-040-agent-runner",
   "pr_base": "nyan/nsb-040-agent-runner",
-  "branch": "nyan/nsb-041-runner-demo-v6",
+  "branch": "nyan/nsb-041-runner-demo-v7",
   "worker": "codex",
   "worker_model": "gpt-5.6-luna",
   "reviewer_model": "codex-auto-review",
@@ -15,7 +15,7 @@
   "risk": "low",
   "queue_phase": "demo",
   "queue_eligible": false,
-  "trusted_prompt": "Add docs/runner-demo.md as a concise operator quickstart for the runner that is already implemented on this base branch. Derive command syntax only from scripts/agent_runner.py --help and the four control subcommand help pages. Cover status, pause, resume, and stop using placeholders rather than invented IDs. State that pause is cooperative at an active model-turn boundary, stop terminates the registered agent process tree before releasing the claim, resume reuses durable state, and current safety defaults remain mock/disabled/false. Do not claim auto-merge, deployment, an Antigravity model run, or any capability that this task did not exercise. This is a bounded documentation proof: do not run setup, full verification, Docker, npm, pip, migrations, or services; do not create or remove ignored dependency directories; do not inspect unrelated implementation. After the help checks, one literal content check, and git diff --check, return the final structured result immediately.",
+  "trusted_prompt": "Add docs/runner-demo.md as a concise operator quickstart for the runner that is already implemented on this base branch. Derive the status, pause, resume, and stop syntax by reading only the argparse construction in scripts/agent_runner.py and the matching semantics in docs/orchestration.md; use <run-id> placeholders rather than invented IDs. State that pause is cooperative at an active model-turn boundary, stop terminates the registered agent process tree before releasing the claim, resume reuses durable state, and current safety defaults remain mock/disabled/false. Do not claim auto-merge, deployment, an Antigravity model run, or any capability that this task did not exercise. This worktree intentionally has no installed Python dependencies: do not execute python, py, pip, uv, npm, Docker, setup, full verification, migrations, or services, and do not probe interpreters or create/remove ignored dependency directories. Use only read-only Get-Content or rg commands before editing. After editing, run exactly a PowerShell literal content check and git diff --check. In the final tests list, report only those two required checks when both pass; if either fails, return BLOCKED rather than SUCCESS. Then return the final structured result immediately.",
   "acceptance_criteria": [
     "The four control commands are accurate and use placeholders rather than invented run or session IDs.",
     "The document states pause is cooperative, stop terminates the registered process tree before claim release, and resume reuses durable state.",
