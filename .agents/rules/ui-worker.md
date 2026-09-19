@@ -14,4 +14,5 @@ This Antigravity workspace rule is intentionally duplicated from the mandatory r
 - Implement the requested visual hierarchy, layout, responsive behavior, animation, and component-local interaction while preserving loading, error, empty, and success states.
 - If the task needs an out-of-scope architecture, API, auth, business, dependency, or configuration change, return `BLOCKED` to the coordinator. Do not make the change and do not ask the owner to relay it.
 - Do not create, delegate to, or resume a subagent, background agent, or second writer. This conversation is the only UI writer.
+- The committed workspace `PreToolUse` hook hard-denies Antigravity collaboration tools before execution. Do not try to bypass, disable, rename, or edit that hook.
 - Run only checks already authorized by the environment. Report a denied or unavailable check as `NOT_RUN`; never claim it passed.

@@ -1063,6 +1063,46 @@ def _validate_antigravity_context(
         raise RuntimeError("Antigravity generation did not report positive token usage")
 
 
+def _build_antigravity_command(
+    executable: str,
+    *,
+    prompt: str,
+    schema_path: Path,
+    timeout_minutes: int,
+    resume_session_id: str | None,
+    model: str | None,
+) -> list[str]:
+    """Build an exact headless command and create a project only for the first turn."""
+
+    command = [executable, "-p", prompt]
+    if resume_session_id is None:
+        # agy 1.2.7 does not hydrate workspace rules/hooks in print mode until the
+        # workspace is registered as a project. A resumed conversation already
+        # carries that project and must not be replaced with a new one.
+        command.append("--new-project")
+    else:
+        command.extend(("--conversation", resume_session_id))
+    if model is not None:
+        command.extend(("--model", model))
+    command.extend(
+        (
+            "--effort",
+            "low",
+            "--mode",
+            "accept-edits",
+            "--sandbox",
+            "--disable-slash-commands",
+            "--output-format",
+            "stream-json",
+            "--json-schema",
+            str(schema_path),
+            "--print-timeout",
+            f"{timeout_minutes}m",
+        )
+    )
+    return command
+
+
 class AntigravityAdapter:
     """Google agy 1.2.7 print-mode adapter; no GUI or internal endpoint automation."""
 
@@ -1111,30 +1151,13 @@ class AntigravityAdapter:
         write_schema(WorkerResult, schema_path)
         result_path.unlink(missing_ok=True)
         timeout_minutes = max(1, min(60, (timeout_seconds + 59) // 60))
-        command = [
+        command = _build_antigravity_command(
             self.executable,
-            "-p",
-            prompt,
-        ]
-        if resume_session_id is not None:
-            command.extend(("--conversation", resume_session_id))
-        if model is not None:
-            command.extend(("--model", model))
-        command.extend(
-            (
-                "--effort",
-                "low",
-                "--mode",
-                "accept-edits",
-                "--sandbox",
-                "--disable-slash-commands",
-                "--output-format",
-                "stream-json",
-                "--json-schema",
-                str(schema_path),
-                "--print-timeout",
-                f"{timeout_minutes}m",
-            )
+            prompt=prompt,
+            schema_path=schema_path,
+            timeout_minutes=timeout_minutes,
+            resume_session_id=resume_session_id,
+            model=model,
         )
         activity = _run_monitored(
             command,

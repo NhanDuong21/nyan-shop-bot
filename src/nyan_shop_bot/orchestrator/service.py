@@ -58,6 +58,7 @@ from nyan_shop_bot.orchestrator.store import StateStore, freeze_task, utc_now
 
 UI_ROOT_RULE_MARKER = "NYAN-UI-RULESET-V1"
 UI_ANTIGRAVITY_RULE_MARKER = "NYAN-ANTIGRAVITY-RULE-V1"
+UI_ANTIGRAVITY_HOOK_MARKER = "NYAN-ANTIGRAVITY-SINGLE-WRITER-V1"
 
 AUTO_MERGE_BLOCKER = (
     "automatic merge is BLOCKED: GitHub's supported merge precondition binds the head SHA "
@@ -1207,6 +1208,8 @@ string assertions whose quoting or Markdown punctuation can create false failure
         required = (
             ("AGENTS.md", UI_ROOT_RULE_MARKER),
             (".agents/rules/ui-worker.md", UI_ANTIGRAVITY_RULE_MARKER),
+            (".agents/hooks.json", UI_ANTIGRAVITY_HOOK_MARKER),
+            ("scripts/deny_antigravity_delegation.py", UI_ANTIGRAVITY_HOOK_MARKER),
         )
         for relative, marker in required:
             try:

@@ -1,0 +1,16 @@
+{
+  "nyan-single-writer-NYAN-ANTIGRAVITY-SINGLE-WRITER-V1": {
+    "PreToolUse": [
+      {
+        "matcher": "^(invoke_subagent|define_subagent|send_message|manage_subagents|browser_subagent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/deny_antigravity_delegation.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -13,6 +13,7 @@ import pytest
 from nyan_shop_bot.orchestrator.adapters import (
     AgentStopped,
     CodexAdapter,
+    _build_antigravity_command,
     _parse_antigravity_events,
     _parse_codex_events,
     _run_monitored,
@@ -68,6 +69,17 @@ def initialize_task_repo(worktree: Path, task: TaskSpec) -> str:
         rule.parent.mkdir(parents=True)
         rule.write_text(
             "---\ntrigger: always_on\n---\nNYAN-ANTIGRAVITY-RULE-V1\n",
+            encoding="utf-8",
+        )
+        hooks = worktree / ".agents" / "hooks.json"
+        hooks.write_text(
+            '{"nyan-NYAN-ANTIGRAVITY-SINGLE-WRITER-V1": {}}\n',
+            encoding="utf-8",
+        )
+        hook_script = worktree / "scripts" / "deny_antigravity_delegation.py"
+        hook_script.parent.mkdir(parents=True)
+        hook_script.write_text(
+            '"""NYAN-ANTIGRAVITY-SINGLE-WRITER-V1"""\n',
             encoding="utf-8",
         )
         feature_root = worktree / task.allowed_paths[0][:-3]
@@ -2110,6 +2122,58 @@ def test_antigravity_context_rejects_subagent_and_malformed_stdout(tmp_path: Pat
             expected_model="gemini-3.8-flash-low",
             expected_schema=expected_schema,
         )
+
+
+def test_antigravity_first_turn_creates_project_and_resume_reuses_conversation(
+    tmp_path: Path,
+) -> None:
+    schema = tmp_path / "worker.schema.json"
+    initial = _build_antigravity_command(
+        "agy",
+        prompt="bounded UI task",
+        schema_path=schema,
+        timeout_minutes=3,
+        resume_session_id=None,
+        model="gemini-3.8-flash-low",
+    )
+    resumed = _build_antigravity_command(
+        "agy",
+        prompt="fix one finding",
+        schema_path=schema,
+        timeout_minutes=3,
+        resume_session_id="00000000-0000-4000-8000-000000000099",
+        model="gemini-3.8-flash-low",
+    )
+
+    assert "--new-project" in initial
+    assert "--conversation" not in initial
+    assert "--new-project" not in resumed
+    assert resumed[resumed.index("--conversation") + 1] == ("00000000-0000-4000-8000-000000000099")
+    for command in (initial, resumed):
+        assert "--sandbox" in command
+        assert command[command.index("--mode") + 1] == "accept-edits"
+        assert command[command.index("--output-format") + 1] == "stream-json"
+
+
+def test_antigravity_delegation_hook_denies_before_tool_execution() -> None:
+    hook = Path(__file__).parents[2] / "scripts" / "deny_antigravity_delegation.py"
+    completed = subprocess.run(
+        [sys.executable, str(hook)],
+        input=json.dumps(
+            {
+                "toolCall": {"name": "invoke_subagent", "args": {}},
+                "conversationId": "00000000-0000-4000-8000-000000000100",
+            }
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    decision = json.loads(completed.stdout)
+    assert decision["decision"] == "deny"
+    assert "exactly one Antigravity writer" in decision["reason"]
 
 
 def test_agent_environment_removes_ambient_secrets(
