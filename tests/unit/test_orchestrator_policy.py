@@ -29,7 +29,7 @@ def test_runner_and_workflow_paths_are_protected() -> None:
     ) == ["src/nyan_shop_bot/orchestrator/service.py", ".github/workflows/ci.yml"]
 
 
-def test_auto_merge_requires_owner_main_low_risk_and_unprotected_paths() -> None:
+def test_auto_merge_remains_closed_even_for_an_otherwise_eligible_task() -> None:
     eligible = make_task(
         auto_merge_eligible=True,
         pr_base="main",
@@ -38,7 +38,7 @@ def test_auto_merge_requires_owner_main_low_risk_and_unprotected_paths() -> None
         queue_eligible=True,
     )
 
-    assert auto_merge_policy(eligible, ["docs/runner-demo.md"], owner_authorized=True)
+    assert not auto_merge_policy(eligible, ["docs/runner-demo.md"], owner_authorized=True)
     assert not auto_merge_policy(eligible, ["AGENTS.md"], owner_authorized=True)
     assert not auto_merge_policy(eligible, ["docs/runner-demo.md"], owner_authorized=False)
     assert not auto_merge_policy(

@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -25,8 +26,8 @@ from nyan_shop_bot.orchestrator.models import (
 )
 
 ControlReader = Callable[[], DesiredState]
-ProcessStarted = Callable[[int], None]
-ProcessFinished = Callable[[int], None]
+ProcessStarted = Callable[[int, str, str, str], None]
+ProcessFinished = Callable[[int, str, str, str], None]
 WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 if sys.platform == "win32":
@@ -112,50 +113,177 @@ def process_is_running(pid: int) -> bool:
     return True
 
 
-def _signal_process_tree(pid: int, *, grace_seconds: float) -> bool:
-    if os.name == "nt":
-        try:
-            completed = subprocess.run(
-                ("taskkill", "/PID", str(pid), "/T", "/F"),
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=max(1.0, grace_seconds),
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        return completed.returncode == 0 or not process_is_running(pid)
+def process_identity(pid: int) -> str | None:
+    """Return an OS creation identity that changes when a PID is reused."""
 
-    try:
-        _kill_process_group(pid, int(signal.SIGTERM))
-    except ProcessLookupError:
-        return True
-    except PermissionError:
-        return False
-    deadline = time.monotonic() + max(0.1, grace_seconds / 2)
-    while time.monotonic() < deadline:
-        if not process_is_running(pid):
+    if pid <= 0:
+        return None
+    if os.name == "nt":
+        import ctypes  # noqa: PLC0415 - Windows-only import
+        from ctypes import wintypes  # noqa: PLC0415 - Windows-only import
+
+        process_query_limited_information = 0x1000
+        ctypes_api = cast(Any, ctypes)
+        kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        )
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            error_code = ctypes_api.get_last_error()
+            if error_code in {6, 87}:
+                return None
+            raise PermissionError(error_code, f"cannot inspect Windows PID {pid}")
+        created = wintypes.FILETIME()
+        exited = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        try:
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(created),
+                ctypes.byref(exited),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                raise RuntimeError(
+                    f"could not read creation identity for Windows PID {pid}: "
+                    f"error {ctypes_api.get_last_error()}"
+                )
+            ticks = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+            return f"windows:{ticks}"
+        finally:
+            kernel32.CloseHandle(handle)
+    if sys.platform.startswith("linux"):
+        try:
+            boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+        except (FileNotFoundError, ProcessLookupError):
+            return None
+        except PermissionError as error:
+            raise PermissionError(f"cannot inspect Linux PID {pid}") from error
+        closing = stat.rfind(")")
+        if closing < 0:
+            raise RuntimeError("could not parse Linux process identity")
+        fields = stat[closing + 2 :].split()
+        if len(fields) < 20:
+            raise RuntimeError("Linux process identity omitted its start time")
+        return f"linux:{boot_id}:{fields[19]}"
+    raise RuntimeError(f"durable process identity is unsupported on {sys.platform}")
+
+
+def process_matches(pid: int, expected_identity: str) -> bool:
+    """Refuse PID-only decisions by checking the recorded process incarnation."""
+
+    return process_identity(pid) == expected_identity
+
+
+def _terminate_windows_verified(pid: int, expected_identity: str) -> bool:
+    import ctypes  # noqa: PLC0415 - Windows-only import
+    from ctypes import wintypes  # noqa: PLC0415 - Windows-only import
+
+    process_terminate = 0x0001
+    process_query_limited_information = 0x1000
+    synchronize = 0x00100000
+    ctypes_api = cast(Any, ctypes)
+    kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    )
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.OpenProcess(
+        process_terminate | process_query_limited_information | synchronize,
+        False,
+        pid,
+    )
+    if not handle:
+        error_code = ctypes_api.get_last_error()
+        if error_code in {6, 87}:
             return True
-        time.sleep(0.05)
+        raise PermissionError(error_code, f"cannot terminate Windows PID {pid}")
+    created = wintypes.FILETIME()
+    exited = wintypes.FILETIME()
+    kernel = wintypes.FILETIME()
+    user = wintypes.FILETIME()
     try:
-        _kill_process_group(pid, int(getattr(signal, "SIGKILL", 9)))
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(created),
+            ctypes.byref(exited),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            raise ctypes_api.WinError(ctypes_api.get_last_error())
+        ticks = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+        if f"windows:{ticks}" != expected_identity:
+            return True
+        if not kernel32.TerminateProcess(handle, 125):
+            error_code = ctypes_api.get_last_error()
+            if error_code != 5:
+                raise ctypes_api.WinError(error_code)
+        kernel32.WaitForSingleObject(handle, 3000)
+        return True
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _terminate_linux_verified(pid: int, expected_identity: str) -> bool:
+    pidfd_open = getattr(os, "pidfd_open", None)
+    pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
+    if pidfd_open is None or pidfd_send_signal is None:
+        raise RuntimeError("Linux pidfd support is required for PID-safe termination")
+    try:
+        pidfd = int(pidfd_open(pid))
     except ProcessLookupError:
         return True
-    except PermissionError:
-        return False
+    try:
+        if process_identity(pid) != expected_identity:
+            return True
+        pidfd_send_signal(pidfd, signal.SIGTERM)
+    finally:
+        os.close(pidfd)
     return True
 
 
-def terminate_process_tree(pid: int, *, grace_seconds: float = 3.0) -> bool:
+def terminate_process_tree(
+    pid: int,
+    *,
+    expected_identity: str,
+    grace_seconds: float = 3.0,
+) -> bool:
     """Terminate the registered launcher and every CLI process below it."""
 
-    if pid <= 0 or not process_is_running(pid):
+    if pid <= 0:
         return True
-    if not _signal_process_tree(pid, grace_seconds=grace_seconds):
-        return False
+    if os.name == "nt":
+        if not _terminate_windows_verified(pid, expected_identity):
+            return False
+    elif sys.platform.startswith("linux"):
+        if not _terminate_linux_verified(pid, expected_identity):
+            return False
+    else:
+        raise RuntimeError(f"PID-safe termination is unsupported on {sys.platform}")
     deadline = time.monotonic() + max(0.1, grace_seconds)
     while time.monotonic() < deadline:
-        if not process_is_running(pid):
+        if not process_matches(pid, expected_identity):
             return True
         time.sleep(0.05)
     return False
@@ -166,12 +294,15 @@ def _terminate_attached_process(process: subprocess.Popen[str]) -> bool:
 
     if process.poll() is not None:
         return True
-    if not _signal_process_tree(process.pid, grace_seconds=3.0):
-        return False
+    process.terminate()
     try:
         process.wait(timeout=3)
     except subprocess.TimeoutExpired:
-        return False
+        process.kill()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            return False
     return True
 
 
@@ -272,8 +403,11 @@ def _run_monitored(
     launch_stdin = stdout_path.parent / f"{launch_stem}.stdin.txt"
     launch_ready = stdout_path.parent / f"{launch_stem}.launcher-ready"
     launch_start = stdout_path.parent / f"{launch_stem}.launcher-start"
+    launch_complete = stdout_path.parent / f"{launch_stem}.launcher-contained"
+    containment_nonce = uuid.uuid4().hex
     launch_ready.unlink(missing_ok=True)
     launch_start.unlink(missing_ok=True)
+    launch_complete.unlink(missing_ok=True)
     if stdin_text is None:
         launch_stdin.unlink(missing_ok=True)
         stdin_path: str | None = None
@@ -281,7 +415,13 @@ def _run_monitored(
         launch_stdin.write_text(stdin_text, encoding="utf-8")
         stdin_path = str(launch_stdin)
     launch_spec.write_text(
-        json.dumps({"command": command, "stdin_path": stdin_path}),
+        json.dumps(
+            {
+                "command": command,
+                "stdin_path": stdin_path,
+                "deadline_epoch": time.time() + timeout_seconds,
+            }
+        ),
         encoding="utf-8",
     )
     launcher = Path(__file__).with_name("agent_process.py")
@@ -294,6 +434,10 @@ def _run_monitored(
         str(launch_ready),
         "--start",
         str(launch_start),
+        "--complete",
+        str(launch_complete),
+        "--nonce",
+        containment_nonce,
     ]
     started = time.monotonic()
     with (
@@ -312,7 +456,12 @@ def _run_monitored(
             creationflags=WINDOWS_CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             start_new_session=os.name != "nt",
         )
+        launcher_identity = process_identity(process.pid)
+        if launcher_identity is None:
+            process.kill()
+            raise RuntimeError("could not capture launcher creation identity")
         process_attached = False
+        containment_confirmed = False
         try:
             ready_deadline = time.monotonic() + 10
             while not launch_ready.is_file():
@@ -323,9 +472,25 @@ def _run_monitored(
                 if time.monotonic() >= ready_deadline:
                     raise TimeoutError("agent launcher did not reach its registration barrier")
                 time.sleep(0.02)
+            if launch_ready.read_text(encoding="utf-8") != containment_nonce:
+                raise RuntimeError("launcher readiness nonce did not match")
             if on_process_start is not None:
-                on_process_start(process.pid)
+                on_process_start(
+                    process.pid,
+                    launcher_identity,
+                    str(launch_complete),
+                    containment_nonce,
+                )
                 process_attached = True
+            desired = control()
+            if desired is DesiredState.STOPPED:
+                if not _terminate_attached_process(process):
+                    raise RuntimeError("could not stop the registered launcher at its barrier")
+                raise AgentStopped("owner stop prevented the agent process from starting")
+            if time.monotonic() - started > timeout_seconds:
+                if not _terminate_attached_process(process):
+                    raise RuntimeError("expired registered launcher is still alive at its barrier")
+                raise TimeoutError(f"agent exceeded {timeout_seconds}s invocation limit")
             launch_start.write_text("start", encoding="utf-8")
             while process.poll() is None:
                 desired = control()
@@ -338,14 +503,45 @@ def _run_monitored(
                         raise RuntimeError("timed-out agent process tree is still alive")
                     raise TimeoutError(f"agent exceeded {timeout_seconds}s invocation limit")
                 time.sleep(1)
+            containment_deadline = time.monotonic() + 5
+            while (
+                not launch_complete.is_file()
+                or launch_complete.read_text(encoding="utf-8") != containment_nonce
+            ):
+                if time.monotonic() >= containment_deadline:
+                    raise RuntimeError(
+                        "launcher exited without watchdog containment acknowledgement"
+                    )
+                time.sleep(0.02)
+            containment_confirmed = True
             if process.returncode != 0:
                 tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
                 raise RuntimeError(f"agent exited {process.returncode}: {tail}")
         finally:
             if process.poll() is None:
                 _terminate_attached_process(process)
-            if process_attached and process.poll() is not None and on_process_end is not None:
-                on_process_end(process.pid)
+            if process_attached and process.poll() is not None and not containment_confirmed:
+                containment_deadline = time.monotonic() + 5
+                while time.monotonic() < containment_deadline:
+                    if (
+                        launch_complete.is_file()
+                        and launch_complete.read_text(encoding="utf-8") == containment_nonce
+                    ):
+                        containment_confirmed = True
+                        break
+                    time.sleep(0.02)
+            if (
+                process_attached
+                and containment_confirmed
+                and process.poll() is not None
+                and on_process_end is not None
+            ):
+                on_process_end(
+                    process.pid,
+                    launcher_identity,
+                    str(launch_complete),
+                    containment_nonce,
+                )
 
 
 def _load_final[ResultModel: BaseModel](path: Path, model: type[ResultModel]) -> ResultModel:
@@ -360,7 +556,10 @@ def _parse_codex_events(path: Path) -> tuple[str, Usage]:
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
             continue
-        event = json.loads(line)
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
         if not isinstance(event, dict):
             continue
         if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
@@ -528,7 +727,10 @@ def _parse_antigravity_events(path: Path) -> tuple[str, Usage, dict[str, Any]]:
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
             continue
-        event = json.loads(line)
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
         if not isinstance(event, dict):
             continue
         if isinstance(event.get("conversation_id"), str):
@@ -646,3 +848,79 @@ def recover_completed_invocation(path: Path, worker: WorkerKind) -> tuple[str, U
         return _parse_codex_events(path)
     session_id, usage, _ = _parse_antigravity_events(path)
     return session_id, usage
+
+
+def _codex_terminal_output(path: Path) -> str | None:
+    terminal = False
+    message: str | None = None
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "turn.completed":
+            terminal = True
+        item = event.get("item")
+        if (
+            event.get("type") == "item.completed"
+            and isinstance(item, dict)
+            and item.get("type") == "agent_message"
+            and isinstance(item.get("text"), str)
+        ):
+            message = str(item["text"])
+    if not terminal:
+        return None
+    if message is None:
+        raise RuntimeError("completed Codex stream did not expose its final agent message")
+    return message
+
+
+def _antigravity_has_terminal_result(path: Path) -> bool:
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(event, dict)
+            and event.get("event") == "result"
+            and isinstance(event.get("result"), dict)
+        ):
+            return True
+    return False
+
+
+def recover_completed_result[ResultModel: BaseModel](
+    *,
+    events_path: Path,
+    result_path: Path,
+    worker: WorkerKind,
+    result_model: type[ResultModel],
+) -> tuple[ResultModel, str, Usage] | None:
+    """Recover a terminal structured result without launching another agent."""
+
+    if result_path.is_file():
+        result = result_model.model_validate_json(result_path.read_text(encoding="utf-8"))
+        session_id, usage = recover_completed_invocation(events_path, worker)
+        return result, session_id, usage
+    if not events_path.is_file():
+        return None
+    if worker is WorkerKind.CODEX:
+        final_text = _codex_terminal_output(events_path)
+        if final_text is None:
+            return None
+        result = result_model.model_validate_json(final_text)
+        session_id, usage = _parse_codex_events(events_path)
+    else:
+        if not _antigravity_has_terminal_result(events_path):
+            return None
+        session_id, usage, structured_output = _parse_antigravity_events(events_path)
+        result = result_model.model_validate(structured_output)
+    result_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    return result, session_id, usage

@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     authorize = subparsers.add_parser(
         "authorize-auto-merge",
-        help="Owner-only one-time enablement; never called by a worker",
+        help="Fail-closed diagnostic; atomic head-and-base merge binding is unavailable",
     )
     authorize.add_argument("--repository", required=True)
     authorize.add_argument("--confirm", required=True)
@@ -108,8 +108,8 @@ def main(arguments: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "repository": args.repository,
-                    "authorized": True,
-                    "scope": "low-risk unprotected exact-SHA PASS PRs targeting main only",
+                    "authorized": False,
+                    "scope": "BLOCKED until head and base can both be bound atomically",
                 },
                 indent=2,
             )

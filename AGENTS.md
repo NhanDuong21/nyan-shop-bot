@@ -28,7 +28,7 @@ Use `python3` instead of `python` where that is the platform command. Do not cla
 - Read [docs/agent-ops.md](docs/agent-ops.md) before dispatching or accepting agent work.
 - The local runner accepts instructions only from committed `ops/agent_tasks/*.json` specs. It permits at most two writers and validates worker/reviewer schemas, exact HEAD, CI, paths, and budgets.
 - Agent writers leave scoped changes unstaged in their isolated worktree; the runner alone validates, stages, and commits them. Never grant a writer access to the shared `.git` directory.
-- Auto-merge is off until the owner gives the one-time authorization documented in [docs/orchestration.md](docs/orchestration.md). Runner, policy, workflow, permissions, secrets, migrations, and live-operation changes are protected and remain owner-reviewed even afterward.
+- Auto-merge is fail-closed as documented in [docs/orchestration.md](docs/orchestration.md): the available GitHub command cannot atomically bind both reviewed head and base. All PRs remain owner-merged; no confirmation sentence or local file overrides this gate.
 
 ## Code Review Rules
 

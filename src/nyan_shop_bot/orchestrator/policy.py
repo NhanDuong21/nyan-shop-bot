@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fnmatch import fnmatchcase
 
-from nyan_shop_bot.orchestrator.models import Risk, TaskSpec
+from nyan_shop_bot.orchestrator.models import TaskSpec
 
 PROTECTED_PATTERNS = (
     ".github/**",
@@ -47,12 +47,7 @@ def protected_paths(changed_files: list[str]) -> list[str]:
 
 
 def auto_merge_policy(task: TaskSpec, changed_files: list[str], owner_authorized: bool) -> bool:
-    """Return true only for explicitly eligible, low-risk, unprotected changes."""
+    """Fail closed until GitHub can atomically bind both reviewed head and base."""
 
-    return (
-        owner_authorized
-        and task.auto_merge_eligible
-        and task.risk is Risk.LOW
-        and task.pr_base == "main"
-        and not protected_paths(changed_files)
-    )
+    del task, changed_files, owner_authorized
+    return False

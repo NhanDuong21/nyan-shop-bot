@@ -40,4 +40,4 @@ Startup rejects any other Phase 0 combination. Tests block non-loopback sockets,
 
 Container publishing to GHCR after a trusted `main` gate is artifact delivery, not deployment. Staging deployment remains blocked until an owner supplies a host, ingress/auth design, and staging-only secrets.
 
-The owner-gated local orchestration workflow is documented in [docs/orchestration.md](docs/orchestration.md). Auto-merge remains disabled until the explicit one-time owner authorization is given; high-risk and protected-path PRs always stay open for the owner.
+The owner-gated local orchestration workflow is documented in [docs/orchestration.md](docs/orchestration.md). Auto-merge remains fail-closed because the available GitHub precondition does not atomically bind both reviewed head and base; all PRs stay open for the owner.

@@ -374,22 +374,15 @@ class GitHubClient:
             time.sleep(1)
 
     def enable_repository_auto_merge(self) -> None:
-        self.command("repo", "edit", self.repository, "--enable-auto-merge")
-        value = self.json_command("repo", "view", self.repository, "--json", "autoMergeAllowed")
-        if not isinstance(value, dict) or value.get("autoMergeAllowed") is not True:
-            raise RuntimeError("GitHub did not confirm auto-merge is enabled")
+        raise RuntimeError(
+            "automatic merge is BLOCKED because GitHub cannot atomically bind both the "
+            "reviewed head SHA and base branch"
+        )
 
     def queue_auto_merge(self, pr_number: int, *, expected_head: str) -> None:
-        self.command(
-            "pr",
-            "merge",
-            str(pr_number),
-            "--repo",
-            self.repository,
-            "--auto",
-            "--squash",
-            "--match-head-commit",
-            expected_head,
+        del pr_number, expected_head
+        raise RuntimeError(
+            "automatic merge is BLOCKED because --match-head-commit does not bind the base branch"
         )
 
     def assert_open_pull_exact(

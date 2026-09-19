@@ -7,7 +7,7 @@
   "title": "Prove runner with a no-money operator quickstart",
   "base_ref": "nyan/nsb-040-agent-runner",
   "pr_base": "nyan/nsb-040-agent-runner",
-  "branch": "nyan/nsb-041-runner-demo-v5",
+  "branch": "nyan/nsb-041-runner-demo-v6",
   "worker": "codex",
   "worker_model": "gpt-5.6-luna",
   "reviewer_model": "codex-auto-review",
@@ -15,7 +15,7 @@
   "risk": "low",
   "queue_phase": "demo",
   "queue_eligible": false,
-  "trusted_prompt": "Add docs/runner-demo.md as a concise operator quickstart for the runner that is already implemented on this base branch. Derive command syntax from scripts/agent_runner.py --help. Cover status, pause, resume, and stop using placeholders rather than invented IDs. State that pause is cooperative at an active model-turn boundary, stop terminates the registered agent process tree before releasing the claim, resume reuses durable state, and current safety defaults remain mock/disabled/false. Do not claim auto-merge, deployment, an Antigravity model run, or any capability that this task did not exercise.",
+  "trusted_prompt": "Add docs/runner-demo.md as a concise operator quickstart for the runner that is already implemented on this base branch. Derive command syntax only from scripts/agent_runner.py --help and the four control subcommand help pages. Cover status, pause, resume, and stop using placeholders rather than invented IDs. State that pause is cooperative at an active model-turn boundary, stop terminates the registered agent process tree before releasing the claim, resume reuses durable state, and current safety defaults remain mock/disabled/false. Do not claim auto-merge, deployment, an Antigravity model run, or any capability that this task did not exercise. This is a bounded documentation proof: do not run setup, full verification, Docker, npm, pip, migrations, or services; do not create or remove ignored dependency directories; do not inspect unrelated implementation. After the help checks, one literal content check, and git diff --check, return the final structured result immediately.",
   "acceptance_criteria": [
     "The four control commands are accurate and use placeholders rather than invented run or session IDs.",
     "The document states pause is cooperative, stop terminates the registered process tree before claim release, and resume reuses durable state.",
@@ -33,7 +33,7 @@
   "auto_merge_eligible": false,
   "budget": {
     "max_agent_invocations": 5,
-    "max_total_tokens": 900000,
+    "max_total_tokens": 1000000,
     "max_elapsed_seconds": 7200,
     "max_fix_rounds": 3,
     "ci_timeout_seconds": 3600,

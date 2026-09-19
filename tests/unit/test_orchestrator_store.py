@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from nyan_shop_bot.orchestrator.adapters import process_identity
 from nyan_shop_bot.orchestrator.models import DesiredState, RunPhase, TaskSpec
 from nyan_shop_bot.orchestrator.service import RunnerService
 from nyan_shop_bot.orchestrator.store import StateStore
@@ -98,9 +99,13 @@ def test_process_lease_allows_only_one_runner(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "state")
     create(store, "run-one", task, tmp_path)
 
-    store.acquire_process_lease("run-one", pid=os.getpid(), token="owner-one")
+    identity = process_identity(os.getpid())
+    assert identity is not None
+    store.acquire_process_lease("run-one", pid=os.getpid(), identity=identity, token="owner-one")
     with pytest.raises(RuntimeError, match="active process lease"):
-        store.acquire_process_lease("run-one", pid=os.getpid(), token="owner-two")
+        store.acquire_process_lease(
+            "run-one", pid=os.getpid(), identity=identity, token="owner-two"
+        )
 
     store.release_process_lease("run-one", "owner-one")
     assert store.get_run("run-one")["pid"] is None
@@ -110,8 +115,17 @@ def test_process_lease_cannot_release_while_agent_is_active(tmp_path: Path) -> N
     task = make_task(15, "NSB-041", "nyan/nsb-041-runner-proof")
     store = StateStore(tmp_path / "state")
     create(store, "run-one", task, tmp_path)
-    store.acquire_process_lease("run-one", pid=os.getpid(), token="owner-one")
-    store.set_active_agent("run-one", token="owner-one", pid=os.getpid())
+    identity = process_identity(os.getpid())
+    assert identity is not None
+    store.acquire_process_lease("run-one", pid=os.getpid(), identity=identity, token="owner-one")
+    store.set_active_agent(
+        "run-one",
+        token="owner-one",
+        pid=os.getpid(),
+        identity=identity,
+        completion_path=str(tmp_path / "state" / "runs" / "run-one.launcher-contained"),
+        nonce="test-nonce",
+    )
 
     with pytest.raises(RuntimeError, match="agent is active"):
         store.release_process_lease("run-one", "owner-one")
