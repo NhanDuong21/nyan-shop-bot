@@ -7,7 +7,7 @@ import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from nyan_shop_bot.orchestrator.adapters import AntigravityAdapter, CodexAdapter
 from nyan_shop_bot.orchestrator.github import GitHubClient, PauseRequested, StopRequested
@@ -588,7 +588,7 @@ def process_alive(pid: int) -> bool:
         import ctypes  # noqa: PLC0415 - Windows-only import
 
         process_query_limited_information = 0x1000
-        kernel32 = getattr(ctypes, "windll").kernel32
+        kernel32 = cast(Any, ctypes).windll.kernel32
         handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
         if not handle:
             return False
