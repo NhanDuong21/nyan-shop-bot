@@ -82,31 +82,60 @@ def changed_files(worktree: Path, base_sha: str, head: str) -> list[str]:
     return sorted(line.strip().replace("\\", "/") for line in output.splitlines() if line.strip())
 
 
-def validate_worker_git_state(
+def pending_files(worktree: Path) -> list[str]:
+    tracked = git(worktree, "diff", "--name-only", "HEAD")
+    staged = git(worktree, "diff", "--cached", "--name-only")
+    untracked = git(worktree, "ls-files", "--others", "--exclude-standard")
+    return sorted(
+        {
+            line.strip().replace("\\", "/")
+            for output in (tracked, staged, untracked)
+            for line in output.splitlines()
+            if line.strip()
+        }
+    )
+
+
+def validate_and_commit_worker_changes(
     worktree: Path,
     *,
     task: TaskSpec,
-    base_sha: str,
+    expected_parent: str,
     result: WorkerResult,
-) -> list[str]:
+) -> tuple[str, list[str]]:
     if result.issue != task.issue_number:
         raise RuntimeError("worker result names a different issue")
     if result.branch != task.branch:
         raise RuntimeError("worker result names a different branch")
+    if git(worktree, "branch", "--show-current") != task.branch:
+        raise RuntimeError("worker worktree is on a different branch")
     actual_head = head_sha(worktree)
     if actual_head != result.head_sha:
         raise RuntimeError(f"worker result HEAD {result.head_sha} != actual {actual_head}")
-    if actual_head == base_sha:
-        raise RuntimeError("worker reported success without a new commit")
-    status = git(worktree, "status", "--porcelain=v1")
-    if status:
-        raise RuntimeError("worker left uncommitted or untracked files")
-    actual_files = changed_files(worktree, base_sha, actual_head)
+    if actual_head != expected_parent:
+        raise RuntimeError("worker changed Git history; only the runner may commit")
+    actual_files = pending_files(worktree)
+    if not actual_files:
+        raise RuntimeError("worker reported success without scoped working-tree changes")
     if sorted(result.changed_files) != actual_files:
-        raise RuntimeError("worker changed_files does not match the committed diff")
+        raise RuntimeError("worker changed_files does not match the working tree")
     if not paths_are_allowed(actual_files, task.allowed_paths):
         raise RuntimeError(f"worker changed files outside allowed scope: {actual_files}")
-    return actual_files
+    git(worktree, "add", "--", *actual_files)
+    staged_files = sorted(
+        line.strip().replace("\\", "/")
+        for line in git(worktree, "diff", "--cached", "--name-only").splitlines()
+        if line.strip()
+    )
+    if staged_files != actual_files:
+        raise RuntimeError("runner staging did not match the validated worker paths")
+    git(worktree, "commit", "-m", f"{task.task_id}: automated scoped change")
+    committed_head = head_sha(worktree)
+    if committed_head == expected_parent:
+        raise RuntimeError("runner commit did not advance HEAD")
+    if git(worktree, "status", "--porcelain=v1"):
+        raise RuntimeError("runner-owned commit did not leave a clean worktree")
+    return committed_head, actual_files
 
 
 def push_branch(worktree: Path, branch: str) -> None:

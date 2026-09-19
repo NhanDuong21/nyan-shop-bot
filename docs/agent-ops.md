@@ -19,7 +19,9 @@ Antigravity UI work uses the installed Google-signed `agy` CLI in print/headless
 
 1. Coordinator validates a committed `ops/agent_tasks/*.json` spec, marks one issue in progress, and records a SQLite/GitHub claim.
 2. Create `nyan/<issue>-short-name` (or an agreed branch) from the recorded base in a separate worktree.
-3. Writer changes only allowed files, runs verification, commits, and reports the exact SHA.
+3. Writer changes only allowed files and runs verification inside its worktree. It cannot write
+   linked-worktree Git metadata; the coordinator validates the reported pre-commit SHA and exact
+   paths, then stages and creates the scoped commit.
 4. The runner waits for required CI on that exact HEAD without model polling, then launches a separate read-only reviewer session.
 5. `CHANGES_REQUESTED` findings are returned to the exact writer session; any new commit invalidates old CI/review and starts another gate/review cycle. Three fix rounds is the hard maximum.
 6. Before one-time owner authorization, every PR remains open. After authorization, only low-risk, unprotected, exact-SHA PASS PRs targeting `main` may be queued for GitHub auto-merge. High-risk, runner, policy, workflow, permissions, migration, secrets, and live-operation changes always remain owner-reviewed. No admin bypass.

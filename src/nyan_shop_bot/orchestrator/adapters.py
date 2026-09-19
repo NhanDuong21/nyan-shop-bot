@@ -18,43 +18,130 @@ from nyan_shop_bot.orchestrator.models import (
     DesiredState,
     ReviewResult,
     Usage,
+    WorkerKind,
     WorkerResult,
 )
 
 ControlReader = Callable[[], DesiredState]
 
-SENSITIVE_ENV_PARTS = (
-    "API_KEY",
-    "ACCESS_KEY",
-    "AUTH_TOKEN",
-    "PASSWORD",
-    "PRIVATE_KEY",
-    "SECRET",
-    "TOKEN",
-)
+SAFE_INHERITED_ENV = {
+    "APPDATA",
+    "CODEX_HOME",
+    "COLORTERM",
+    "COMSPEC",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LANG",
+    "LC_ALL",
+    "LOCALAPPDATA",
+    "LOGONSERVER",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "PSMODULEPATH",
+    "PUBLIC",
+    "SHELL",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TERM",
+    "TMP",
+    "TMPDIR",
+    "USERDOMAIN",
+    "USERNAME",
+    "USERPROFILE",
+    "VIRTUAL_ENV",
+    "WINDIR",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+}
 
 
 class AgentStopped(RuntimeError):
     """Raised when an owner stop request terminates an active agent."""
 
 
-def sanitized_environment() -> dict[str, str]:
-    """Remove ambient application credentials while retaining local CLI login storage."""
+def sanitized_environment(isolation_dir: Path | None = None) -> dict[str, str]:
+    """Allow only process basics and force non-production application endpoints."""
 
-    clean: dict[str, str] = {}
-    for name, value in os.environ.items():
-        upper = name.upper()
-        if any(part in upper for part in SENSITIVE_ENV_PARTS):
-            continue
-        clean[name] = value
+    clean = {
+        name: value for name, value in os.environ.items() if name.upper() in SAFE_INHERITED_ENV
+    }
     clean.update(
         {
+            "APP_ENV": "local",
+            "DATABASE_URL": (
+                "postgresql+asyncpg://nyan_agent:nyan_agent_local_only@"
+                "127.0.0.1:55432/nyan_shop_bot_agent_test"
+            ),
             "SUPPLIER_MODE": "mock",
             "PAYMENT_MODE": "disabled",
             "ALLOW_REAL_PURCHASES": "false",
+            "TELEGRAM_BOT_TOKEN": "",
+            "GIT_TERMINAL_PROMPT": "0",
+            "NO_COLOR": "1",
         }
     )
+    if isolation_dir is not None:
+        isolation_dir.mkdir(parents=True, exist_ok=True)
+        empty_config = isolation_dir / "empty.config"
+        empty_config.touch(exist_ok=True)
+        docker_config = isolation_dir / "docker"
+        docker_config.mkdir(exist_ok=True)
+        clean.update(
+            {
+                "AWS_CONFIG_FILE": str(empty_config),
+                "AWS_SHARED_CREDENTIALS_FILE": str(empty_config),
+                "AZURE_CONFIG_DIR": str(isolation_dir / "azure"),
+                "CLOUDSDK_CONFIG": str(isolation_dir / "gcloud"),
+                "DOCKER_CONFIG": str(docker_config),
+                "GH_CONFIG_DIR": str(isolation_dir / "gh"),
+                "GIT_CONFIG_GLOBAL": str(empty_config),
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "KUBECONFIG": str(empty_config),
+                "NPM_CONFIG_USERCONFIG": str(empty_config),
+                "PGPASSFILE": str(empty_config),
+                "PIP_CONFIG_FILE": str(empty_config),
+            }
+        )
     return clean
+
+
+def recover_session_id(path: Path, worker: WorkerKind) -> str | None:
+    """Recover an explicit CLI session from a partially written event stream."""
+
+    if not path.is_file():
+        return None
+    session_id: str | None = None
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if worker is WorkerKind.CODEX:
+            if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
+                session_id = str(event["thread_id"])
+        elif isinstance(event.get("conversation_id"), str):
+            session_id = str(event["conversation_id"])
+        result = event.get("result")
+        if (
+            worker is WorkerKind.ANTIGRAVITY
+            and isinstance(result, dict)
+            and isinstance(result.get("conversation_id"), str)
+        ):
+            session_id = str(result["conversation_id"])
+    return session_id
 
 
 def write_schema(model: type[BaseModel], path: Path) -> None:
@@ -84,7 +171,7 @@ def _run_monitored(
             stderr=stderr_file,
             text=True,
             encoding="utf-8",
-            env=sanitized_environment(),
+            env=sanitized_environment(stdout_path.parent / "isolated-environment"),
         )
         if stdin_text is not None:
             if process.stdin is None:

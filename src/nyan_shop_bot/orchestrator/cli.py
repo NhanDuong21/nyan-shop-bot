@@ -17,6 +17,7 @@ def _service(root: Path, state_dir: Path | None) -> RunnerService:
 
 
 def _start_background(service: RunnerService, run_id: str) -> dict[str, object]:
+    service.prepare_process_launch(run_id)
     launched_pid = spawn_background(service.root, service.state_dir, run_id)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,14 @@ RUN_FIELDS = {
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def freeze_task(task: TaskSpec) -> tuple[str, str]:
+    """Return a canonical task snapshot and its tamper-evident digest."""
+
+    snapshot = json.dumps(task.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+    return snapshot, digest
 
 
 class StateStore:
@@ -69,6 +78,8 @@ class StateStore:
                     run_id TEXT PRIMARY KEY,
                     task_id TEXT NOT NULL,
                     task_path TEXT NOT NULL,
+                    task_json TEXT,
+                    task_sha256 TEXT,
                     issue_number INTEGER NOT NULL,
                     repository TEXT NOT NULL,
                     branch TEXT NOT NULL,
@@ -79,6 +90,9 @@ class StateStore:
                     phase TEXT NOT NULL,
                     desired_state TEXT NOT NULL,
                     pid INTEGER,
+                    process_token TEXT,
+                    process_started_at TEXT,
+                    process_heartbeat_at TEXT,
                     worker_session_id TEXT,
                     reviewer_session_id TEXT,
                     head_sha TEXT,
@@ -93,6 +107,7 @@ class StateStore:
                     last_error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    deadline_at TEXT,
                     ended_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS claims (
@@ -115,6 +130,24 @@ class StateStore:
                 );
                 """
             )
+            self._ensure_run_columns(connection)
+
+    @staticmethod
+    def _ensure_run_columns(connection: sqlite3.Connection) -> None:
+        """Add fail-closed columns when opening pre-runner-fix local state."""
+
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)").fetchall()}
+        additions = {
+            "task_json": "TEXT",
+            "task_sha256": "TEXT",
+            "process_token": "TEXT",
+            "process_started_at": "TEXT",
+            "process_heartbeat_at": "TEXT",
+            "deadline_at": "TEXT",
+        }
+        for name, kind in additions.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
 
     def create_run(
         self,
@@ -127,6 +160,10 @@ class StateStore:
         max_workers: int,
     ) -> None:
         now = utc_now()
+        deadline_at = (
+            datetime.now(UTC) + timedelta(seconds=task.budget.max_elapsed_seconds)
+        ).isoformat()
+        task_json, task_sha256 = freeze_task(task)
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             active_count = int(
@@ -145,15 +182,18 @@ class StateStore:
             connection.execute(
                 """
                 INSERT INTO runs (
-                    run_id, task_id, task_path, issue_number, repository, branch,
+                    run_id, task_id, task_path, task_json, task_sha256,
+                    issue_number, repository, branch,
                     base_ref, base_sha, worktree_path, worker_kind, phase,
-                    desired_state, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    desired_state, created_at, updated_at, deadline_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
                     task.task_id,
                     str(task_path),
+                    task_json,
+                    task_sha256,
                     task.issue_number,
                     task.repository,
                     task.branch,
@@ -165,6 +205,7 @@ class StateStore:
                     DesiredState.RUNNING,
                     now,
                     now,
+                    deadline_at,
                 ),
             )
             connection.execute(
@@ -175,6 +216,73 @@ class StateStore:
                 (task.repository, task.issue_number, run_id, now),
             )
             self._append_event(connection, run_id, "run.created", {"base_sha": base_sha})
+
+    def acquire_process_lease(self, run_id: str, *, pid: int, token: str) -> None:
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT process_token FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown run: {run_id}")
+            if row["process_token"] is not None:
+                raise RuntimeError("run already has an active process lease")
+            connection.execute(
+                """
+                UPDATE runs
+                SET pid = ?, process_token = ?, process_started_at = ?,
+                    process_heartbeat_at = ?, updated_at = ?
+                WHERE run_id = ? AND process_token IS NULL
+                """,
+                (pid, token, now, now, now, run_id),
+            )
+            self._append_event(connection, run_id, "process.lease_acquired", {"pid": pid})
+
+    def heartbeat_process_lease(self, run_id: str, token: str) -> None:
+        now = utc_now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE runs SET process_heartbeat_at = ?, updated_at = ?
+                WHERE run_id = ? AND process_token = ?
+                """,
+                (now, now, run_id, token),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("runner process lease was lost")
+
+    def release_process_lease(self, run_id: str, token: str) -> None:
+        now = utc_now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE runs
+                SET pid = NULL, process_token = NULL, process_started_at = NULL,
+                    process_heartbeat_at = NULL, updated_at = ?
+                WHERE run_id = ? AND process_token = ?
+                """,
+                (now, run_id, token),
+            )
+            if cursor.rowcount == 1:
+                self._append_event(connection, run_id, "process.lease_released", {})
+
+    def clear_stale_process_lease(self, run_id: str, *, pid: int, token: str) -> None:
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE runs
+                SET pid = NULL, process_token = NULL, process_started_at = NULL,
+                    process_heartbeat_at = NULL, updated_at = ?
+                WHERE run_id = ? AND pid = ? AND process_token = ?
+                """,
+                (now, run_id, pid, token),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("stale process lease changed before it could be cleared")
+            self._append_event(connection, run_id, "process.stale_lease_cleared", {"pid": pid})
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         with self.connect() as connection:

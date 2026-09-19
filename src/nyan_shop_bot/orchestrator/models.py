@@ -172,9 +172,11 @@ class TaskSpec(StrictModel):
 
 class WorkerResult(StrictModel):
     status: WorkerStatus
-    issue: int = Field(ge=1)
+    issue: int = Field(ge=1, description="GitHub issue number, not the task ID suffix")
     branch: str
-    head_sha: str
+    head_sha: str = Field(
+        description="Exact 40-character lowercase HEAD observed before the runner-owned commit"
+    )
     changed_files: list[str]
     tests: list[TestEvidence]
     blockers: list[str]

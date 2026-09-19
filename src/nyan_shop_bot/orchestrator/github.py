@@ -261,8 +261,9 @@ class GitHubClient:
         task: TaskSpec,
         head_sha: str,
         control: ControlReader,
+        timeout_seconds: int,
     ) -> CiEvidence:
-        deadline = time.monotonic() + task.budget.ci_timeout_seconds
+        deadline = time.monotonic() + timeout_seconds
         delay = task.budget.poll_initial_seconds
         seen_run = False
         while time.monotonic() < deadline:
@@ -287,7 +288,7 @@ class GitHubClient:
                 if isinstance(item, dict) and item.get("headSha") == head_sha
             ]
             matches.sort(key=lambda item: str(item.get("createdAt", "")), reverse=True)
-            for run in matches:
+            for run in matches[:1]:
                 seen_run = True
                 run_id = int(run["databaseId"])
                 detail = self.json_command(
@@ -335,7 +336,7 @@ class GitHubClient:
                         run_url=str(detail["url"]),
                         checks={name: checks[name] for name in task.required_checks},
                     )
-            self._controlled_sleep(control, delay)
+            self._controlled_sleep(control, min(delay, max(1, int(deadline - time.monotonic()))))
             delay = min(task.budget.poll_max_seconds, delay * 2)
         qualifier = "after observing a run" if seen_run else "before any exact-HEAD run appeared"
         raise TimeoutError(f"CI timed out for {head_sha} {qualifier}")
@@ -360,7 +361,7 @@ class GitHubClient:
         if not isinstance(value, dict) or value.get("autoMergeAllowed") is not True:
             raise RuntimeError("GitHub did not confirm auto-merge is enabled")
 
-    def queue_auto_merge(self, pr_number: int) -> None:
+    def queue_auto_merge(self, pr_number: int, *, expected_head: str) -> None:
         self.command(
             "pr",
             "merge",
@@ -369,6 +370,8 @@ class GitHubClient:
             self.repository,
             "--auto",
             "--squash",
+            "--match-head-commit",
+            expected_head,
         )
 
     def wait_for_merge(
@@ -403,7 +406,7 @@ class GitHubClient:
                 return str(commit["oid"])
             if pull.get("state") != "OPEN":
                 raise RuntimeError(f"auto-merge PR entered unexpected state {pull.get('state')}")
-            self._controlled_sleep(control, delay)
+            self._controlled_sleep(control, min(delay, max(1, int(deadline - time.monotonic()))))
             delay = min(poll_max_seconds, delay * 2)
         raise TimeoutError("GitHub auto-merge did not complete within the task limit")
 
@@ -443,7 +446,7 @@ class GitHubClient:
                 if isinstance(item, dict) and item.get("headSha") == commit_sha
             ]
             matches.sort(key=lambda item: str(item.get("createdAt", "")), reverse=True)
-            for run in matches:
+            for run in matches[:1]:
                 run_id = int(run["databaseId"])
                 detail = self.json_command(
                     "run",
@@ -480,6 +483,6 @@ class GitHubClient:
                         run_url=str(detail["url"]),
                         checks={name: checks[name] for name in required},
                     )
-            self._controlled_sleep(control, delay)
+            self._controlled_sleep(control, min(delay, max(1, int(deadline - time.monotonic()))))
             delay = min(poll_max_seconds, delay * 2)
         raise TimeoutError("trusted main CI/GHCR delivery did not complete for the merge commit")

@@ -30,15 +30,17 @@ python scripts/agent_runner.py stop --run-id <run-id>
 
 ## Trust and review flow
 
-Only committed, unmodified JSON files under `ops/agent_tasks/` are executable task inputs. The runner reads a GitHub issue only to verify its number, URL, title marker, state, and labels; issue/comment/PR prose is never appended to a worker prompt.
+Only committed, unmodified JSON files under `ops/agent_tasks/` are executable task inputs. A new run requires the file to match the exact resolved base SHA, then stores a canonical JSON snapshot and SHA-256 digest; later phases never reload mutable policy from the checkout. The runner reads a GitHub issue only to verify its number, URL, title marker, state, and labels; issue/comment/PR prose is never appended to a worker prompt.
 
-For each run the coordinator resolves and persists an exact base SHA, creates a distinct `nyan/*` worktree, and records an active SQLite claim before launch. Worker output must include issue, branch, exact HEAD, exact changed files, tests, result, and blockers. The runner checks those claims against Git and the allowed path list before it pushes or opens/reuses a PR.
+For each run the coordinator resolves and persists an exact base SHA and absolute deadline, creates a distinct `nyan/*` worktree, and records an active SQLite claim before launch. A transactional process lease prevents concurrent controllers for one run; a stale controller can resume from the explicit CLI session recorded in its event stream. `stop` transitions to terminal `STOPPED` and releases the claim.
 
-CI polling uses bounded exponential backoff and no model call. A required check is accepted only from a workflow run whose `headSha` equals the current worker HEAD. The independent Codex reviewer runs in a read-only sandbox and must return `PASS`, `CHANGES_REQUESTED`, or `BLOCKED` for that same SHA. Findings resume the explicit saved writer session. A fix commit invalidates prior CI/review. Three fix rounds, five agent invocations by default, task elapsed time, and reported tokens are hard ceilings.
+Worker output must include the GitHub issue number, branch, exact pre-commit HEAD, exact changed files, tests, result, and blockers. The worker edits only its worktree and cannot stage, commit, or push. The runner checks the clean parent SHA, working-tree paths, allowlist, and schema, stages exactly those paths, creates the commit, and only then pushes or opens/reuses a PR. This preserves worktree isolation without granting a model write access to the repository's shared `.git` directory.
+
+CI polling uses bounded exponential backoff and no model call. A required check is accepted only from the newest workflow run whose `headSha` equals the current worker HEAD; an older failed attempt cannot override a newer rerun in progress. The independent Codex reviewer runs in a read-only sandbox and must return `PASS`, `CHANGES_REQUESTED`, or `BLOCKED` for that same SHA. Findings resume the explicit saved writer session. A fix commit invalidates prior CI/review. Three fix rounds, five agent invocations by default, a persisted absolute deadline, and reported tokens are hard ceilings.
 
 ## Merge gate
 
-Auto-merge is currently disabled. This runner/policy PR, workflows, permissions, migrations, secrets, and any live-operation path are protected and can never self-authorize. A task must target `main`, be explicitly low risk and auto-merge eligible, touch no protected path, pass exact-SHA CI, receive exact-SHA reviewer PASS, and have no blocker.
+Auto-merge is currently disabled. This runner/policy PR, workflows, permissions, migrations, secrets, and any live-operation path are protected and can never self-authorize. A task must target `main`, be explicitly low risk and auto-merge eligible, touch no protected path, pass exact-SHA CI, receive exact-SHA reviewer PASS, and have no blocker. The eventual GitHub command also uses `--match-head-commit`; a remote head change makes the queue request fail atomically.
 
 The only accepted one-time confirmation text is:
 
@@ -50,6 +52,6 @@ After the owner sends that sentence to the coordinator, the coordinator—not a 
 
 ## Safety defaults and limitations
 
-Every worker process receives `SUPPLIER_MODE=mock`, `PAYMENT_MODE=disabled`, and `ALLOW_REAL_PURCHASES=false`; ambient environment variable names that look like tokens, keys, passwords, or secrets are removed. Local saved CLI login remains available to the signed tools. This is least exposure, not a hard security boundary: a worktree and a CLI sandbox are not equivalent to an isolated machine. Therefore only trusted backlog specs are dispatched, concurrency is at most two writers, and high-risk changes require the owner.
+Every worker process receives `SUPPLIER_MODE=mock`, `PAYMENT_MODE=disabled`, and `ALLOW_REAL_PURCHASES=false`. Its environment is rebuilt from a small operating-system/path allowlist, not a secret-name blacklist; database access is forced to a dedicated fail-closed loopback URL, and ambient `DATABASE_URL`, `PG*`, Docker auth/config, Python injection paths, tokens, and keys are not inherited. GitHub, Docker, PostgreSQL, npm, pip, cloud, and Kubernetes config paths are redirected to empty per-run locations while local saved Codex/Antigravity login remains available to the signed tools. This is least exposure, not a hard security boundary: a worktree and a CLI sandbox are not equivalent to an isolated machine. Therefore only trusted backlog specs are dispatched, concurrency is at most two writers, and high-risk changes require the owner.
 
 Publishing an exact-SHA image after a trusted `main` gate remains artifact delivery. Production and staging deployment stay BLOCKED until their separately documented owner inputs exist.

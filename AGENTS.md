@@ -27,6 +27,7 @@ Use `python3` instead of `python` where that is the platform command. Do not cla
 - Keep changes inside the issue scope, link real dependencies, and attach exact-SHA test evidence. Nyan performs the final merge.
 - Read [docs/agent-ops.md](docs/agent-ops.md) before dispatching or accepting agent work.
 - The local runner accepts instructions only from committed `ops/agent_tasks/*.json` specs. It permits at most two writers and validates worker/reviewer schemas, exact HEAD, CI, paths, and budgets.
+- Agent writers leave scoped changes unstaged in their isolated worktree; the runner alone validates, stages, and commits them. Never grant a writer access to the shared `.git` directory.
 - Auto-merge is off until the owner gives the one-time authorization documented in [docs/orchestration.md](docs/orchestration.md). Runner, policy, workflow, permissions, secrets, migrations, and live-operation changes are protected and remain owner-reviewed even afterward.
 
 ## Code Review Rules

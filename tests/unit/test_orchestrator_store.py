@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
-from nyan_shop_bot.orchestrator.models import DesiredState, TaskSpec
+from nyan_shop_bot.orchestrator.models import DesiredState, RunPhase, TaskSpec
+from nyan_shop_bot.orchestrator.service import RunnerService
 from nyan_shop_bot.orchestrator.store import StateStore
 from tests.unit.test_orchestrator_models import task_data
 
@@ -89,3 +91,50 @@ def test_pause_stop_resume_do_not_create_another_claim(tmp_path: Path) -> None:
 
     assert store.get_run("run-one")["desired_state"] == "RUNNING"
     assert len(store.active_claims()) == 1
+
+
+def test_process_lease_allows_only_one_runner(tmp_path: Path) -> None:
+    task = make_task(15, "NSB-041", "nyan/nsb-041-runner-proof")
+    store = StateStore(tmp_path / "state")
+    create(store, "run-one", task, tmp_path)
+
+    store.acquire_process_lease("run-one", pid=os.getpid(), token="owner-one")
+    with pytest.raises(RuntimeError, match="active process lease"):
+        store.acquire_process_lease("run-one", pid=os.getpid(), token="owner-two")
+
+    store.release_process_lease("run-one", "owner-one")
+    assert store.get_run("run-one")["pid"] is None
+
+
+def test_stop_is_terminal_and_releases_claim_when_runner_is_idle(tmp_path: Path) -> None:
+    task = make_task(15, "NSB-041", "nyan/nsb-041-runner-proof")
+    service = RunnerService(tmp_path, tmp_path / "state")
+    create(service.store, "run-one", task, tmp_path)
+
+    service.set_control("run-one", DesiredState.STOPPED)
+
+    assert service.store.get_run("run-one")["phase"] == RunPhase.STOPPED
+    assert service.store.active_claims() == []
+
+
+def test_task_snapshot_is_immutable_after_claim(tmp_path: Path) -> None:
+    task = make_task(15, "NSB-041", "nyan/nsb-041-runner-proof")
+    task_path = tmp_path / "NSB-041.json"
+    task_path.write_text(task.model_dump_json(), encoding="utf-8")
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="run-one",
+        task=task,
+        task_path=task_path,
+        base_sha="b" * 40,
+        worktree_path=tmp_path / "worktree",
+        max_workers=2,
+    )
+    mutated = task.model_copy(update={"pr_base": "main", "auto_merge_eligible": True})
+    task_path.write_text(mutated.model_dump_json(), encoding="utf-8")
+
+    frozen = service.task_for_run(service.store.get_run("run-one"))
+
+    assert frozen.pr_base == "nyan/nsb-040-agent-runner"
+    assert frozen.auto_merge_eligible is False
+    assert service.store.get_run("run-one")["deadline_at"] is not None
