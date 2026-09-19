@@ -43,6 +43,34 @@ def git(
     return completed.stdout if raw else completed.stdout.strip()
 
 
+def git_bytes(
+    root: Path,
+    *arguments: str,
+    check: bool = True,
+    timeout_seconds: int = 60,
+    timeout_reader: TimeoutReader | None = None,
+) -> bytes:
+    """Run Git without text decoding so committed binary blobs can be authenticated."""
+
+    command_timeout = max(1, timeout_seconds)
+    if timeout_reader is not None:
+        command_timeout = max(1, min(command_timeout, timeout_reader()))
+    try:
+        completed = subprocess.run(
+            ("git", *arguments),
+            cwd=root,
+            check=False,
+            capture_output=True,
+            timeout=command_timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise TimeoutError(f"git {' '.join(arguments)} exceeded {command_timeout}s") from error
+    if check and completed.returncode:
+        detail = (completed.stderr or completed.stdout).decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"git {' '.join(arguments)} failed: {detail}")
+    return completed.stdout
+
+
 def _nul_paths(output: str) -> list[str]:
     return sorted(value.replace("\\", "/") for value in output.split("\0") if value)
 

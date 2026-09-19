@@ -35,6 +35,7 @@ from nyan_shop_bot.orchestrator.github import (
 from nyan_shop_bot.orchestrator.gitops import (
     create_worktree,
     git,
+    git_bytes,
     head_sha,
     pending_files,
     push_branch,
@@ -79,6 +80,19 @@ UI_ANTIGRAVITY_HOOK_HANDLER_SHA256 = (
 )
 IMPECCABLE_SKILL_VERSION = "4.3.1"
 IMPECCABLE_ENGINE_VERSION = "0.1.5"
+IMPECCABLE_PACKAGE = "impeccable@4.1.0"
+IMPECCABLE_NPM_INTEGRITY = (
+    "sha512-hnfdoUK/Xg3qPtL0/5xzh92qKOtmREOZloCmFgnC1nYh3M81ihwCQEL2QWKntYl8qg1OG+"
+    "jQ7wubR634PgTDIw=="
+)
+IMPECCABLE_INSTALL_COMMAND = (
+    "npx --yes impeccable@4.1.0 install -y --providers=codex,antigravity --scope=project --no-hooks"
+)
+IMPECCABLE_LOCK_FILE = ".impeccable/lock.json"
+IMPECCABLE_TREE_PREFIXES = (
+    ".agents/skills/impeccable",
+    ".agent/skills/impeccable",
+)
 IMPECCABLE_SKILL_FILES = (
     ".agents/skills/impeccable/SKILL.md",
     ".agent/skills/impeccable/SKILL.md",
@@ -87,6 +101,16 @@ IMPECCABLE_VERSION_FILES = (
     ".agents/skills/impeccable/scripts/VERSION",
     ".agent/skills/impeccable/scripts/VERSION",
 )
+
+IMPECCABLE_LOCK_SOURCE = {
+    "engine_version": IMPECCABLE_ENGINE_VERSION,
+    "install_command": IMPECCABLE_INSTALL_COMMAND,
+    "npm_dist_integrity": IMPECCABLE_NPM_INTEGRITY,
+    "package": IMPECCABLE_PACKAGE,
+    "providers": ["codex", "antigravity"],
+    "scope": "project",
+    "skill_version": IMPECCABLE_SKILL_VERSION,
+}
 
 AUTO_MERGE_BLOCKER = (
     "automatic merge is BLOCKED: GitHub's supported merge precondition binds the head SHA "
@@ -108,6 +132,76 @@ OWNER_GATE_PHASES = {
     RunPhase.READY_FOR_OWNER.value,
     RunPhase.MERGE_PENDING_CONFIRMATION.value,
 }
+
+
+def _validate_impeccable_skill_metadata(relative: str, content: bytes) -> None:
+    """Require exact provider-specific values in the initial YAML front matter."""
+
+    try:
+        lines = content.decode("utf-8").splitlines()
+    except UnicodeDecodeError as error:
+        raise RuntimeError(f"Impeccable worker skill is not UTF-8: {relative}") from error
+    if not lines or lines[0] != "---":
+        raise RuntimeError(f"Impeccable worker skill has malformed front matter: {relative}")
+    try:
+        closing = lines.index("---", 1)
+    except ValueError as error:
+        raise RuntimeError(
+            f"Impeccable worker skill has malformed front matter: {relative}"
+        ) from error
+    front_matter = lines[1:closing]
+
+    name_lines = [line for line in front_matter if line.startswith("name:")]
+    if name_lines != ["name: impeccable"]:
+        raise RuntimeError(f"Impeccable worker skill has an unexpected name: {relative}")
+
+    if relative.startswith(".agents/"):
+        metadata_indexes = [
+            index for index, line in enumerate(front_matter) if line.startswith("metadata:")
+        ]
+        if len(metadata_indexes) != 1 or front_matter[metadata_indexes[0]] != "metadata:":
+            raise RuntimeError(f"Impeccable worker skill has malformed metadata: {relative}")
+        metadata_index = metadata_indexes[0]
+        version_lines = [line for line in front_matter if line.startswith("  version:")]
+        expected_version = f"  version: {IMPECCABLE_SKILL_VERSION}"
+        if (
+            version_lines != [expected_version]
+            or metadata_index + 1 >= len(front_matter)
+            or front_matter[metadata_index + 1] != expected_version
+        ):
+            raise RuntimeError(f"Impeccable worker skill has an unexpected version: {relative}")
+    else:
+        version_lines = [line for line in front_matter if line.startswith("version:")]
+        if version_lines != [f"version: {IMPECCABLE_SKILL_VERSION}"]:
+            raise RuntimeError(f"Impeccable worker skill has an unexpected version: {relative}")
+
+
+def _validate_impeccable_lock(raw_lock: bytes) -> dict[str, str]:
+    """Validate the immutable installer provenance and full payload digest map."""
+
+    try:
+        payload = json.loads(raw_lock.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("Impeccable payload lock is not valid UTF-8 JSON") from error
+    if not isinstance(payload, dict) or set(payload) != {"files", "schema_version", "source"}:
+        raise RuntimeError("Impeccable payload lock has an unexpected schema")
+    if payload["schema_version"] != 1 or payload["source"] != IMPECCABLE_LOCK_SOURCE:
+        raise RuntimeError("Impeccable payload lock has unexpected provenance")
+    files = payload["files"]
+    if not isinstance(files, dict) or not files:
+        raise RuntimeError("Impeccable payload lock has no file inventory")
+    digests: dict[str, str] = {}
+    for relative, digest in files.items():
+        if (
+            not isinstance(relative, str)
+            or not any(relative.startswith(f"{prefix}/") for prefix in IMPECCABLE_TREE_PREFIXES)
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise RuntimeError("Impeccable payload lock contains an invalid file digest")
+        digests[relative] = digest
+    return digests
 
 
 def new_run_id(task_id: str) -> str:
@@ -1497,69 +1591,122 @@ string assertions whose quoting or Markdown punctuation can create false failure
             committed_policy[".agents/hooks.json"],
             committed_policy["scripts/deny-antigravity-delegation.mjs"],
         )
-        skill_digests: dict[str, str] = {}
-        for relative in (*IMPECCABLE_SKILL_FILES, *IMPECCABLE_VERSION_FILES):
-            try:
-                git(
-                    worktree,
-                    "ls-files",
-                    "--error-unmatch",
-                    "--",
-                    relative,
-                    timeout_reader=timeout_reader,
-                )
-            except RuntimeError as error:
-                raise RuntimeError(f"Impeccable worker file is not tracked: {relative}") from error
-            if git(
-                worktree,
-                "status",
-                "--porcelain=v1",
-                "--",
-                relative,
-                timeout_reader=timeout_reader,
-            ):
-                raise RuntimeError(f"Impeccable worker file is not clean: {relative}")
-            staged = git(
+
+        try:
+            git(
                 worktree,
                 "ls-files",
-                "--stage",
+                "--error-unmatch",
                 "--",
-                relative,
+                IMPECCABLE_LOCK_FILE,
                 timeout_reader=timeout_reader,
             )
-            mode = staged.split(maxsplit=1)[0] if staged else ""
-            if mode not in {"100644", "100755"}:
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"Impeccable payload lock is not tracked: {IMPECCABLE_LOCK_FILE}"
+            ) from error
+        if git(
+            worktree,
+            "status",
+            "--porcelain=v1",
+            "--",
+            IMPECCABLE_LOCK_FILE,
+            *IMPECCABLE_TREE_PREFIXES,
+            timeout_reader=timeout_reader,
+        ):
+            raise RuntimeError("Impeccable payload or lock is not clean")
+        lock_stage = git(
+            worktree,
+            "ls-files",
+            "--stage",
+            "--",
+            IMPECCABLE_LOCK_FILE,
+            timeout_reader=timeout_reader,
+        )
+        lock_mode = lock_stage.split(maxsplit=1)[0] if lock_stage else ""
+        if lock_mode not in {"100644", "100755"}:
+            raise RuntimeError("Impeccable payload lock is not a regular committed blob")
+        raw_lock = git_bytes(
+            worktree,
+            "show",
+            f"HEAD:{IMPECCABLE_LOCK_FILE}",
+            timeout_reader=timeout_reader,
+        )
+        expected_digests = _validate_impeccable_lock(raw_lock)
+
+        raw_tree = git(
+            worktree,
+            "ls-tree",
+            "-r",
+            "-z",
+            "HEAD",
+            "--",
+            *IMPECCABLE_TREE_PREFIXES,
+            timeout_reader=timeout_reader,
+            raw=True,
+        )
+        tree_entries: dict[str, str] = {}
+        for entry in (value for value in raw_tree.split("\0") if value):
+            try:
+                metadata, relative = entry.split("\t", 1)
+                mode, kind, _object_id = metadata.split()
+            except ValueError as error:
+                raise RuntimeError("Impeccable payload tree entry is malformed") from error
+            if kind != "blob" or mode not in {"100644", "100755"}:
                 raise RuntimeError(
-                    f"Impeccable worker file is not a regular committed blob: {relative}"
+                    f"Impeccable payload entry is not a regular committed blob: {relative}"
                 )
-            committed = git(
+            tree_entries[relative] = mode
+        if set(tree_entries) != set(expected_digests):
+            missing = sorted(set(expected_digests) - set(tree_entries))
+            extra = sorted(set(tree_entries) - set(expected_digests))
+            raise RuntimeError(
+                f"Impeccable payload inventory differs from lock: missing={missing}, extra={extra}"
+            )
+
+        actual_digests: dict[str, str] = {}
+        for relative in sorted(tree_entries):
+            payload_blob = git_bytes(
                 worktree,
                 "show",
                 f"HEAD:{relative}",
                 timeout_reader=timeout_reader,
-                raw=True,
             )
-            skill_digests[relative] = sha256(committed.encode("utf-8")).hexdigest()
-            if relative.endswith("SKILL.md"):
-                if (
-                    "name: impeccable" not in committed
-                    or f"version: {IMPECCABLE_SKILL_VERSION}" not in committed
-                ):
+            digest = sha256(payload_blob).hexdigest()
+            if digest != expected_digests[relative]:
+                raise RuntimeError(f"Impeccable payload digest differs from lock: {relative}")
+            actual_digests[relative] = digest
+            if relative in IMPECCABLE_SKILL_FILES:
+                _validate_impeccable_skill_metadata(relative, payload_blob)
+            elif relative in IMPECCABLE_VERSION_FILES:
+                try:
+                    engine_version = payload_blob.decode("utf-8").strip()
+                except UnicodeDecodeError as error:
                     raise RuntimeError(
-                        f"Impeccable worker skill has an unexpected version: {relative}"
+                        f"Impeccable worker engine version is not UTF-8: {relative}"
+                    ) from error
+                if engine_version != IMPECCABLE_ENGINE_VERSION:
+                    raise RuntimeError(
+                        f"Impeccable worker engine has an unexpected version: {relative}"
                     )
-            elif committed.strip() != IMPECCABLE_ENGINE_VERSION:
-                raise RuntimeError(
-                    f"Impeccable worker engine has an unexpected version: {relative}"
-                )
-        if skill_digests[IMPECCABLE_VERSION_FILES[0]] != skill_digests[IMPECCABLE_VERSION_FILES[1]]:
+        required_payload = set((*IMPECCABLE_SKILL_FILES, *IMPECCABLE_VERSION_FILES))
+        if not required_payload.issubset(actual_digests):
+            raise RuntimeError("Impeccable payload lock omits a required skill or engine version")
+        if (
+            actual_digests[IMPECCABLE_VERSION_FILES[0]]
+            != actual_digests[IMPECCABLE_VERSION_FILES[1]]
+        ):
             raise RuntimeError("Codex and Antigravity Impeccable engine versions differ")
         self.store.append_event(
             run_id,
             "ui.impeccable_verified",
             {
                 "engine_version": IMPECCABLE_ENGINE_VERSION,
-                "skill_digests": skill_digests,
+                "lock_digest": sha256(raw_lock).hexdigest(),
+                "payload_file_count": len(actual_digests),
+                "skill_digests": {
+                    relative: actual_digests[relative] for relative in IMPECCABLE_SKILL_FILES
+                },
                 "skill_version": IMPECCABLE_SKILL_VERSION,
                 "worktree": str(worktree),
             },
