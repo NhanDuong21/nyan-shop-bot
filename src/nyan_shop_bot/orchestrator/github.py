@@ -392,7 +392,38 @@ class GitHubClient:
             expected_head,
         )
 
-    def merged_commit_if_exact(self, pr_number: int, *, expected_head: str) -> str:
+    def assert_open_pull_exact(
+        self,
+        pr_number: int,
+        *,
+        expected_head: str,
+        expected_base: str,
+    ) -> None:
+        pull = self.json_command(
+            "pr",
+            "view",
+            str(pr_number),
+            "--repo",
+            self.repository,
+            "--json",
+            "state,headRefOid,baseRefName,url",
+        )
+        if not isinstance(pull, dict):
+            raise RuntimeError("auto-merge PR response was not an object")
+        if pull.get("state") != "OPEN":
+            raise RuntimeError("auto-merge PR is not open")
+        if pull.get("headRefOid") != expected_head:
+            raise RuntimeError("auto-merge PR HEAD changed after exact-SHA review")
+        if pull.get("baseRefName") != expected_base:
+            raise RuntimeError("auto-merge PR base changed after policy review")
+
+    def merged_commit_if_exact(
+        self,
+        pr_number: int,
+        *,
+        expected_head: str,
+        expected_base: str,
+    ) -> str:
         """Reconcile a manual owner merge without trusting a changed PR head."""
 
         pull = self.json_command(
@@ -402,10 +433,12 @@ class GitHubClient:
             "--repo",
             self.repository,
             "--json",
-            "state,headRefOid,mergeCommit,url",
+            "state,headRefOid,baseRefName,mergeCommit,url",
         )
         if not isinstance(pull, dict) or pull.get("headRefOid") != expected_head:
             raise RuntimeError("owner merge PR HEAD does not match the reviewed exact SHA")
+        if pull.get("baseRefName") != expected_base:
+            raise RuntimeError("owner merge PR base does not match the trusted task base")
         state = pull.get("state")
         if state == "OPEN":
             raise PullRequestOpen("owner merge is not complete; PR is still open")
@@ -422,6 +455,7 @@ class GitHubClient:
         *,
         pr_number: int,
         expected_head: str,
+        expected_base: str,
         control: ControlReader,
         timeout_seconds: int,
         poll_initial_seconds: int,
@@ -438,10 +472,12 @@ class GitHubClient:
                 "--repo",
                 self.repository,
                 "--json",
-                "state,headRefOid,mergeCommit,url",
+                "state,headRefOid,baseRefName,mergeCommit,url",
             )
             if not isinstance(pull, dict) or pull.get("headRefOid") != expected_head:
                 raise RuntimeError("auto-merge PR HEAD changed after exact-SHA approval")
+            if pull.get("baseRefName") != expected_base:
+                raise RuntimeError("auto-merge PR base changed after policy approval")
             if pull.get("state") == "MERGED":
                 commit = pull.get("mergeCommit")
                 if not isinstance(commit, dict) or not isinstance(commit.get("oid"), str):

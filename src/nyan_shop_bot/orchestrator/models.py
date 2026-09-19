@@ -80,8 +80,8 @@ class TestEvidence(StrictModel):
 
 class Finding(StrictModel):
     severity: Literal["critical", "high", "medium", "low"]
-    file: str | None = Field(default=None, max_length=500)
-    line: int | None = Field(default=None, ge=1)
+    file: str | None = Field(max_length=500)
+    line: int | None = Field(ge=1)
     message: str = Field(min_length=1, max_length=2000)
     evidence: str = Field(min_length=1, max_length=4000)
 

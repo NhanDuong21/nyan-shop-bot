@@ -104,3 +104,11 @@ def test_generated_schemas_forbid_unknown_fields() -> None:
 
     assert worker_schema["additionalProperties"] is False
     assert review_schema["additionalProperties"] is False
+    finding_schema = review_schema["$defs"]["Finding"]
+    assert set(finding_schema["required"]) == {
+        "severity",
+        "file",
+        "line",
+        "message",
+        "evidence",
+    }

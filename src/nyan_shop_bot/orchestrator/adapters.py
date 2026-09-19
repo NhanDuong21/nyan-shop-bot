@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -68,6 +70,98 @@ SAFE_INHERITED_ENV = {
 
 class AgentStopped(RuntimeError):
     """Raised when an owner stop request terminates an active agent."""
+
+
+def process_is_running(pid: int) -> bool:
+    """Return whether a PID still represents an executing process."""
+
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes  # noqa: PLC0415 - Windows-only import
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = cast(Any, ctypes).windll.kernel32
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return False
+        exit_code = ctypes.c_ulong()
+        try:
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _signal_process_tree(pid: int, *, grace_seconds: float) -> bool:
+    if os.name == "nt":
+        try:
+            completed = subprocess.run(
+                ("taskkill", "/PID", str(pid), "/T", "/F"),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=max(1.0, grace_seconds),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return completed.returncode == 0 or not process_is_running(pid)
+
+    killpg = cast(Callable[[int, int], None], os.killpg)  # type: ignore[attr-defined]
+    try:
+        killpg(pid, int(signal.SIGTERM))
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    deadline = time.monotonic() + max(0.1, grace_seconds / 2)
+    while time.monotonic() < deadline:
+        if not process_is_running(pid):
+            return True
+        time.sleep(0.05)
+    try:
+        killpg(pid, int(getattr(signal, "SIGKILL", 9)))
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return True
+
+
+def terminate_process_tree(pid: int, *, grace_seconds: float = 3.0) -> bool:
+    """Terminate the registered launcher and every CLI process below it."""
+
+    if pid <= 0 or not process_is_running(pid):
+        return True
+    if not _signal_process_tree(pid, grace_seconds=grace_seconds):
+        return False
+    deadline = time.monotonic() + max(0.1, grace_seconds)
+    while time.monotonic() < deadline:
+        if not process_is_running(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _terminate_attached_process(process: subprocess.Popen[str]) -> bool:
+    """Terminate a child tree and reap its registered launcher."""
+
+    if process.poll() is not None:
+        return True
+    if not _signal_process_tree(process.pid, grace_seconds=3.0):
+        return False
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        return False
+    return True
 
 
 def sanitized_environment(isolation_dir: Path | None = None) -> dict[str, str]:
@@ -162,37 +256,75 @@ def _run_monitored(
     on_process_start: ProcessStarted | None = None,
     on_process_end: ProcessFinished | None = None,
 ) -> None:
+    launch_stem = stdout_path.stem
+    launch_spec = stdout_path.parent / f"{launch_stem}.launch.json"
+    launch_stdin = stdout_path.parent / f"{launch_stem}.stdin.txt"
+    launch_ready = stdout_path.parent / f"{launch_stem}.launcher-ready"
+    launch_start = stdout_path.parent / f"{launch_stem}.launcher-start"
+    launch_ready.unlink(missing_ok=True)
+    launch_start.unlink(missing_ok=True)
+    if stdin_text is None:
+        launch_stdin.unlink(missing_ok=True)
+        stdin_path: str | None = None
+    else:
+        launch_stdin.write_text(stdin_text, encoding="utf-8")
+        stdin_path = str(launch_stdin)
+    launch_spec.write_text(
+        json.dumps({"command": command, "stdin_path": stdin_path}),
+        encoding="utf-8",
+    )
+    launcher = Path(__file__).with_name("agent_process.py")
+    wrapped_command = [
+        sys.executable,
+        str(launcher),
+        "--spec",
+        str(launch_spec),
+        "--ready",
+        str(launch_ready),
+        "--start",
+        str(launch_start),
+    ]
     started = time.monotonic()
     with (
         stdout_path.open("w", encoding="utf-8") as stdout_file,
         stderr_path.open("w", encoding="utf-8") as stderr_file,
     ):
         process = subprocess.Popen(  # noqa: S603 - executable is resolved and arguments are fixed
-            command,
+            wrapped_command,
             cwd=cwd,
-            stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
             stdout=stdout_file,
             stderr=stderr_file,
             text=True,
             encoding="utf-8",
             env=sanitized_environment(stdout_path.parent / "isolated-environment"),
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            start_new_session=os.name != "nt",
         )
         process_attached = False
         try:
+            ready_deadline = time.monotonic() + 10
+            while not launch_ready.is_file():
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"agent launcher exited {process.returncode} before registration"
+                    )
+                if time.monotonic() >= ready_deadline:
+                    raise TimeoutError("agent launcher did not reach its registration barrier")
+                time.sleep(0.02)
             if on_process_start is not None:
                 on_process_start(process.pid)
                 process_attached = True
-            if stdin_text is not None:
-                if process.stdin is None:
-                    raise RuntimeError("agent stdin was not created")
-                process.stdin.write(stdin_text)
-                process.stdin.close()
+            launch_start.write_text("start", encoding="utf-8")
             while process.poll() is None:
-                # Pause/stop are cooperative for an active model turn: finish this bounded
-                # invocation, persist its result, then stop at the next safe checkpoint.
-                # CI waits stop immediately because they have no partial model state.
-                control()
+                desired = control()
+                if desired is DesiredState.STOPPED:
+                    if not _terminate_attached_process(process):
+                        raise RuntimeError("could not terminate the registered agent process tree")
+                    raise AgentStopped("owner stop terminated the active agent process tree")
                 if time.monotonic() - started > timeout_seconds:
+                    if not _terminate_attached_process(process):
+                        raise RuntimeError("timed-out agent process tree is still alive")
                     raise TimeoutError(f"agent exceeded {timeout_seconds}s invocation limit")
                 time.sleep(1)
             if process.returncode != 0:
@@ -200,13 +332,8 @@ def _run_monitored(
                 raise RuntimeError(f"agent exited {process.returncode}: {tail}")
         finally:
             if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=10)
-            if process_attached and on_process_end is not None:
+                _terminate_attached_process(process)
+            if process_attached and process.poll() is not None and on_process_end is not None:
                 on_process_end(process.pid)
 
 
@@ -499,3 +626,12 @@ class AntigravityAdapter:
             usage=usage,
         )
         return result, invocation
+
+
+def recover_completed_invocation(path: Path, worker: WorkerKind) -> tuple[str, Usage]:
+    """Parse durable terminal events without launching another model process."""
+
+    if worker is WorkerKind.CODEX:
+        return _parse_codex_events(path)
+    session_id, usage, _ = _parse_antigravity_events(path)
+    return session_id, usage

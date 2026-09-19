@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from nyan_shop_bot.orchestrator.models import SHA_PATTERN, TaskSpec, WorkerResult, WorkerStatus
 from nyan_shop_bot.orchestrator.policy import paths_are_allowed
+
+TimeoutReader = Callable[[], int]
 
 
 def git(
@@ -14,7 +17,11 @@ def git(
     *arguments: str,
     check: bool = True,
     timeout_seconds: int = 60,
+    timeout_reader: TimeoutReader | None = None,
 ) -> str:
+    command_timeout = max(1, timeout_seconds)
+    if timeout_reader is not None:
+        command_timeout = max(1, min(command_timeout, timeout_reader()))
     try:
         completed = subprocess.run(
             ("git", *arguments),
@@ -23,32 +30,43 @@ def git(
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=max(1, timeout_seconds),
+            timeout=command_timeout,
         )
     except subprocess.TimeoutExpired as error:
-        raise TimeoutError(
-            f"git {' '.join(arguments)} exceeded {max(1, timeout_seconds)}s"
-        ) from error
+        raise TimeoutError(f"git {' '.join(arguments)} exceeded {command_timeout}s") from error
     if check and completed.returncode:
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise RuntimeError(f"git {' '.join(arguments)} failed: {detail}")
     return completed.stdout.strip()
 
 
-def resolve_sha(root: Path, revision: str, *, timeout_seconds: int = 60) -> str:
+def resolve_sha(
+    root: Path,
+    revision: str,
+    *,
+    timeout_seconds: int = 60,
+    timeout_reader: TimeoutReader | None = None,
+) -> str:
     sha = git(
         root,
         "rev-parse",
         "--verify",
         f"{revision}^{{commit}}",
         timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
     )
     if not SHA_PATTERN.fullmatch(sha):
         raise RuntimeError(f"revision did not resolve to a full SHA: {revision}")
     return sha
 
 
-def verify_tracked_task(root: Path, task_path: Path, *, timeout_seconds: int = 60) -> Path:
+def verify_tracked_task(
+    root: Path,
+    task_path: Path,
+    *,
+    timeout_seconds: int = 60,
+    timeout_reader: TimeoutReader | None = None,
+) -> Path:
     resolved_root = root.resolve()
     resolved_task = task_path.resolve()
     try:
@@ -65,8 +83,17 @@ def verify_tracked_task(root: Path, task_path: Path, *, timeout_seconds: int = 6
         "--",
         relative_text,
         timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
     )
-    if git(root, "status", "--porcelain", "--", relative_text, timeout_seconds=timeout_seconds):
+    if git(
+        root,
+        "status",
+        "--porcelain",
+        "--",
+        relative_text,
+        timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
+    ):
         raise RuntimeError("task spec must be committed and unmodified")
     return resolved_task
 
@@ -78,6 +105,7 @@ def create_worktree(
     branch: str,
     base_sha: str,
     timeout_seconds: int = 60,
+    timeout_reader: TimeoutReader | None = None,
 ) -> None:
     if worktree_path.exists():
         actual = Path(
@@ -86,12 +114,17 @@ def create_worktree(
                 "rev-parse",
                 "--show-toplevel",
                 timeout_seconds=timeout_seconds,
+                timeout_reader=timeout_reader,
             )
         ).resolve()
         if actual != worktree_path.resolve():
             raise RuntimeError(f"unexpected existing path at {worktree_path}")
         actual_branch = git(
-            worktree_path, "branch", "--show-current", timeout_seconds=timeout_seconds
+            worktree_path,
+            "branch",
+            "--show-current",
+            timeout_seconds=timeout_seconds,
+            timeout_reader=timeout_reader,
         )
         if actual_branch != branch:
             raise RuntimeError(f"existing worktree uses {actual_branch}, expected {branch}")
@@ -104,6 +137,7 @@ def create_worktree(
         f"refs/heads/{branch}",
         check=False,
         timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
     )
     if local_branch:
         raise RuntimeError(f"branch exists without this run's worktree: {branch}")
@@ -114,6 +148,7 @@ def create_worktree(
         "origin",
         f"refs/heads/{branch}",
         timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
     )
     if remote_branch:
         raise RuntimeError(f"remote branch already exists before claim: {branch}")
@@ -127,11 +162,22 @@ def create_worktree(
         str(worktree_path),
         base_sha,
         timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
     )
 
 
-def head_sha(worktree: Path, *, timeout_seconds: int = 60) -> str:
-    return resolve_sha(worktree, "HEAD", timeout_seconds=timeout_seconds)
+def head_sha(
+    worktree: Path,
+    *,
+    timeout_seconds: int = 60,
+    timeout_reader: TimeoutReader | None = None,
+) -> str:
+    return resolve_sha(
+        worktree,
+        "HEAD",
+        timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
+    )
 
 
 def changed_files(
@@ -140,6 +186,7 @@ def changed_files(
     head: str,
     *,
     timeout_seconds: int = 60,
+    timeout_reader: TimeoutReader | None = None,
 ) -> list[str]:
     output = git(
         worktree,
@@ -147,19 +194,40 @@ def changed_files(
         "--name-only",
         f"{base_sha}...{head}",
         timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
     )
     return sorted(line.strip().replace("\\", "/") for line in output.splitlines() if line.strip())
 
 
-def pending_files(worktree: Path, *, timeout_seconds: int = 60) -> list[str]:
-    tracked = git(worktree, "diff", "--name-only", "HEAD", timeout_seconds=timeout_seconds)
-    staged = git(worktree, "diff", "--cached", "--name-only", timeout_seconds=timeout_seconds)
+def pending_files(
+    worktree: Path,
+    *,
+    timeout_seconds: int = 60,
+    timeout_reader: TimeoutReader | None = None,
+) -> list[str]:
+    tracked = git(
+        worktree,
+        "diff",
+        "--name-only",
+        "HEAD",
+        timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
+    )
+    staged = git(
+        worktree,
+        "diff",
+        "--cached",
+        "--name-only",
+        timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
+    )
     untracked = git(
         worktree,
         "ls-files",
         "--others",
         "--exclude-standard",
         timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
     )
     return sorted(
         {
@@ -178,26 +246,51 @@ def validate_and_commit_worker_changes(
     expected_parent: str,
     result: WorkerResult,
     timeout_seconds: int = 60,
+    timeout_reader: TimeoutReader | None = None,
 ) -> tuple[str, list[str]]:
     if result.issue != task.issue_number:
         raise RuntimeError("worker result names a different issue")
     if result.branch != task.branch:
         raise RuntimeError("worker result names a different branch")
-    if git(worktree, "branch", "--show-current", timeout_seconds=timeout_seconds) != task.branch:
+    if (
+        git(
+            worktree,
+            "branch",
+            "--show-current",
+            timeout_seconds=timeout_seconds,
+            timeout_reader=timeout_reader,
+        )
+        != task.branch
+    ):
         raise RuntimeError("worker worktree is on a different branch")
-    actual_head = head_sha(worktree, timeout_seconds=timeout_seconds)
+    actual_head = head_sha(
+        worktree,
+        timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
+    )
     if actual_head != result.head_sha:
         raise RuntimeError(f"worker result HEAD {result.head_sha} != actual {actual_head}")
     if actual_head != expected_parent:
         raise RuntimeError("worker changed Git history; only the runner may commit")
-    actual_files = pending_files(worktree, timeout_seconds=timeout_seconds)
+    actual_files = pending_files(
+        worktree,
+        timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
+    )
     if not actual_files:
         raise RuntimeError("worker reported success without scoped working-tree changes")
     if sorted(result.changed_files) != actual_files:
         raise RuntimeError("worker changed_files does not match the working tree")
     if not paths_are_allowed(actual_files, task.allowed_paths):
         raise RuntimeError(f"worker changed files outside allowed scope: {actual_files}")
-    git(worktree, "add", "--", *actual_files, timeout_seconds=timeout_seconds)
+    git(
+        worktree,
+        "add",
+        "--",
+        *actual_files,
+        timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
+    )
     staged_files = sorted(
         line.strip().replace("\\", "/")
         for line in git(
@@ -206,6 +299,7 @@ def validate_and_commit_worker_changes(
             "--cached",
             "--name-only",
             timeout_seconds=timeout_seconds,
+            timeout_reader=timeout_reader,
         ).splitlines()
         if line.strip()
     )
@@ -217,11 +311,22 @@ def validate_and_commit_worker_changes(
         "-m",
         f"{task.task_id}: automated scoped change",
         timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
     )
-    committed_head = head_sha(worktree, timeout_seconds=timeout_seconds)
+    committed_head = head_sha(
+        worktree,
+        timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
+    )
     if committed_head == expected_parent:
         raise RuntimeError("runner commit did not advance HEAD")
-    if git(worktree, "status", "--porcelain=v1", timeout_seconds=timeout_seconds):
+    if git(
+        worktree,
+        "status",
+        "--porcelain=v1",
+        timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
+    ):
         raise RuntimeError("runner-owned commit did not leave a clean worktree")
     return committed_head, actual_files
 
@@ -233,6 +338,7 @@ def validate_recovered_runner_commit(
     expected_parent: str,
     result: WorkerResult,
     timeout_seconds: int = 60,
+    timeout_reader: TimeoutReader | None = None,
 ) -> tuple[str, list[str]]:
     """Reconcile the single exact runner-owned commit after a controller crash."""
 
@@ -242,10 +348,28 @@ def validate_recovered_runner_commit(
         raise RuntimeError("recovered worker result does not match the trusted task")
     if result.head_sha != expected_parent:
         raise RuntimeError("recovered worker result is not bound to the expected parent")
-    if git(worktree, "branch", "--show-current", timeout_seconds=timeout_seconds) != task.branch:
+    if (
+        git(
+            worktree,
+            "branch",
+            "--show-current",
+            timeout_seconds=timeout_seconds,
+            timeout_reader=timeout_reader,
+        )
+        != task.branch
+    ):
         raise RuntimeError("recovered worktree is on a different branch")
-    current_head = head_sha(worktree, timeout_seconds=timeout_seconds)
-    parent = resolve_sha(worktree, "HEAD^", timeout_seconds=timeout_seconds)
+    current_head = head_sha(
+        worktree,
+        timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
+    )
+    parent = resolve_sha(
+        worktree,
+        "HEAD^",
+        timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
+    )
     if current_head == expected_parent or parent != expected_parent:
         raise RuntimeError("recovered history is not one commit above the expected parent")
     count = git(
@@ -254,6 +378,7 @@ def validate_recovered_runner_commit(
         "--count",
         f"{expected_parent}..{current_head}",
         timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
     )
     if count != "1":
         raise RuntimeError("recovered history contains more than one new commit")
@@ -264,23 +389,37 @@ def validate_recovered_runner_commit(
         "--format=%s",
         current_head,
         timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
     )
     if subject != f"{task.task_id}: automated scoped change":
         raise RuntimeError("recovered commit was not created by this runner task")
-    if git(worktree, "status", "--porcelain=v1", timeout_seconds=timeout_seconds):
+    if git(
+        worktree,
+        "status",
+        "--porcelain=v1",
+        timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
+    ):
         raise RuntimeError("recovered runner commit did not leave a clean worktree")
     files = changed_files(
         worktree,
         expected_parent,
         current_head,
         timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
     )
     if files != sorted(result.changed_files) or not paths_are_allowed(files, task.allowed_paths):
         raise RuntimeError("recovered commit paths do not match the validated worker result")
     return current_head, files
 
 
-def push_branch(worktree: Path, branch: str, *, timeout_seconds: int = 60) -> None:
+def push_branch(
+    worktree: Path,
+    branch: str,
+    *,
+    timeout_seconds: int = 60,
+    timeout_reader: TimeoutReader | None = None,
+) -> None:
     git(
         worktree,
         "push",
@@ -288,4 +427,5 @@ def push_branch(worktree: Path, branch: str, *, timeout_seconds: int = 60) -> No
         "origin",
         branch,
         timeout_seconds=timeout_seconds,
+        timeout_reader=timeout_reader,
     )

@@ -5,14 +5,20 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from nyan_shop_bot.orchestrator.adapters import (
+    AgentStopped,
     AntigravityAdapter,
     CodexAdapter,
+    process_is_running,
+    recover_completed_invocation,
     recover_session_id,
+    terminate_process_tree,
 )
 from nyan_shop_bot.orchestrator.github import (
     GitHubClient,
@@ -38,6 +44,7 @@ from nyan_shop_bot.orchestrator.models import (
     ReviewVerdict,
     RunPhase,
     TaskSpec,
+    Usage,
     WorkerKind,
     WorkerResult,
     WorkerStatus,
@@ -57,6 +64,15 @@ TERMINAL_PHASES = {
     RunPhase.READY_FOR_OWNER.value,
     RunPhase.MERGE_PENDING_CONFIRMATION.value,
     RunPhase.STOPPED.value,
+}
+FINAL_PHASES = {
+    RunPhase.BLOCKED.value,
+    RunPhase.COMPLETED.value,
+    RunPhase.STOPPED.value,
+}
+OWNER_GATE_PHASES = {
+    RunPhase.READY_FOR_OWNER.value,
+    RunPhase.MERGE_PENDING_CONFIRMATION.value,
 }
 
 
@@ -168,6 +184,9 @@ class RunnerService:
         except StopRequested as error:
             self.store.append_event(run_id, "process.checkpoint_exit", {"reason": str(error)})
             self._stop_run(run_id)
+        except AgentStopped as error:
+            self.store.append_event(run_id, "agent.stop_completed", {"reason": str(error)})
+            self._stop_run(run_id)
         except Exception as error:
             self._block(run_id, str(error))
             raise
@@ -195,6 +214,7 @@ class RunnerService:
                     branch=task.branch,
                     base_sha=base_sha,
                     timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
+                    timeout_reader=self._git_timeout_reader(run_id, task),
                 )
                 github.ensure_claim(task, run_id, base_sha)
                 self.store.transition(run_id, RunPhase.CLAIMED)
@@ -222,6 +242,7 @@ class RunnerService:
                     worktree,
                     task.branch,
                     timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
+                    timeout_reader=self._git_timeout_reader(run_id, task),
                 )
                 pull = github.ensure_pull_request(task, current_head, run_id)
                 github.mark_in_review(task)
@@ -320,12 +341,22 @@ class RunnerService:
             if not result_path.is_file():
                 raise RuntimeError("worker history advanced without a durable result")
             result = WorkerResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+            session_id, usage = recover_completed_invocation(events_path, task.worker)
+            self._account_invocation(
+                run_id,
+                task,
+                role="worker",
+                session_id=session_id,
+                usage=usage,
+                events_path=events_path,
+            )
             committed_head, actual_files = validate_recovered_runner_commit(
                 worktree,
                 task=task,
                 expected_parent=expected_parent,
                 result=result,
                 timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
+                timeout_reader=self._git_timeout_reader(run_id, task),
             )
             self.store.update_run(
                 run_id,
@@ -352,9 +383,18 @@ class RunnerService:
                 )
             except ValueError:
                 recovered_result = None
-            if recovered_result is not None and recovered_result.status is WorkerStatus.BLOCKED:
-                raise RuntimeError(f"worker blocked: {'; '.join(recovered_result.blockers)}")
             if recovered_result is not None:
+                session_id, usage = recover_completed_invocation(events_path, task.worker)
+                self._account_invocation(
+                    run_id,
+                    task,
+                    role="worker",
+                    session_id=session_id,
+                    usage=usage,
+                    events_path=events_path,
+                )
+                if recovered_result.status is WorkerStatus.BLOCKED:
+                    raise RuntimeError(f"worker blocked: {'; '.join(recovered_result.blockers)}")
                 try:
                     committed_head, actual_files = validate_and_commit_worker_changes(
                         worktree,
@@ -362,6 +402,7 @@ class RunnerService:
                         expected_parent=expected_parent,
                         result=recovered_result,
                         timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
+                        timeout_reader=self._git_timeout_reader(run_id, task),
                     )
                 except RuntimeError:
                     if (
@@ -394,15 +435,15 @@ class RunnerService:
         existing_session = (
             str(run["worker_session_id"]) if run["worker_session_id"] is not None else None
         )
-        session_id = recovered_session or existing_session
-        if session_id is not None:
-            self.store.update_run(run_id, worker_session_id=session_id)
+        resumable_session = recovered_session or existing_session
+        if resumable_session is not None:
+            self.store.update_run(run_id, worker_session_id=resumable_session)
         resume_phase = RunPhase.CLAIMED if fix_rounds == 0 else RunPhase.FIX_REQUESTED
         self.store.transition(
             run_id,
             resume_phase,
             payload={
-                "recovered_session": session_id,
+                "recovered_session": resumable_session,
                 "interrupted_events": str(events_path),
             },
         )
@@ -476,11 +517,13 @@ class RunnerService:
                 on_process_start=lambda pid: self._agent_started(run_id, pid),
                 on_process_end=lambda pid: self._agent_finished(run_id, pid),
             )
-        total_tokens = int(run["total_tokens"]) + invocation.usage.total
-        self.store.update_run(
+        self._account_invocation(
             run_id,
-            worker_session_id=invocation.session_id,
-            total_tokens=total_tokens,
+            task,
+            role="worker",
+            session_id=invocation.session_id,
+            usage=invocation.usage,
+            events_path=Path(invocation.events_path),
         )
         self.store.append_event(
             run_id,
@@ -492,8 +535,6 @@ class RunnerService:
                 "result_path": invocation.result_path,
             },
         )
-        if total_tokens > task.budget.max_total_tokens:
-            raise RuntimeError("worker exceeded the run token ceiling")
         self._remaining_seconds(run_id, task)
         if result.status is WorkerStatus.BLOCKED:
             raise RuntimeError(f"worker blocked: {'; '.join(result.blockers)}")
@@ -503,6 +544,7 @@ class RunnerService:
             expected_parent=expected_parent,
             result=result,
             timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
+            timeout_reader=self._git_timeout_reader(run_id, task),
         )
         self.store.update_run(run_id, head_sha=committed_head, reviewed_head_sha=None)
         self.store.transition(
@@ -524,7 +566,6 @@ class RunnerService:
         base_sha: str,
     ) -> None:
         run = self.store.get_run(run_id)
-        self._check_budget(run, task)
         current_head = str(run["head_sha"])
         if (
             head_sha(
@@ -541,14 +582,50 @@ class RunnerService:
             timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
         ):
             raise RuntimeError("review target worktree is not clean")
-        invocation_number = int(run["agent_invocations"]) + 1
         fix_rounds = int(run["fix_rounds"])
+        run_dir = self.state_dir / "runs" / run_id
+        name = f"review-{fix_rounds}"
+        result_path = run_dir / f"{name}.result.json"
+        events_path = run_dir / f"{name}.events.jsonl"
+        if run["review_started_head_sha"] == current_head and result_path.is_file():
+            result = ReviewResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+            session_id, usage = recover_completed_invocation(events_path, WorkerKind.CODEX)
+            self._account_invocation(
+                run_id,
+                task,
+                role="reviewer",
+                session_id=session_id,
+                usage=usage,
+                events_path=events_path,
+            )
+            self._finish_review(
+                run_id,
+                task,
+                worktree,
+                base_sha,
+                current_head,
+                fix_rounds,
+                result,
+                session_id=session_id,
+                result_path=result_path,
+                recovered=True,
+            )
+            return
+        if run["review_started_head_sha"] == current_head:
+            self.store.update_run(run_id, review_started_head_sha=None)
+
+        self._check_budget(self.store.get_run(run_id), task)
+        invocation_number = int(self.store.get_run(run_id)["agent_invocations"]) + 1
         timeout_seconds = self._remaining_seconds(run_id, task, cap=1800)
-        self.store.update_run(run_id, agent_invocations=invocation_number)
+        self.store.update_run(
+            run_id,
+            agent_invocations=invocation_number,
+            review_started_head_sha=current_head,
+        )
         result, invocation = CodexAdapter().reviewer(
             worktree=worktree,
-            run_dir=self.state_dir / "runs" / run_id,
-            name=f"review-{fix_rounds}",
+            run_dir=run_dir,
+            name=name,
             prompt=self._review_prompt(task, base_sha, current_head),
             control=lambda: self._control_state(run_id),
             timeout_seconds=timeout_seconds,
@@ -556,25 +633,41 @@ class RunnerService:
             on_process_start=lambda pid: self._agent_started(run_id, pid),
             on_process_end=lambda pid: self._agent_finished(run_id, pid),
         )
-        total_tokens = int(run["total_tokens"]) + invocation.usage.total
-        self.store.update_run(
+        self._account_invocation(
             run_id,
-            reviewer_session_id=invocation.session_id,
-            reviewed_head_sha=result.reviewed_head_sha,
-            total_tokens=total_tokens,
+            task,
+            role="reviewer",
+            session_id=invocation.session_id,
+            usage=invocation.usage,
+            events_path=Path(invocation.events_path),
         )
-        self.store.append_event(
+        self._finish_review(
             run_id,
-            "review.result",
-            {
-                "session_id": invocation.session_id,
-                "verdict": result.verdict,
-                "reviewed_head_sha": result.reviewed_head_sha,
-                "result_path": invocation.result_path,
-            },
+            task,
+            worktree,
+            base_sha,
+            current_head,
+            fix_rounds,
+            result,
+            session_id=invocation.session_id,
+            result_path=Path(invocation.result_path),
+            recovered=False,
         )
-        if total_tokens > task.budget.max_total_tokens:
-            raise RuntimeError("review exceeded the run token ceiling")
+
+    def _finish_review(
+        self,
+        run_id: str,
+        task: TaskSpec,
+        worktree: Path,
+        base_sha: str,
+        current_head: str,
+        fix_rounds: int,
+        result: ReviewResult,
+        *,
+        session_id: str,
+        result_path: Path,
+        recovered: bool,
+    ) -> None:
         self._remaining_seconds(run_id, task)
         require_exact_review_head(
             result,
@@ -591,6 +684,18 @@ class RunnerService:
             timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
         ):
             raise RuntimeError("read-only reviewer changed the worktree")
+        self.store.update_run(run_id, reviewed_head_sha=result.reviewed_head_sha)
+        self.store.append_event(
+            run_id,
+            "review.result",
+            {
+                "session_id": session_id,
+                "verdict": result.verdict,
+                "reviewed_head_sha": result.reviewed_head_sha,
+                "result_path": str(result_path),
+                "recovered": recovered,
+            },
+        )
 
         next_phase, next_fix_rounds = review_decision(
             result,
@@ -604,6 +709,7 @@ class RunnerService:
                 RunPhase.FIX_REQUESTED,
                 payload={"reviewed_head_sha": current_head, "findings": len(result.findings)},
             )
+            self.store.update_run(run_id, review_started_head_sha=None)
             return
 
         files = changed_files(
@@ -611,6 +717,7 @@ class RunnerService:
             base_sha,
             current_head,
             timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
+            timeout_reader=self._git_timeout_reader(run_id, task),
         )
         if auto_merge_policy(task, files, self.owner_authorized(task.repository)):
             self.store.transition(
@@ -618,6 +725,7 @@ class RunnerService:
                 RunPhase.MERGE_AUTHORIZED,
                 payload={"head_sha": current_head, "authorization_already_present": True},
             )
+            self.store.update_run(run_id, review_started_head_sha=None)
             return
         if task.auto_merge_eligible and task.pr_base == "main":
             self.store.transition(
@@ -631,6 +739,7 @@ class RunnerService:
                 RunPhase.READY_FOR_OWNER,
                 payload={"head_sha": current_head},
             )
+        self.store.update_run(run_id, review_started_head_sha=None)
 
     def _queue_auto_merge_and_deliver(
         self,
@@ -651,6 +760,7 @@ class RunnerService:
             str(run["base_sha"]),
             current_head,
             timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
+            timeout_reader=self._git_timeout_reader(run_id, task),
         )
         if not auto_merge_policy(task, files, True):
             raise RuntimeError("task no longer satisfies the protected auto-merge policy")
@@ -660,12 +770,19 @@ class RunnerService:
             merge_sha = github.merged_commit_if_exact(
                 pr_number,
                 expected_head=current_head,
+                expected_base=task.pr_base,
             )
         except PullRequestOpen:
+            github.assert_open_pull_exact(
+                pr_number,
+                expected_head=current_head,
+                expected_base=task.pr_base,
+            )
             github.queue_auto_merge(pr_number, expected_head=current_head)
             merge_sha = github.wait_for_merge(
                 pr_number=pr_number,
                 expected_head=current_head,
+                expected_base=task.pr_base,
                 control=lambda: self._control_state(run_id),
                 timeout_seconds=self._remaining_seconds(
                     run_id, task, cap=task.budget.ci_timeout_seconds
@@ -723,7 +840,8 @@ class RunnerService:
                 "delivery_url": delivery_url,
             },
         )
-        self.store.release_claim(run_id)
+        if not self._release_claim_if_agent_idle(run_id):
+            raise RuntimeError("completed run still has a live registered agent process")
         try:
             self._launch_next(run_id, task.repository)
         except Exception as error:
@@ -827,6 +945,50 @@ reviewed_head_sha to exactly {current_head}. Distinguish tests actually run from
             raise RuntimeError("run token ceiling reached")
         self._remaining_seconds(str(run["run_id"]), task)
 
+    def _account_invocation(
+        self,
+        run_id: str,
+        task: TaskSpec,
+        *,
+        role: str,
+        session_id: str,
+        usage: Usage,
+        events_path: Path,
+    ) -> int:
+        """Persist usage exactly once for one durable terminal event stream."""
+
+        if role not in {"worker", "reviewer"}:
+            raise ValueError(f"unsupported invocation role: {role}")
+        digest = sha256(events_path.read_bytes()).hexdigest()
+        digest_field = f"{role}_accounted_events_sha256"
+        session_field = f"{role}_session_id"
+        run = self.store.get_run(run_id)
+        if run[digest_field] == digest:
+            return int(run["total_tokens"])
+        total_tokens = int(run["total_tokens"]) + usage.total
+        self.store.update_run(
+            run_id,
+            **{
+                digest_field: digest,
+                session_field: session_id,
+                "total_tokens": total_tokens,
+            },
+        )
+        self.store.append_event(
+            run_id,
+            "usage.accounted",
+            {
+                "role": role,
+                "session_id": session_id,
+                "events_sha256": digest,
+                "tokens": usage.total,
+                "total_tokens": total_tokens,
+            },
+        )
+        if total_tokens > task.budget.max_total_tokens:
+            raise RuntimeError(f"{role} exceeded the run token ceiling")
+        return total_tokens
+
     def _remaining_seconds(
         self,
         run_id: str,
@@ -845,12 +1007,29 @@ reviewed_head_sha to exactly {current_head}. Distinguish tests actually run from
             raise RuntimeError("run elapsed-time ceiling reached")
         return min(remaining, cap) if cap is not None else remaining
 
+    def _renew_owner_gate_deadline(self, run_id: str, task: TaskSpec) -> None:
+        """Exclude human gate wait while opening one new bounded delivery window."""
+
+        window = min(task.budget.max_elapsed_seconds, task.budget.ci_timeout_seconds)
+        deadline_at = (datetime.now(UTC) + timedelta(seconds=window)).isoformat()
+        self.store.update_run(run_id, deadline_at=deadline_at)
+        self.store.append_event(
+            run_id,
+            "owner_gate.deadline_renewed",
+            {"deadline_at": deadline_at, "window_seconds": window},
+        )
+
     def _github_for_run(self, run_id: str, task: TaskSpec) -> GitHubClient:
         return GitHubClient(
             self.root,
             task.repository,
             timeout_reader=lambda: self._remaining_seconds(run_id, task, cap=60),
         )
+
+    def _git_timeout_reader(self, run_id: str, task: TaskSpec) -> Callable[[], int]:
+        """Recompute the durable run deadline before every Git subprocess."""
+
+        return lambda: self._remaining_seconds(run_id, task, cap=60)
 
     def _agent_started(self, run_id: str, pid: int) -> None:
         token = self._lease_tokens.get(run_id)
@@ -879,11 +1058,13 @@ reviewed_head_sha to exactly {current_head}. Distinguish tests actually run from
 
     def _stop_run(self, run_id: str) -> None:
         run = self.store.get_run(run_id)
-        if str(run["phase"]) in TERMINAL_PHASES:
+        if str(run["phase"]) in FINAL_PHASES:
+            return
+        if not self._release_claim_if_agent_idle(run_id):
+            self.store.append_event(run_id, "control.stop_deferred", {"reason": "agent alive"})
             return
         self.store.update_run(run_id, ended_at=utc_now())
         self.store.transition(run_id, RunPhase.STOPPED)
-        self.store.release_claim(run_id)
 
     def _block(self, run_id: str, reason: str) -> None:
         run = self.store.get_run(run_id)
@@ -901,7 +1082,32 @@ reviewed_head_sha to exactly {current_head}. Distinguish tests actually run from
                 {"reason": str(error)[:1000]},
             )
         finally:
-            self.store.release_claim(run_id)
+            self._release_claim_if_agent_idle(run_id)
+
+    def _release_claim_if_agent_idle(self, run_id: str) -> bool:
+        """Never make a claimed worktree available while its registered launcher is live."""
+
+        run = self.store.get_run(run_id)
+        active_pid = int(run["active_agent_pid"]) if run["active_agent_pid"] is not None else None
+        if active_pid is not None and process_alive(active_pid):
+            self.store.append_event(
+                run_id,
+                "claim.release_deferred",
+                {"active_agent_pid": active_pid},
+            )
+            return False
+        if active_pid is not None:
+            token = run.get("process_token")
+            if not isinstance(token, str):
+                self.store.append_event(
+                    run_id,
+                    "claim.release_deferred",
+                    {"reason": "stale agent has no matching runner lease"},
+                )
+                return False
+            self.store.clear_stale_active_agent(run_id, token=token, pid=active_pid)
+        self.store.release_claim(run_id)
+        return True
 
     def owner_authorized(self, repository: str) -> bool:
         path = self.state_dir / "owner-auto-merge-authorization.json"
@@ -952,12 +1158,44 @@ reviewed_head_sha to exactly {current_head}. Distinguish tests actually run from
 
     def set_control(self, run_id: str, desired: DesiredState) -> None:
         run = self.store.get_run(run_id)
-        if str(run["phase"]) in TERMINAL_PHASES:
+        phase = str(run["phase"])
+        if phase in OWNER_GATE_PHASES and desired is DesiredState.STOPPED:
+            self.store.set_desired_state(run_id, desired)
+            self._stop_run(run_id)
+            return
+        if phase == RunPhase.BLOCKED.value and desired is DesiredState.STOPPED:
+            self.store.set_desired_state(run_id, desired)
+            self._stop_orphan_process(run_id)
+            self._release_claim_if_agent_idle(run_id)
+            refreshed = self.store.get_run(run_id)
+            controller_pid = int(refreshed["pid"]) if refreshed["pid"] is not None else None
+            if controller_pid is None or not process_alive(controller_pid):
+                self._clear_stale_process_state(run_id)
+            return
+        if phase in TERMINAL_PHASES:
             raise RuntimeError(f"run is terminal at {run['phase']}")
         self.store.set_desired_state(run_id, desired)
         pid = int(run["pid"]) if run["pid"] is not None else None
         if desired is DesiredState.STOPPED and (pid is None or not process_alive(pid)):
+            self._stop_orphan_process(run_id)
+            self.prepare_process_launch(run_id)
             self._stop_run(run_id)
+
+    def _stop_orphan_process(self, run_id: str) -> None:
+        """Kill a registered process tree after its controller has disappeared."""
+
+        run = self.store.get_run(run_id)
+        active_pid = int(run["active_agent_pid"]) if run["active_agent_pid"] is not None else None
+        if active_pid is not None and process_alive(active_pid):
+            self.store.append_event(
+                run_id,
+                "agent.process_tree_termination_requested",
+                {"pid": active_pid},
+            )
+            if not terminate_process_tree(active_pid):
+                raise RuntimeError(
+                    f"registered agent process tree {active_pid} could not be terminated"
+                )
 
     def resume_run(self, run_id: str) -> None:
         """Resume a checkpoint, including explicit owner-gated terminal checkpoints."""
@@ -972,6 +1210,7 @@ reviewed_head_sha to exactly {current_head}. Distinguish tests actually run from
                 )
             if run["reviewed_head_sha"] != run["head_sha"]:
                 raise RuntimeError("pending merge no longer has exact-SHA reviewer PASS evidence")
+            self._renew_owner_gate_deadline(run_id, task)
             self.store.set_desired_state(run_id, DesiredState.RUNNING)
             self.store.transition(
                 run_id,
@@ -984,9 +1223,11 @@ reviewed_head_sha to exactly {current_head}. Distinguish tests actually run from
                 raise RuntimeError("owner-ready run is missing its PR or exact HEAD")
             if run["reviewed_head_sha"] != run["head_sha"]:
                 raise RuntimeError("owner-ready run no longer has exact-SHA reviewer PASS evidence")
+            self._renew_owner_gate_deadline(run_id, task)
             merge_sha = self._github_for_run(run_id, task).merged_commit_if_exact(
                 int(run["pr_number"]),
                 expected_head=str(run["head_sha"]),
+                expected_base=task.pr_base,
             )
             self.store.update_run(
                 run_id,
@@ -1009,6 +1250,12 @@ reviewed_head_sha to exactly {current_head}. Distinguish tests actually run from
         run = self.store.get_run(run_id)
         if str(run["phase"]) in TERMINAL_PHASES:
             raise RuntimeError(f"run is terminal at {run['phase']}")
+        self._clear_stale_process_state(run_id)
+
+    def _clear_stale_process_state(self, run_id: str) -> None:
+        """Clear only process records whose operating-system processes have exited."""
+
+        run = self.store.get_run(run_id)
         pid = int(run["pid"]) if run["pid"] is not None else None
         token = run.get("process_token")
         if pid is not None and process_alive(pid):
@@ -1051,20 +1298,4 @@ reviewed_head_sha to exactly {current_head}. Distinguish tests actually run from
 
 
 def process_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        import ctypes  # noqa: PLC0415 - Windows-only import
-
-        process_query_limited_information = 0x1000
-        kernel32 = cast(Any, ctypes).windll.kernel32
-        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
-        if not handle:
-            return False
-        kernel32.CloseHandle(handle)
-        return True
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
-        return False
-    return True
+    return process_is_running(pid)

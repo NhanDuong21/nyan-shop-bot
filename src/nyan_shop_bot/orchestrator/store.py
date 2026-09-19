@@ -19,6 +19,10 @@ RUN_FIELDS = {
     "pid",
     "worker_parent_sha",
     "merge_sha",
+    "deadline_at",
+    "review_started_head_sha",
+    "worker_accounted_events_sha256",
+    "reviewer_accounted_events_sha256",
     "worker_session_id",
     "reviewer_session_id",
     "head_sha",
@@ -110,6 +114,9 @@ class StateStore:
                     total_tokens INTEGER NOT NULL DEFAULT 0,
                     worker_parent_sha TEXT,
                     merge_sha TEXT,
+                    review_started_head_sha TEXT,
+                    worker_accounted_events_sha256 TEXT,
+                    reviewer_accounted_events_sha256 TEXT,
                     last_error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -154,6 +161,9 @@ class StateStore:
             "deadline_at": "TEXT",
             "worker_parent_sha": "TEXT",
             "merge_sha": "TEXT",
+            "review_started_head_sha": "TEXT",
+            "worker_accounted_events_sha256": "TEXT",
+            "reviewer_accounted_events_sha256": "TEXT",
         }
         for name, kind in additions.items():
             if name not in columns:
