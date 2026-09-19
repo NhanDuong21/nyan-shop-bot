@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -138,8 +139,23 @@ def check_workflows() -> list[str]:
     return findings
 
 
+def check_impeccable_payload() -> list[str]:
+    completed = subprocess.run(
+        [sys.executable, "scripts/impeccable_lock.py"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if completed.returncode:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        return [f"Impeccable payload verification failed: {detail}"]
+    return []
+
+
 def main() -> int:
-    findings = scan_paths(tracked_files()) + check_workflows()
+    findings = scan_paths(tracked_files()) + check_workflows() + check_impeccable_payload()
     if findings:
         print("Security policy violations:")
         for finding in findings:
