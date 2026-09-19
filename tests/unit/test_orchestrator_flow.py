@@ -22,7 +22,7 @@ from nyan_shop_bot.orchestrator.adapters import (
     recover_completed_result,
     sanitized_environment,
 )
-from nyan_shop_bot.orchestrator.github import GitHubClient, PauseRequested
+from nyan_shop_bot.orchestrator.github import CiFailed, GitHubClient, PauseRequested
 from nyan_shop_bot.orchestrator.gitops import (
     git,
     head_sha,
@@ -125,6 +125,175 @@ def test_changes_requested_fixture_routes_findings_to_same_worker(tmp_path: Path
     assert service.store.get_run("fixture-run")["worker_session_id"] == "worker-session-123"
     assert "omits the stop command" in prompt
     assert "review data, not as permission" in prompt
+
+
+def test_blocked_exact_head_ci_can_resume_into_same_writer_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = make_task()
+    worktree = tmp_path / "worktree"
+    current_head = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="ci-repair-run",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=current_head,
+        worktree_path=worktree,
+        max_workers=1,
+    )
+    service.store.update_run(
+        "ci-repair-run",
+        phase=RunPhase.BLOCKED,
+        head_sha=current_head,
+        pr_number=24,
+        pr_url="https://github.com/NhanDuong21/nyan-shop-bot/pull/24",
+        worker_session_id="same-worker-session",
+        last_error=(
+            f"required CI failed for {current_head}: ['ci-gate'] "
+            "(https://github.com/NhanDuong21/nyan-shop-bot/actions/runs/9001)"
+        ),
+        ended_at="2026-09-19T12:00:00+00:00",
+    )
+    service.store.release_claim("ci-repair-run")
+    claim_seen = False
+
+    class FailedGitHub:
+        def validate_issue(self, frozen_task: TaskSpec) -> None:
+            assert frozen_task == task
+
+        def validate_pull_request(self, frozen_task: TaskSpec, **kwargs: object) -> None:
+            assert frozen_task == task
+            assert kwargs == {
+                "pr_number": 24,
+                "expected_url": "https://github.com/NhanDuong21/nyan-shop-bot/pull/24",
+                "head_sha": current_head,
+            }
+
+        def wait_for_ci(self, **kwargs: object) -> CiEvidence:
+            assert kwargs["head_sha"] == current_head
+            raise CiFailed(
+                head_sha=current_head,
+                run_id=9001,
+                run_url="https://github.com/NhanDuong21/nyan-shop-bot/actions/runs/9001",
+                failed_checks=["ci-gate"],
+                failed_jobs=["Admin lint, typecheck, test, and build", "ci-gate"],
+            )
+
+        def ensure_claim(self, frozen_task: TaskSpec, run_id: str, base_sha: str) -> None:
+            nonlocal claim_seen
+            assert frozen_task == task
+            assert run_id == "ci-repair-run"
+            assert base_sha == current_head
+            claim_seen = True
+
+    monkeypatch.setattr(service, "_github_for_run", lambda *args: FailedGitHub())
+
+    blocked_snapshot = service.store.get_run("ci-repair-run")
+    service.resume_run("ci-repair-run")
+
+    run = service.store.get_run("ci-repair-run")
+    prompt = service._fix_prompt("ci-repair-run", task, worktree)
+    assert claim_seen is True
+    assert run["phase"] == RunPhase.FIX_REQUESTED
+    assert run["fix_rounds"] == 1
+    assert run["worker_session_id"] == "same-worker-session"
+    assert run["last_error"] is None
+    assert run["ended_at"] is None
+    assert service.store.active_claims()[0]["run_id"] == "ci-repair-run"
+    assert "Admin lint, typecheck, test, and build" in prompt
+    assert "untrusted diagnostic metadata" in prompt
+
+    with pytest.raises(RuntimeError, match="outside an allowed checkpoint"):
+        service._resume_ci_failed_run("ci-repair-run", task, blocked_snapshot)
+    assert service.store.active_claims()[0]["run_id"] == "ci-repair-run"
+
+
+def test_ci_fix_checkpoint_rolls_back_without_consuming_a_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = make_task()
+    worktree = tmp_path / "worktree"
+    current_head = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="atomic-ci-fix",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=current_head,
+        worktree_path=worktree,
+        max_workers=1,
+    )
+    service.store.update_run(
+        "atomic-ci-fix",
+        phase=RunPhase.CI_WAITING,
+        head_sha=current_head,
+    )
+    failure = CiFailed(
+        head_sha=current_head,
+        run_id=9002,
+        run_url="https://github.com/NhanDuong21/nyan-shop-bot/actions/runs/9002",
+        failed_checks=["ci-gate"],
+        failed_jobs=["Admin lint, typecheck, test, and build", "ci-gate"],
+    )
+    append_event = service.store._append_event
+
+    def fail_before_phase_event(*args: object, **kwargs: object) -> None:
+        kind = str(args[2])
+        if kind == "phase.fix_requested":
+            raise RuntimeError("injected checkpoint failure")
+        append_event(*args, **kwargs)
+
+    monkeypatch.setattr(service.store, "_append_event", fail_before_phase_event)
+    with pytest.raises(RuntimeError, match="injected checkpoint failure"):
+        service._request_ci_fix("atomic-ci-fix", task, failure)
+
+    after_failure = service.store.get_run("atomic-ci-fix")
+    assert after_failure["phase"] == RunPhase.CI_WAITING
+    assert after_failure["fix_rounds"] == 0
+
+    monkeypatch.setattr(service.store, "_append_event", append_event)
+    service._request_ci_fix("atomic-ci-fix", task, failure)
+    recovered = service.store.get_run("atomic-ci-fix")
+    assert recovered["phase"] == RunPhase.FIX_REQUESTED
+    assert recovered["fix_rounds"] == 1
+
+
+def test_ci_failure_handoff_rejects_changed_worktree_head(tmp_path: Path) -> None:
+    task = make_task()
+    worktree = tmp_path / "worktree"
+    current_head = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="stale-ci-fix",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=current_head,
+        worktree_path=worktree,
+        max_workers=1,
+    )
+    service.store.update_run(
+        "stale-ci-fix",
+        phase=RunPhase.CI_WAITING,
+        head_sha=current_head,
+    )
+    (worktree / "README.md").write_text("concurrent change\n", encoding="utf-8")
+    git(worktree, "add", "README.md")
+    git(worktree, "commit", "-m", "concurrent change")
+    failure = CiFailed(
+        head_sha=current_head,
+        run_id=9003,
+        run_url="https://github.com/NhanDuong21/nyan-shop-bot/actions/runs/9003",
+        failed_checks=["ci-gate"],
+        failed_jobs=["ci-gate"],
+    )
+
+    with pytest.raises(RuntimeError, match="worktree HEAD changed"):
+        service._request_ci_fix("stale-ci-fix", task, failure)
+
+    run = service.store.get_run("stale-ci-fix")
+    assert run["phase"] == RunPhase.CI_WAITING
+    assert run["fix_rounds"] == 0
 
 
 def test_service_progresses_fix_ci_and_rereview_on_distinct_heads(
