@@ -1,20 +1,78 @@
+.catalog-visibility {
+  --cv-accent: #fca311;
+  --cv-text: #14213d;
+  --cv-border: #d8d2c4;
+  --cv-error-border: #c1121f;
+  --cv-error-text: #8b0b15;
+}
+
 .catalog-visibility button {
   min-height: 2.75rem;
-  padding: 0.65rem 1rem;
-  border: 1px solid currentcolor;
+  padding: 0.65rem 1.25rem;
+  border: 1px solid currentColor;
   border-radius: 999px;
   background: transparent;
   color: inherit;
   cursor: pointer;
   font: inherit;
   font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.catalog-visibility button:hover {
+  background-color: rgba(20, 33, 61, 0.06);
+}
+
+.catalog-visibility button:active {
+  transform: scale(0.98);
 }
 
 .catalog-visibility button:focus-visible {
-  outline: 3px solid #fca311;
+  outline: 3px solid var(--cv-accent, #fca311);
   outline-offset: 3px;
 }
 
 .catalog-visibility .error p {
   margin-top: 0;
+}
+
+.catalog-visibility .card-stock {
+  font-variant-numeric: tabular-nums;
+}
+
+.catalog-visibility .card-stock.out-of-stock {
+  color: var(--cv-error-text, #8b0b15);
+  font-weight: 700;
+}
+
+.catalog-visibility .product-card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.catalog-visibility .product-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 36px rgba(20, 33, 61, 0.09);
+}
+
+.catalog-visibility .product-card:focus-within {
+  outline: 2px solid var(--cv-accent, #fca311);
+  outline-offset: 2px;
+}
+
+@media (max-width: 620px) {
+  .catalog-visibility .product-card {
+    min-height: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .catalog-visibility button,
+  .catalog-visibility .product-card {
+    transition: none !important;
+    transform: none !important;
+  }
 }

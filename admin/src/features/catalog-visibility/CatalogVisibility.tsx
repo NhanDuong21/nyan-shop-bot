@@ -42,10 +42,14 @@ export function CatalogVisibility({ state, onRetry }: CatalogVisibilityProps) {
         {state.kind === "success" && (
           <div className="catalog-grid">
             {state.items.map((item) => (
-              <article className="product-card" key={item.id}>
+              <article className="product-card" key={item.id} tabIndex={0}>
                 <div className="card-meta">
                   <span>MOCK</span>
-                  <span>
+                  <span
+                    className={`card-stock ${
+                      item.available_quantity <= 0 ? "out-of-stock" : ""
+                    }`}
+                  >
                     {item.available_quantity > 0
                       ? `${item.available_quantity} mẫu`
                       : "Hết mẫu"}
