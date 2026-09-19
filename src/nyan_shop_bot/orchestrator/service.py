@@ -61,13 +61,16 @@ UI_ANTIGRAVITY_RULE_MARKER = "NYAN-ANTIGRAVITY-RULE-V1"
 UI_ANTIGRAVITY_HOOK_MARKER = "NYAN-ANTIGRAVITY-SINGLE-WRITER-V1"
 UI_ANTIGRAVITY_HOOK_NAME = f"nyan-single-writer-{UI_ANTIGRAVITY_HOOK_MARKER}"
 UI_ANTIGRAVITY_HOOK_MATCHER = (
-    "^(run_command|manage_task|schedule|ask_permission|invoke_subagent|define_subagent|"
-    "send_message|manage_subagents|browser_subagent|command_status|send_command_input|"
-    "call_mcp_tool)$"
+    "^(write_to_file|replace_file_content|multi_replace_file_content|run_command|manage_task|"
+    "schedule|ask_permission|invoke_subagent|define_subagent|send_message|manage_subagents|"
+    "browser_subagent|command_status|send_command_input|call_mcp_tool)$"
 )
 UI_ANTIGRAVITY_HOOK_COMMAND = "node scripts/deny-antigravity-delegation.mjs"
+UI_ANTIGRAVITY_HOOK_POLICY_SHA256 = (
+    "8878b3b13970bd8fd8f4d3802337460a3f8946906e5e5d924896927939df44ed"
+)
 UI_ANTIGRAVITY_HOOK_HANDLER_SHA256 = (
-    "21d6c0d9c7b684347fe778c3c6a56a982cfc807c9aa787dbb0909a01411989d3"
+    "2a992358a16959537d3ee7f2183b8f075ebae5d7a620d368c60de89a07d68f4c"
 )
 
 AUTO_MERGE_BLOCKER = (
@@ -123,6 +126,9 @@ def _validate_antigravity_hook_policy(hooks_text: str, handler_text: str) -> Non
         raise RuntimeError("Antigravity hook policy is not valid JSON") from error
     if observed != expected:
         raise RuntimeError("Antigravity hook policy does not match the trusted enabled guard")
+    policy_digest = sha256(hooks_text.encode("utf-8")).hexdigest()
+    if policy_digest != UI_ANTIGRAVITY_HOOK_POLICY_SHA256:
+        raise RuntimeError("Antigravity hook policy does not match its trusted digest")
     handler_digest = sha256(handler_text.encode("utf-8")).hexdigest()
     if handler_digest != UI_ANTIGRAVITY_HOOK_HANDLER_SHA256:
         raise RuntimeError("Antigravity hook handler does not match its trusted digest")

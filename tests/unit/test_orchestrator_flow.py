@@ -2167,7 +2167,15 @@ def test_antigravity_hook_policy_is_exact_enabled_and_authenticated() -> None:
     assert definition["enabled"] is True
     matcher = definition["PreToolUse"][0]["matcher"]
     assert matcher == UI_ANTIGRAVITY_HOOK_MATCHER
-    for blocked_tool in ("run_command", "manage_task", "schedule", "invoke_subagent"):
+    for blocked_tool in (
+        "write_to_file",
+        "replace_file_content",
+        "multi_replace_file_content",
+        "run_command",
+        "manage_task",
+        "schedule",
+        "invoke_subagent",
+    ):
         assert blocked_tool in matcher
     assert definition["PreToolUse"][0]["hooks"][0]["command"] == (UI_ANTIGRAVITY_HOOK_COMMAND)
 
@@ -2196,6 +2204,18 @@ def test_antigravity_hook_policy_rejects_disabled_malformed_or_tampered_guard() 
         with pytest.raises(RuntimeError, match="trusted enabled guard"):
             _validate_antigravity_hook_policy(json.dumps(config), handler_text)
 
+    for key_path, wrong_type in (
+        (("enabled",), 1),
+        (("PreToolUse", 0, "hooks", 0, "timeout"), 5.0),
+    ):
+        config = json.loads(hooks_text)
+        current = next(iter(config.values()))
+        for key in key_path[:-1]:
+            current = current[key]
+        current[key_path[-1]] = wrong_type
+        with pytest.raises(RuntimeError, match="hook policy.*trusted digest"):
+            _validate_antigravity_hook_policy(json.dumps(config, indent=2) + "\n", handler_text)
+
     with pytest.raises(RuntimeError, match="trusted digest"):
         _validate_antigravity_hook_policy(
             hooks_text,
@@ -2204,25 +2224,55 @@ def test_antigravity_hook_policy_rejects_disabled_malformed_or_tampered_guard() 
 
 
 def test_antigravity_delegation_hook_denies_before_tool_execution() -> None:
-    hook = REPOSITORY_ROOT / "scripts" / "deny-antigravity-delegation.mjs"
-    completed = subprocess.run(
-        ["node", str(hook)],
-        input=json.dumps(
-            {
-                "toolCall": {"name": "schedule", "args": {"DurationSeconds": 1}},
-                "conversationId": "00000000-0000-4000-8000-000000000100",
-            }
-        ),
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
+    hooks = json.loads((REPOSITORY_ROOT / ".agents" / "hooks.json").read_text(encoding="utf-8"))
+    command = next(iter(hooks.values()))["PreToolUse"][0]["hooks"][0]["command"]
+    assert command == UI_ANTIGRAVITY_HOOK_COMMAND
 
-    decision = json.loads(completed.stdout)
-    assert decision["decision"] == "deny"
-    assert "exactly one Antigravity writer" in decision["reason"]
-    assert "scheduling" in decision["reason"]
+    def run_hook(tool_name: str, args: dict[str, object]) -> dict[str, str]:
+        completed = subprocess.run(
+            command,
+            cwd=REPOSITORY_ROOT,
+            input=json.dumps(
+                {
+                    "toolCall": {"name": tool_name, "args": args},
+                    "workspacePaths": [str(REPOSITORY_ROOT)],
+                    "conversationId": "00000000-0000-4000-8000-000000000100",
+                }
+            ),
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            shell=True,
+        )
+        return json.loads(completed.stdout)
+
+    execution = run_hook("schedule", {"DurationSeconds": 1})
+    assert execution["decision"] == "deny"
+    assert "exactly one Antigravity writer" in execution["reason"]
+    assert "scheduling" in execution["reason"]
+
+    handler_write = run_hook(
+        "write_to_file",
+        {"TargetFile": str(REPOSITORY_ROOT / "scripts" / "deny-antigravity-delegation.mjs")},
+    )
+    assert handler_write["decision"] == "deny"
+    assert "immutable" in handler_write["reason"]
+
+    hook_write = run_hook(
+        "replace_file_content",
+        {"TargetFile": str(REPOSITORY_ROOT / ".agents" / "hooks.json")},
+    )
+    assert hook_write["decision"] == "deny"
+
+    command_shim = run_hook("write_to_file", {"TargetFile": "node.cmd"})
+    assert command_shim["decision"] == "deny"
+
+    feature_write = run_hook(
+        "multi_replace_file_content",
+        {"TargetFile": "admin/src/features/catalog-visibility/CatalogVisibility.tsx"},
+    )
+    assert feature_write["decision"] == "allow"
 
 
 def test_agent_environment_removes_ambient_secrets(
