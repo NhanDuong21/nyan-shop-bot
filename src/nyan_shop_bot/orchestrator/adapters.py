@@ -27,6 +27,18 @@ from nyan_shop_bot.orchestrator.models import (
 ControlReader = Callable[[], DesiredState]
 ProcessStarted = Callable[[int], None]
 ProcessFinished = Callable[[int], None]
+WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+if sys.platform == "win32":
+
+    def _kill_process_group(pid: int, signal_number: int) -> None:
+        raise RuntimeError("POSIX process groups are unavailable on Windows")
+
+else:
+
+    def _kill_process_group(pid: int, signal_number: int) -> None:
+        os.killpg(pid, signal_number)
+
 
 SAFE_INHERITED_ENV = {
     "APPDATA",
@@ -114,9 +126,8 @@ def _signal_process_tree(pid: int, *, grace_seconds: float) -> bool:
             return False
         return completed.returncode == 0 or not process_is_running(pid)
 
-    killpg = cast(Callable[[int, int], None], os.killpg)  # type: ignore[attr-defined]
     try:
-        killpg(pid, int(signal.SIGTERM))
+        _kill_process_group(pid, int(signal.SIGTERM))
     except ProcessLookupError:
         return True
     except PermissionError:
@@ -127,7 +138,7 @@ def _signal_process_tree(pid: int, *, grace_seconds: float) -> bool:
             return True
         time.sleep(0.05)
     try:
-        killpg(pid, int(getattr(signal, "SIGKILL", 9)))
+        _kill_process_group(pid, int(getattr(signal, "SIGKILL", 9)))
     except ProcessLookupError:
         return True
     except PermissionError:
@@ -298,7 +309,7 @@ def _run_monitored(
             text=True,
             encoding="utf-8",
             env=sanitized_environment(stdout_path.parent / "isolated-environment"),
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            creationflags=WINDOWS_CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             start_new_session=os.name != "nt",
         )
         process_attached = False
