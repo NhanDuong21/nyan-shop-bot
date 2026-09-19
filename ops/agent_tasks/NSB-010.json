@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "task_id": "NSB-010",
+  "issue_number": 2,
+  "issue_url": "https://github.com/NhanDuong21/nyan-shop-bot/issues/2",
+  "repository": "NhanDuong21/nyan-shop-bot",
+  "title": "Normalized catalog, capability model, and code-generated schema",
+  "base_ref": "main",
+  "pr_base": "main",
+  "branch": "nyan/nsb-010-catalog-contract",
+  "worker": "codex",
+  "worker_model": "gpt-5.6-sol",
+  "reviewer_model": "codex-auto-review",
+  "role": "backend",
+  "risk": "high",
+  "queue_phase": "M1",
+  "queue_eligible": true,
+  "trusted_prompt": "Implement the reviewed normalized catalog contract with explicit currency and unit, distinct supplier product and variant identities, explicit mapping approval, freshness and error state, and a deterministic fake supplier. Generate OpenAPI and UI fixture/client input from FastAPI code. Stay read-only and mock-only: do not implement purchase operations, infer supplier schemas, or auto-map products by name. Missing supplier detail must return unsupported or remain disabled rather than blocking the mock foundation.",
+  "acceptance_criteria": [
+    "Mapping requires explicit admin approval and preserves distinct supplier identities.",
+    "Money uses integer minor units with explicit currency and unit; float and currency mixing are rejected.",
+    "Generated OpenAPI and UI fixtures derive from code and cover fresh, stale, empty, and error states.",
+    "The fake supplier is deterministic and all purchase, payment, top-up, refund, and delivery capabilities remain disabled.",
+    "Focused contract, schema, currency, mapping, and fake-supplier tests plus full verification pass."
+  ],
+  "allowed_paths": [
+    "src/nyan_shop_bot/catalog/**",
+    "src/nyan_shop_bot/main.py",
+    "tests/**",
+    "generated/**",
+    "docs/contracts/**"
+  ],
+  "required_checks": [
+    "ci-gate"
+  ],
+  "dependencies": [
+    1,
+    12
+  ],
+  "auto_merge_eligible": false,
+  "budget": {
+    "max_agent_invocations": 5,
+    "max_total_tokens": 300000,
+    "max_elapsed_seconds": 10800,
+    "max_fix_rounds": 3,
+    "ci_timeout_seconds": 3600,
+    "poll_initial_seconds": 10,
+    "poll_max_seconds": 60
+  }
+}

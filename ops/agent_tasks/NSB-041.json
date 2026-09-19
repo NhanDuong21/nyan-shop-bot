@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "task_id": "NSB-041",
+  "issue_number": 15,
+  "issue_url": "https://github.com/NhanDuong21/nyan-shop-bot/issues/15",
+  "repository": "NhanDuong21/nyan-shop-bot",
+  "title": "Prove runner with a no-money operator quickstart",
+  "base_ref": "nyan/nsb-040-agent-runner",
+  "pr_base": "nyan/nsb-040-agent-runner",
+  "branch": "nyan/nsb-041-runner-demo",
+  "worker": "codex",
+  "worker_model": "gpt-5.6-luna",
+  "reviewer_model": "codex-auto-review",
+  "role": "backend",
+  "risk": "low",
+  "queue_phase": "demo",
+  "queue_eligible": false,
+  "trusted_prompt": "Add docs/runner-demo.md as a concise operator quickstart for the runner that is already implemented on this base branch. Derive command syntax from scripts/agent_runner.py --help. Cover status, pause, resume, and stop using placeholders rather than invented IDs. State that pause and stop are cooperative at an active model-turn boundary, resume reuses durable state, and current safety defaults remain mock/disabled/false. Do not claim auto-merge, deployment, an Antigravity model run, or any capability that this task did not exercise.",
+  "acceptance_criteria": [
+    "The four control commands are accurate and use placeholders rather than invented run or session IDs.",
+    "The document states pause and stop are cooperative at an active model-turn boundary and resume reuses durable state.",
+    "The document preserves SUPPLIER_MODE=mock, PAYMENT_MODE=disabled, and ALLOW_REAL_PURCHASES=false.",
+    "The document does not claim auto-merge, deployment, or an Antigravity generation occurred.",
+    "Only docs/runner-demo.md changes."
+  ],
+  "allowed_paths": [
+    "docs/runner-demo.md"
+  ],
+  "required_checks": [
+    "ci-gate"
+  ],
+  "dependencies": [],
+  "auto_merge_eligible": false,
+  "budget": {
+    "max_agent_invocations": 5,
+    "max_total_tokens": 150000,
+    "max_elapsed_seconds": 7200,
+    "max_fix_rounds": 3,
+    "ci_timeout_seconds": 3600,
+    "poll_initial_seconds": 10,
+    "poll_max_seconds": 60
+  }
+}

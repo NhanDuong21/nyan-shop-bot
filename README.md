@@ -33,7 +33,11 @@ Startup rejects any other Phase 0 combination. Tests block non-loopback sockets,
 - `admin/`: localhost-only mock catalog UI.
 - `tests/`: unit, network-policy, bot, and PostgreSQL integration tests.
 - `scripts/`: cross-platform task, verification, policy, smoke, and GitHub seed tools.
+- `src/nyan_shop_bot/orchestrator/`: durable local runner, CLI adapters, policy, and state machine.
+- `ops/agent_tasks/`: trusted, committed worker task specifications; GitHub prose is never executed as instructions.
 - `docs/`: runbooks, roles, supplier boundary, and delivery status.
 - `.codex/agents/`: project-scoped coordinator/backend/UI/reviewer definitions.
 
 Container publishing to GHCR after a trusted `main` gate is artifact delivery, not deployment. Staging deployment remains blocked until an owner supplies a host, ingress/auth design, and staging-only secrets.
+
+The owner-gated local orchestration workflow is documented in [docs/orchestration.md](docs/orchestration.md). Auto-merge remains disabled until the explicit one-time owner authorization is given; high-risk and protected-path PRs always stay open for the owner.

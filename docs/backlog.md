@@ -27,6 +27,7 @@ GitHub Issues and Milestones are the coordination source of truth. Stable NSB co
 
 ## M4 — Unattended agent dispatch
 
-- [NSB-040 — Owner-gated agent runner and cost limits](https://github.com/NhanDuong21/nyan-shop-bot/issues/12) — backlog only; not enabled by Phase 0.
+- [NSB-040 — Durable local agent orchestrator and owner-gated merge controls](https://github.com/NhanDuong21/nyan-shop-bot/issues/12) — accelerated by explicit owner direction; implemented in a separate stacked PR, with auto-merge still disabled.
+- [NSB-041 — Prove runner with a no-money operator quickstart](https://github.com/NhanDuong21/nyan-shop-bot/issues/15) — low-risk real worker/CI/reviewer proof task; never independently mergeable from its runner base.
 
-After NSB-001 merges, move only NSB-010 to Ready. After NSB-010 merges, the coordinator may select at most one supplier/backend issue alongside NSB-014; do not make every downstream issue Ready at once.
+After NSB-001 and the separately reviewed NSB-040 merge, move only NSB-010 to Ready. After NSB-010 merges, the coordinator may select at most one supplier/backend issue alongside NSB-014; do not make every downstream issue Ready at once. Automatic selection is limited to committed task specs for M0–M2 and remains disabled until owner authorization.

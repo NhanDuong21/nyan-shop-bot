@@ -45,7 +45,7 @@ MILESTONES: dict[str, str] = {
     "M1 — Catalog and read-only integrations": "Normalized catalog and read-only supplier/UI/bot work.",
     "M2 — Simulated end-to-end orders": "Durable order behavior using fake suppliers and mock checkout only.",
     "M3 — Staging and live readiness": "Mock staging and evidence-based readiness; does not authorize production.",
-    "M4 — Unattended agent dispatch": "Owner-gated future automation; intentionally not enabled in Phase 0.",
+    "M4 — Unattended agent dispatch": "Durable local orchestration with owner-gated merge enablement and no live-money authority.",
 }
 
 
@@ -111,7 +111,7 @@ ISSUES = (
         "high",
         "p1",
         ("backend", "supplier"),
-        ("NSB-001",),
+        ("NSB-001", "NSB-040"),
         "Define the reviewed catalog contract that later backend and UI work can safely share.",
         (
             "Explicit currency/unit, supplier product and variant identities, mapping approval state, freshness/error state, and a deterministic fake supplier.",
@@ -366,33 +366,59 @@ ISSUES = (
     ),
     IssueSpec(
         "NSB-040",
-        "Owner-gated agent runner and cost limits",
+        "Durable local agent orchestrator and owner-gated merge controls",
         "M4 — Unattended agent dispatch",
         "coordinator",
         "high",
-        "p2",
+        "p0",
         ("agents", "ci"),
         ("NSB-001",),
-        "Evaluate bounded unattended dispatch only after several manual PR loops and an owner runtime/auth/budget decision.",
+        "Build and prove a durable local orchestrator while keeping merge enablement owner-gated.",
         (
-            "Owner-authorized trigger, exact issue/base SHA, permission checks, bounded retries/concurrency/cost, dry-run, and event-recursion tests.",
+            "Committed trusted task specs, real Codex/Antigravity CLI adapters, durable runs/claims/events, separate worktrees, exact-SHA CI/review, resume, controls, and bounded fix loops/usage.",
+            "One real no-money task plus a deterministic CHANGES_REQUESTED fixture.",
         ),
         (
-            "Automatic merge, copying Codex auth files, assuming labels launch desktop agents, or unapproved API billing.",
+            "Production deployment, live money, copying login tokens into Actions, GUI automation, or self-approval of runner/policy/workflow changes.",
         ),
         (
-            "Trigger is trusted and owner authorized; PR execution receives no production secrets.",
-            "Retries/concurrency/cost are bounded and dry-run evidence precedes enablement.",
-            "GitHub event recursion and token-trigger behavior are tested.",
+            "Worker/reviewer outputs are schema validated and bound to the current exact HEAD.",
+            "At most two writers, three fix rounds, bounded invocations/time/tokens, and backoff without model polling are enforced.",
+            "Start/status/pause/resume/stop work from durable state without duplicate issue/PR creation.",
+            "Auto-merge remains disabled until one-time owner confirmation; high-risk/protected changes remain owner reviewed.",
         ),
         (
-            "Permission, recursion, bounded retry/concurrency, cost ceiling, and no-secret dry-run tests.",
+            "Schema, claim, resume, stale-SHA, protected-path, limits, backoff, no-secret, and CHANGES_REQUESTED fixture tests.",
+            "Full verification plus real issue/PR/Actions/reviewer evidence.",
         ),
         (
-            "future agent-runner module",
-            ".github/workflows/** only through coordinator",
-            "docs/agent-ops.md",
+            "src/nyan_shop_bot/orchestrator/**",
+            "scripts/agent_runner.py and focused tests/fixtures/task specs",
+            "agent operation documentation and policy owned by coordinator",
         ),
+    ),
+    IssueSpec(
+        "NSB-041",
+        "Prove runner with a no-money operator quickstart",
+        "M4 — Unattended agent dispatch",
+        "backend",
+        "low",
+        "p0",
+        ("agents",),
+        ("NSB-040",),
+        "Exercise the real runner with one bounded documentation task.",
+        (
+            "A Codex worker adds only docs/runner-demo.md with accurate control commands and mock-only boundaries.",
+        ),
+        (
+            "Runner/workflow/policy changes, auto-merge, deployment, or claims that Antigravity generated the document.",
+        ),
+        (
+            "Only the declared document changes and uses placeholders rather than invented IDs.",
+            "Exact-HEAD ci-gate and independent reviewer PASS are persisted by the runner.",
+        ),
+        ("Security policy and command-help checks, followed by the real PR ci-gate.",),
+        ("docs/runner-demo.md",),
     ),
 )
 
@@ -564,6 +590,32 @@ def ensure_issues(
     existing = existing_issues()
     urls = {code: issue["html_url"] for code, issue in existing.items()}
 
+    # Establish every stable URL before rendering dependency links. This also
+    # supports intentionally accelerated work whose NSB code sorts after its
+    # dependent issue (for example NSB-010 depending on NSB-040).
+    for spec in ISSUES:
+        if spec.code in existing:
+            continue
+        labels = {
+            f"agent:{'ui' if spec.owner == 'ui-antigravity' else 'coordinator' if spec.owner == 'coordinator' else 'backend'}",
+            "status:backlog",
+            f"risk:{spec.risk}",
+            f"priority:{spec.priority}",
+            *(f"area:{area}" for area in spec.areas),
+        }
+        current = api(
+            "POST",
+            f"repos/{REPOSITORY}/issues",
+            {
+                "title": f"[{spec.code}] {spec.title}",
+                "body": f"<!-- nyan-task:{spec.code} -->\nMetadata seed in progress.",
+                "milestone": milestones[spec.milestone],
+                "labels": sorted(labels),
+            },
+        )
+        existing[spec.code] = current
+        urls[spec.code] = current["html_url"]
+
     for spec in ISSUES:
         current = existing.get(spec.code)
         current_labels = {label["name"] for label in (current.get("labels", []) if current else [])}
@@ -583,19 +635,7 @@ def ensure_issues(
         title = f"[{spec.code}] {spec.title}"
 
         if current is None:
-            placeholder_body = f"<!-- nyan-task:{spec.code} -->\nMetadata seed in progress."
-            current = api(
-                "POST",
-                f"repos/{REPOSITORY}/issues",
-                {
-                    "title": title,
-                    "body": placeholder_body,
-                    "milestone": milestones[spec.milestone],
-                    "labels": sorted(labels),
-                },
-            )
-            existing[spec.code] = current
-            urls[spec.code] = current["html_url"]
+            raise RuntimeError(f"issue pre-seed failed for {spec.code}")
 
         body = render_body(
             spec,
