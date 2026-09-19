@@ -59,6 +59,16 @@ from nyan_shop_bot.orchestrator.store import StateStore, freeze_task, utc_now
 UI_ROOT_RULE_MARKER = "NYAN-UI-RULESET-V1"
 UI_ANTIGRAVITY_RULE_MARKER = "NYAN-ANTIGRAVITY-RULE-V1"
 UI_ANTIGRAVITY_HOOK_MARKER = "NYAN-ANTIGRAVITY-SINGLE-WRITER-V1"
+UI_ANTIGRAVITY_HOOK_NAME = f"nyan-single-writer-{UI_ANTIGRAVITY_HOOK_MARKER}"
+UI_ANTIGRAVITY_HOOK_MATCHER = (
+    "^(run_command|manage_task|schedule|ask_permission|invoke_subagent|define_subagent|"
+    "send_message|manage_subagents|browser_subagent|command_status|send_command_input|"
+    "call_mcp_tool)$"
+)
+UI_ANTIGRAVITY_HOOK_COMMAND = "node scripts/deny-antigravity-delegation.mjs"
+UI_ANTIGRAVITY_HOOK_HANDLER_SHA256 = (
+    "21d6c0d9c7b684347fe778c3c6a56a982cfc807c9aa787dbb0909a01411989d3"
+)
 
 AUTO_MERGE_BLOCKER = (
     "automatic merge is BLOCKED: GitHub's supported merge precondition binds the head SHA "
@@ -85,6 +95,37 @@ OWNER_GATE_PHASES = {
 def new_run_id(task_id: str) -> str:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"run-{task_id.lower()}-{timestamp}-{uuid.uuid4().hex[:8]}"
+
+
+def _validate_antigravity_hook_policy(hooks_text: str, handler_text: str) -> None:
+    """Authenticate the exact enabled fail-closed Antigravity hook and handler."""
+
+    expected = {
+        UI_ANTIGRAVITY_HOOK_NAME: {
+            "enabled": True,
+            "PreToolUse": [
+                {
+                    "matcher": UI_ANTIGRAVITY_HOOK_MATCHER,
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": UI_ANTIGRAVITY_HOOK_COMMAND,
+                            "timeout": 5,
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+    try:
+        observed = json.loads(hooks_text)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Antigravity hook policy is not valid JSON") from error
+    if observed != expected:
+        raise RuntimeError("Antigravity hook policy does not match the trusted enabled guard")
+    handler_digest = sha256(handler_text.encode("utf-8")).hexdigest()
+    if handler_digest != UI_ANTIGRAVITY_HOOK_HANDLER_SHA256:
+        raise RuntimeError("Antigravity hook handler does not match its trusted digest")
 
 
 def require_exact_review_head(result: ReviewResult, expected_head: str, actual_head: str) -> None:
@@ -1209,8 +1250,9 @@ string assertions whose quoting or Markdown punctuation can create false failure
             ("AGENTS.md", UI_ROOT_RULE_MARKER),
             (".agents/rules/ui-worker.md", UI_ANTIGRAVITY_RULE_MARKER),
             (".agents/hooks.json", UI_ANTIGRAVITY_HOOK_MARKER),
-            ("scripts/deny_antigravity_delegation.py", UI_ANTIGRAVITY_HOOK_MARKER),
+            ("scripts/deny-antigravity-delegation.mjs", UI_ANTIGRAVITY_HOOK_MARKER),
         )
+        committed_policy: dict[str, str] = {}
         for relative, marker in required:
             try:
                 git(
@@ -1252,6 +1294,11 @@ string assertions whose quoting or Markdown punctuation can create false failure
             )
             if marker not in committed:
                 raise RuntimeError(f"UI policy marker is missing from {relative}")
+            committed_policy[relative] = committed
+        _validate_antigravity_hook_policy(
+            committed_policy[".agents/hooks.json"],
+            committed_policy["scripts/deny-antigravity-delegation.mjs"],
+        )
         validate_ui_prelaunch_workspace(
             worktree,
             task,

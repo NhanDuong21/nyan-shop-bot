@@ -43,7 +43,10 @@ from nyan_shop_bot.orchestrator.models import (
     WorkerResult,
 )
 from nyan_shop_bot.orchestrator.service import (
+    UI_ANTIGRAVITY_HOOK_COMMAND,
+    UI_ANTIGRAVITY_HOOK_MATCHER,
     RunnerService,
+    _validate_antigravity_hook_policy,
     require_exact_review_head,
     review_decision,
 )
@@ -51,6 +54,7 @@ from tests.unit.test_orchestrator_models import task_data
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "orchestrator" / "review_changes_requested.json"
 SCOPE_FIXTURE = Path(__file__).parents[1] / "fixtures" / "orchestrator" / "ui_scope_violation.json"
+REPOSITORY_ROOT = Path(__file__).parents[2]
 
 
 def make_task() -> TaskSpec:
@@ -72,15 +76,11 @@ def initialize_task_repo(worktree: Path, task: TaskSpec) -> str:
             encoding="utf-8",
         )
         hooks = worktree / ".agents" / "hooks.json"
-        hooks.write_text(
-            '{"nyan-NYAN-ANTIGRAVITY-SINGLE-WRITER-V1": {}}\n',
-            encoding="utf-8",
-        )
-        hook_script = worktree / "scripts" / "deny_antigravity_delegation.py"
+        hooks.write_bytes((REPOSITORY_ROOT / ".agents" / "hooks.json").read_bytes())
+        hook_script = worktree / "scripts" / "deny-antigravity-delegation.mjs"
         hook_script.parent.mkdir(parents=True)
-        hook_script.write_text(
-            '"""NYAN-ANTIGRAVITY-SINGLE-WRITER-V1"""\n',
-            encoding="utf-8",
+        hook_script.write_bytes(
+            (REPOSITORY_ROOT / "scripts" / "deny-antigravity-delegation.mjs").read_bytes()
         )
         feature_root = worktree / task.allowed_paths[0][:-3]
         feature_root.mkdir(parents=True)
@@ -2155,13 +2155,61 @@ def test_antigravity_first_turn_creates_project_and_resume_reuses_conversation(
         assert command[command.index("--output-format") + 1] == "stream-json"
 
 
+def test_antigravity_hook_policy_is_exact_enabled_and_authenticated() -> None:
+    hooks_text = (REPOSITORY_ROOT / ".agents" / "hooks.json").read_text(encoding="utf-8")
+    handler_text = (REPOSITORY_ROOT / "scripts" / "deny-antigravity-delegation.mjs").read_text(
+        encoding="utf-8"
+    )
+    _validate_antigravity_hook_policy(hooks_text, handler_text)
+
+    config = json.loads(hooks_text)
+    definition = next(iter(config.values()))
+    assert definition["enabled"] is True
+    matcher = definition["PreToolUse"][0]["matcher"]
+    assert matcher == UI_ANTIGRAVITY_HOOK_MATCHER
+    for blocked_tool in ("run_command", "manage_task", "schedule", "invoke_subagent"):
+        assert blocked_tool in matcher
+    assert definition["PreToolUse"][0]["hooks"][0]["command"] == (UI_ANTIGRAVITY_HOOK_COMMAND)
+
+
+def test_antigravity_hook_policy_rejects_disabled_malformed_or_tampered_guard() -> None:
+    hooks_text = (REPOSITORY_ROOT / ".agents" / "hooks.json").read_text(encoding="utf-8")
+    handler_text = (REPOSITORY_ROOT / "scripts" / "deny-antigravity-delegation.mjs").read_text(
+        encoding="utf-8"
+    )
+
+    with pytest.raises(RuntimeError, match="not valid JSON"):
+        _validate_antigravity_hook_policy("{", handler_text)
+    with pytest.raises(RuntimeError, match="trusted enabled guard"):
+        _validate_antigravity_hook_policy("{}", handler_text)
+
+    for key_path, replacement in (
+        (("enabled",), False),
+        (("PreToolUse", 0, "matcher"), "invoke_subagent"),
+        (("PreToolUse", 0, "hooks", 0, "command"), "node scripts/inert.mjs"),
+    ):
+        config = json.loads(hooks_text)
+        current: object = next(iter(config.values()))
+        for key in key_path[:-1]:
+            current = current[key]  # type: ignore[index]
+        current[key_path[-1]] = replacement  # type: ignore[index]
+        with pytest.raises(RuntimeError, match="trusted enabled guard"):
+            _validate_antigravity_hook_policy(json.dumps(config), handler_text)
+
+    with pytest.raises(RuntimeError, match="trusted digest"):
+        _validate_antigravity_hook_policy(
+            hooks_text,
+            "// NYAN-ANTIGRAVITY-SINGLE-WRITER-V1: inert handler\n",
+        )
+
+
 def test_antigravity_delegation_hook_denies_before_tool_execution() -> None:
-    hook = Path(__file__).parents[2] / "scripts" / "deny_antigravity_delegation.py"
+    hook = REPOSITORY_ROOT / "scripts" / "deny-antigravity-delegation.mjs"
     completed = subprocess.run(
-        [sys.executable, str(hook)],
+        ["node", str(hook)],
         input=json.dumps(
             {
-                "toolCall": {"name": "invoke_subagent", "args": {}},
+                "toolCall": {"name": "schedule", "args": {"DurationSeconds": 1}},
                 "conversationId": "00000000-0000-4000-8000-000000000100",
             }
         ),
@@ -2174,6 +2222,7 @@ def test_antigravity_delegation_hook_denies_before_tool_execution() -> None:
     decision = json.loads(completed.stdout)
     assert decision["decision"] == "deny"
     assert "exactly one Antigravity writer" in decision["reason"]
+    assert "scheduling" in decision["reason"]
 
 
 def test_agent_environment_removes_ambient_secrets(

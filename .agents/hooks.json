@@ -1,12 +1,13 @@
 {
   "nyan-single-writer-NYAN-ANTIGRAVITY-SINGLE-WRITER-V1": {
+    "enabled": true,
     "PreToolUse": [
       {
-        "matcher": "^(invoke_subagent|define_subagent|send_message|manage_subagents|browser_subagent)$",
+        "matcher": "^(run_command|manage_task|schedule|ask_permission|invoke_subagent|define_subagent|send_message|manage_subagents|browser_subagent|command_status|send_command_input|call_mcp_tool)$",
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/deny_antigravity_delegation.py",
+            "command": "node scripts/deny-antigravity-delegation.mjs",
             "timeout": 5
           }
         ]
