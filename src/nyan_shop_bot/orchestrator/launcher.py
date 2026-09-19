@@ -7,6 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+WINDOWS_DETACHED_PROCESS = 0x00000008
+WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
+
 
 def spawn_background(root: Path, state_dir: Path, run_id: str) -> int:
     run_dir = state_dir / "runs" / run_id
@@ -36,7 +39,7 @@ def spawn_background(root: Path, state_dir: Path, run_id: str) -> int:
                 stdin=subprocess.DEVNULL,
                 stdout=stdout_file,
                 stderr=stderr_file,
-                creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP),
+                creationflags=(WINDOWS_DETACHED_PROCESS | WINDOWS_CREATE_NEW_PROCESS_GROUP),
             )
         else:
             process = subprocess.Popen(  # noqa: S603 - fixed local script and argv
