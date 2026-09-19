@@ -7,7 +7,7 @@
   "title": "Antigravity catalog visibility UI handoff proof",
   "base_ref": "nyan/nsb-042-ui-skeleton",
   "pr_base": "nyan/nsb-042-ui-skeleton",
-  "branch": "nyan/nsb-043-antigravity-catalog-visibility",
+  "branch": "nyan/nsb-043-antigravity-catalog-visibility-v2",
   "worker": "antigravity",
   "worker_model": "gemini-3.8-flash-low",
   "reviewer_model": "gpt-5.6-luna",
