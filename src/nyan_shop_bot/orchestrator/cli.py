@@ -9,7 +9,7 @@ from pathlib import Path
 
 from nyan_shop_bot.orchestrator.launcher import spawn_background
 from nyan_shop_bot.orchestrator.models import DesiredState
-from nyan_shop_bot.orchestrator.service import OWNER_CONFIRMATION, RunnerService, process_alive
+from nyan_shop_bot.orchestrator.service import AUTO_MERGE_BLOCKER, RunnerService, process_alive
 
 
 def _service(root: Path, state_dir: Path | None) -> RunnerService:
@@ -137,6 +137,6 @@ def main(arguments: list[str] | None = None) -> int:
 
 
 def confirmation_text() -> str:
-    """Expose the exact owner sentence without silently applying it."""
+    """Expose why no confirmation text grants merge authority."""
 
-    return OWNER_CONFIRMATION
+    return AUTO_MERGE_BLOCKER

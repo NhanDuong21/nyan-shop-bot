@@ -36,7 +36,6 @@ from nyan_shop_bot.orchestrator.models import (
     WorkerResult,
 )
 from nyan_shop_bot.orchestrator.service import (
-    OWNER_CONFIRMATION,
     RunnerService,
     require_exact_review_head,
     review_decision,
@@ -598,7 +597,7 @@ def test_auto_merge_command_fails_closed_without_atomic_base_binding(
     assert captured == ()
 
 
-def test_exact_owner_sentence_cannot_mutate_github_auto_merge(
+def test_owner_confirmation_cannot_mutate_github_auto_merge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = RunnerService(tmp_path, tmp_path / "state")
@@ -612,7 +611,9 @@ def test_exact_owner_sentence_cannot_mutate_github_auto_merge(
     monkeypatch.setattr("nyan_shop_bot.orchestrator.service.GitHubClient", unexpected_client)
 
     with pytest.raises(RuntimeError, match="automatic merge is BLOCKED"):
-        service.authorize_auto_merge("NhanDuong21/nyan-shop-bot", OWNER_CONFIRMATION)
+        service.authorize_auto_merge(
+            "NhanDuong21/nyan-shop-bot", "explicit-but-insufficient-owner-input"
+        )
 
     assert not github_constructed
 

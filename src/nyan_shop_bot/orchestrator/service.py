@@ -53,11 +53,6 @@ from nyan_shop_bot.orchestrator.models import (
 from nyan_shop_bot.orchestrator.queue import select_ready_task
 from nyan_shop_bot.orchestrator.store import StateStore, freeze_task, utc_now
 
-OWNER_CONFIRMATION = (
-    "I authorize Nyan Shop Bot to enable GitHub auto-merge and automatically dispatch committed "
-    "M0-M2 task specs, limited to two writers; only low-risk, unprotected, exact-SHA PASS PRs "
-    "targeting main may be queued for merge."
-)
 AUTO_MERGE_BLOCKER = (
     "automatic merge is BLOCKED: GitHub's supported merge precondition binds the head SHA "
     "but not the reviewed base branch atomically"
@@ -1181,8 +1176,7 @@ reviewed_head_sha to exactly {current_head}. Distinguish tests actually run from
     def authorize_auto_merge(self, repository: str, confirmation: str) -> None:
         if repository != "NhanDuong21/nyan-shop-bot":
             raise RuntimeError("authorization is scoped only to NhanDuong21/nyan-shop-bot")
-        if confirmation != OWNER_CONFIRMATION:
-            raise RuntimeError("owner confirmation text did not match exactly")
+        del confirmation
         raise RuntimeError(AUTO_MERGE_BLOCKER)
 
     def _launch_next(self, completed_run_id: str, repository: str) -> None:
