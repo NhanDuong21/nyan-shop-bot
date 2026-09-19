@@ -2274,6 +2274,33 @@ def test_antigravity_delegation_hook_denies_before_tool_execution() -> None:
     )
     assert feature_write["decision"] == "allow"
 
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        def short_path(target: Path) -> str:
+            buffer = ctypes.create_unicode_buffer(32_768)
+            get_short_path = ctypes.windll.kernel32.GetShortPathNameW
+            get_short_path.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+            get_short_path.restype = wintypes.DWORD
+            length = get_short_path(str(target), buffer, len(buffer))
+            if length == 0 or "~" not in buffer.value:
+                pytest.skip("DOS 8.3 aliases are unavailable on this volume")
+            return buffer.value
+
+        handler = REPOSITORY_ROOT / "scripts" / "deny-antigravity-delegation.mjs"
+        hooks_path = REPOSITORY_ROOT / ".agents" / "hooks.json"
+        for alias in (
+            short_path(handler),
+            short_path(hooks_path),
+            f"{REPOSITORY_ROOT.drive}scripts\\deny-antigravity-delegation.mjs",
+            f"{handler}::$DATA",
+            f"{handler}.",
+            f"\\\\?\\{handler}",
+        ):
+            alias_write = run_hook("write_to_file", {"TargetFile": alias})
+            assert alias_write["decision"] == "deny", alias
+
 
 def test_agent_environment_removes_ambient_secrets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
