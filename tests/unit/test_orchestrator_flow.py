@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,6 +34,7 @@ from nyan_shop_bot.orchestrator.github import (
 )
 from nyan_shop_bot.orchestrator.gitops import (
     git,
+    git_bytes,
     head_sha,
     pending_files,
     validate_and_commit_worker_changes,
@@ -51,6 +53,8 @@ from nyan_shop_bot.orchestrator.models import (
     WorkerResult,
 )
 from nyan_shop_bot.orchestrator.service import (
+    IMPECCABLE_LOCK_SOURCE,
+    IMPECCABLE_TREE_PREFIXES,
     UI_ANTIGRAVITY_HOOK_COMMAND,
     UI_ANTIGRAVITY_HOOK_MATCHER,
     RunnerService,
@@ -67,6 +71,32 @@ REPOSITORY_ROOT = Path(__file__).parents[2]
 
 def make_task() -> TaskSpec:
     return TaskSpec.model_validate(task_data())
+
+
+def write_impeccable_lock(worktree: Path) -> None:
+    git(worktree, "add", "--", *IMPECCABLE_TREE_PREFIXES)
+    files: dict[str, str] = {}
+    tracked = git(
+        worktree,
+        "ls-files",
+        "-z",
+        "--",
+        *IMPECCABLE_TREE_PREFIXES,
+        raw=True,
+    )
+    for relative in sorted(value for value in tracked.split("\0") if value):
+        files[relative] = sha256(git_bytes(worktree, "show", f":{relative}")).hexdigest()
+    lock = worktree / ".impeccable" / "lock.json"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(
+        json.dumps(
+            {"files": files, "schema_version": 1, "source": IMPECCABLE_LOCK_SOURCE},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def initialize_task_repo(worktree: Path, task: TaskSpec) -> str:
@@ -93,13 +123,20 @@ def initialize_task_repo(worktree: Path, task: TaskSpec) -> str:
         for provider in (".agents", ".agent"):
             skill = worktree / provider / "skills" / "impeccable" / "SKILL.md"
             skill.parent.mkdir(parents=True, exist_ok=True)
-            skill.write_text(
-                "---\nname: impeccable\nmetadata:\n  version: 4.3.1\n---\n",
-                encoding="utf-8",
-            )
+            if provider == ".agents":
+                skill.write_text(
+                    "---\nname: impeccable\nmetadata:\n  version: 4.3.1\n---\n",
+                    encoding="utf-8",
+                )
+            else:
+                skill.write_text(
+                    "---\nname: impeccable\nversion: 4.3.1\n---\n",
+                    encoding="utf-8",
+                )
             version = skill.parent / "scripts" / "VERSION"
             version.parent.mkdir(parents=True, exist_ok=True)
             version.write_text("0.1.5\n", encoding="utf-8")
+        write_impeccable_lock(worktree)
         feature_root = worktree / task.allowed_paths[0][:-3]
         feature_root.mkdir(parents=True)
         (feature_root / "CoordinatorSkeleton.tsx").write_text(
@@ -694,8 +731,37 @@ def test_ui_worker_is_not_constructed_without_committed_workspace_rule(
     assert not constructed
 
 
-def test_ui_worker_is_not_constructed_with_wrong_impeccable_version(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("provider", "skill_text", "error_match"),
+    [
+        (
+            ".agent",
+            "---\nname: impeccable-other\nversion: 4.3.1\n---\n",
+            "unexpected name",
+        ),
+        (
+            ".agent",
+            "---\nname: impeccable\nversion: 4.3.10\n---\n",
+            "unexpected version",
+        ),
+        (
+            ".agent",
+            "---\nname: impeccable\nversion: 4.3.1 # trusted\n---\n",
+            "unexpected version",
+        ),
+        (
+            ".agents",
+            "---\nname: impeccable\nmetadata: duplicate\n  version: 4.3.1\n---\n",
+            "malformed metadata",
+        ),
+    ],
+)
+def test_ui_worker_is_not_constructed_with_malformed_impeccable_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    skill_text: str,
+    error_match: str,
 ) -> None:
     raw_task = task_data()
     raw_task.update(
@@ -709,13 +775,11 @@ def test_ui_worker_is_not_constructed_with_wrong_impeccable_version(
     task = TaskSpec.model_validate(raw_task)
     worktree = tmp_path / "worktree"
     initialize_task_repo(worktree, task)
-    skill = worktree / ".agent" / "skills" / "impeccable" / "SKILL.md"
-    skill.write_text(
-        "---\nname: impeccable\nmetadata:\n  version: 9.9.9\n---\n",
-        encoding="utf-8",
-    )
-    git(worktree, "add", skill.relative_to(worktree).as_posix())
-    git(worktree, "commit", "-m", "tamper skill version")
+    skill = worktree / provider / "skills" / "impeccable" / "SKILL.md"
+    skill.write_text(skill_text, encoding="utf-8")
+    write_impeccable_lock(worktree)
+    git(worktree, "add", skill.relative_to(worktree).as_posix(), ".impeccable/lock.json")
+    git(worktree, "commit", "-m", "tamper skill metadata and relock")
     parent = head_sha(worktree)
     service = RunnerService(tmp_path, tmp_path / "state")
     service.store.create_run(
@@ -736,9 +800,61 @@ def test_ui_worker_is_not_constructed_with_wrong_impeccable_version(
 
     monkeypatch.setattr("nyan_shop_bot.orchestrator.service.AntigravityAdapter", ForbiddenAdapter)
 
-    with pytest.raises(RuntimeError, match="unexpected version"):
+    with pytest.raises(RuntimeError, match=error_match):
         service._run_worker(
             "wrong-impeccable-version",
+            task,
+            worktree,
+            parent,
+            RunPhase.CLAIMED,
+        )
+
+    assert not constructed
+
+
+def test_ui_worker_rejects_impeccable_payload_not_matching_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw_task = task_data()
+    raw_task.update(
+        {
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/skill-proof/**"],
+        }
+    )
+    task = TaskSpec.model_validate(raw_task)
+    worktree = tmp_path / "worktree"
+    initialize_task_repo(worktree, task)
+    reference = worktree / ".agent" / "skills" / "impeccable" / "reference" / "extra.md"
+    reference.parent.mkdir(parents=True)
+    reference.write_text("unlocked payload\n", encoding="utf-8")
+    git(worktree, "add", reference.relative_to(worktree).as_posix())
+    git(worktree, "commit", "-m", "add unlocked payload")
+    parent = head_sha(worktree)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="unlocked-impeccable-payload",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=2,
+    )
+    service.store.transition("unlocked-impeccable-payload", RunPhase.CLAIMED)
+    constructed = False
+
+    class ForbiddenAdapter:
+        def __init__(self) -> None:
+            nonlocal constructed
+            constructed = True
+
+    monkeypatch.setattr("nyan_shop_bot.orchestrator.service.AntigravityAdapter", ForbiddenAdapter)
+
+    with pytest.raises(RuntimeError, match="inventory differs from lock"):
+        service._run_worker(
+            "unlocked-impeccable-payload",
             task,
             worktree,
             parent,
