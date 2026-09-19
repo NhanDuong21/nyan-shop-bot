@@ -27,6 +27,26 @@ class PullRequestOpen(RuntimeError):
     """Raised when an exact PR is valid but has not merged yet."""
 
 
+class CiFailed(RuntimeError):
+    """Structured exact-HEAD CI failure that may enter the bounded fix loop."""
+
+    def __init__(
+        self,
+        *,
+        head_sha: str,
+        run_id: int,
+        run_url: str,
+        failed_checks: list[str],
+        failed_jobs: list[str],
+    ) -> None:
+        self.head_sha = head_sha
+        self.run_id = run_id
+        self.run_url = run_url
+        self.failed_checks = tuple(failed_checks)
+        self.failed_jobs = tuple(failed_jobs)
+        super().__init__(f"required CI failed for {head_sha}: {failed_checks} ({run_url})")
+
+
 class GitHubClient:
     def __init__(
         self,
@@ -273,6 +293,41 @@ class GitHubClient:
             raise RuntimeError("created PR does not point at the expected HEAD")
         return pull
 
+    def validate_pull_request(
+        self,
+        task: TaskSpec,
+        *,
+        pr_number: int,
+        expected_url: str,
+        head_sha: str,
+    ) -> None:
+        """Read-only validation for a stored PR before legacy run recovery."""
+
+        pull = self.json_command(
+            "pr",
+            "view",
+            str(pr_number),
+            "--repo",
+            self.repository,
+            "--json",
+            "number,state,url,headRefOid,headRefName,baseRefName",
+        )
+        if not isinstance(pull, dict):
+            raise RuntimeError("stored pull request response was not an object")
+        expected = {
+            "number": pr_number,
+            "state": "OPEN",
+            "url": expected_url,
+            "headRefOid": head_sha,
+            "headRefName": task.branch,
+            "baseRefName": task.pr_base,
+        }
+        mismatches = [key for key, value in expected.items() if pull.get(key) != value]
+        if mismatches:
+            raise RuntimeError(
+                "stored pull request is no longer open and exact: " + ", ".join(mismatches)
+            )
+
     def wait_for_ci(
         self,
         *,
@@ -340,8 +395,25 @@ class GitHubClient:
                     not in {"success", "queued", "in_progress", "waiting", "pending"}
                 ]
                 if failed:
-                    raise RuntimeError(
-                        f"required CI failed for {head_sha}: {failed} ({detail['url']})"
+                    failed_jobs = sorted(
+                        name
+                        for name, conclusion in checks.items()
+                        if conclusion
+                        not in {
+                            "success",
+                            "skipped",
+                            "queued",
+                            "in_progress",
+                            "waiting",
+                            "pending",
+                        }
+                    )
+                    raise CiFailed(
+                        head_sha=head_sha,
+                        run_id=run_id,
+                        run_url=str(detail["url"]),
+                        failed_checks=failed,
+                        failed_jobs=failed_jobs,
                     )
                 if (
                     not missing

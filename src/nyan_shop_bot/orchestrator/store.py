@@ -100,6 +100,7 @@ class StateStore:
                     worker_kind TEXT NOT NULL,
                     phase TEXT NOT NULL,
                     desired_state TEXT NOT NULL,
+                    max_workers INTEGER NOT NULL DEFAULT 1 CHECK(max_workers IN (1, 2)),
                     pid INTEGER,
                     process_identity TEXT,
                     process_token TEXT,
@@ -181,6 +182,7 @@ class StateStore:
             "worker_accounted_events_sha256": "TEXT",
             "reviewer_accounted_events_sha256": "TEXT",
             "worker_cumulative_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "max_workers": "INTEGER NOT NULL DEFAULT 1",
         }
         for name, kind in additions.items():
             if name not in columns:
@@ -236,8 +238,8 @@ class StateStore:
                     run_id, task_id, task_path, task_json, task_sha256,
                     issue_number, repository, branch,
                     base_ref, base_sha, worktree_path, worker_kind, phase,
-                    desired_state, created_at, updated_at, deadline_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    desired_state, max_workers, created_at, updated_at, deadline_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -254,6 +256,7 @@ class StateStore:
                     task.worker,
                     RunPhase.CREATED,
                     DesiredState.RUNNING,
+                    max_workers,
                     now,
                     now,
                     deadline_at,
@@ -488,6 +491,136 @@ class StateStore:
                 raise KeyError(f"unknown run: {run_id}")
             self._append_event(connection, run_id, f"phase.{phase.value.lower()}", payload or {})
 
+    def record_ci_fix_request(
+        self,
+        run_id: str,
+        *,
+        expected_phase: RunPhase,
+        expected_head: str,
+        expected_fix_rounds: int,
+        next_fix_round: int,
+        ci_run_id: int,
+        ci_url: str,
+        request: dict[str, object],
+    ) -> None:
+        """Atomically checkpoint one exact-HEAD CI failure and its fix transition."""
+
+        if expected_phase not in {RunPhase.CI_WAITING, RunPhase.BLOCKED}:
+            raise ValueError("CI fix requests require CI_WAITING or legacy BLOCKED state")
+        if next_fix_round != expected_fix_rounds + 1:
+            raise ValueError("CI fix round must advance exactly once")
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT phase, desired_state, head_sha, fix_rounds,
+                       repository, issue_number, max_workers
+                FROM runs WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown run: {run_id}")
+            if (
+                str(row["phase"]) != expected_phase.value
+                or str(row["desired_state"]) != DesiredState.RUNNING.value
+                or str(row["head_sha"]) != expected_head
+                or int(row["fix_rounds"]) != expected_fix_rounds
+            ):
+                raise RuntimeError("CI fix checkpoint changed before it could be recorded")
+            if expected_phase is RunPhase.BLOCKED:
+                self._reactivate_claim_in_transaction(
+                    connection,
+                    run_id=run_id,
+                    repository=str(row["repository"]),
+                    issue_number=int(row["issue_number"]),
+                    max_workers=int(row["max_workers"]),
+                )
+            connection.execute(
+                """
+                UPDATE runs
+                SET phase = ?, fix_rounds = ?, ci_run_id = ?, ci_url = ?,
+                    reviewed_head_sha = NULL, review_started_head_sha = NULL,
+                    last_error = NULL, ended_at = NULL, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (
+                    RunPhase.FIX_REQUESTED,
+                    next_fix_round,
+                    ci_run_id,
+                    ci_url,
+                    now,
+                    run_id,
+                ),
+            )
+            self._append_event(connection, run_id, "ci.failed", request)
+            self._append_event(
+                connection,
+                run_id,
+                "phase.fix_requested",
+                {
+                    "head_sha": expected_head,
+                    "run_id": ci_run_id,
+                    "failed_jobs": request.get("failed_jobs", []),
+                    "fix_round": next_fix_round,
+                },
+            )
+
+    def recover_blocked_ci_pass(
+        self,
+        run_id: str,
+        *,
+        expected_head: str,
+        ci_run_id: int,
+        ci_url: str,
+    ) -> None:
+        """Atomically resume a legacy CI-blocked run when a newer exact-HEAD rerun passed."""
+
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT phase, desired_state, head_sha,
+                       repository, issue_number, max_workers
+                FROM runs WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown run: {run_id}")
+            if (
+                str(row["phase"]) != RunPhase.BLOCKED.value
+                or str(row["desired_state"]) != DesiredState.RUNNING.value
+                or str(row["head_sha"]) != expected_head
+            ):
+                raise RuntimeError("CI recovery checkpoint changed before it could be recorded")
+            self._reactivate_claim_in_transaction(
+                connection,
+                run_id=run_id,
+                repository=str(row["repository"]),
+                issue_number=int(row["issue_number"]),
+                max_workers=int(row["max_workers"]),
+            )
+            connection.execute(
+                """
+                UPDATE runs
+                SET phase = ?, ci_run_id = ?, ci_url = ?, last_error = NULL,
+                    ended_at = NULL, reviewed_head_sha = NULL,
+                    review_started_head_sha = NULL, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (RunPhase.REVIEW_RUNNING, ci_run_id, ci_url, now, run_id),
+            )
+            self._append_event(
+                connection,
+                run_id,
+                "ci.passed",
+                {"head_sha": expected_head, "url": ci_url, "recovered": True},
+            )
+            self._append_event(connection, run_id, "phase.review_running", {})
+
     def set_desired_state(self, run_id: str, desired_state: DesiredState) -> None:
         self.update_run(run_id, desired_state=desired_state)
         self.append_event(run_id, "control.requested", {"desired_state": desired_state})
@@ -584,6 +717,53 @@ class StateStore:
                 (now, run_id),
             )
             self._append_event(connection, run_id, "claim.released", {})
+
+    @classmethod
+    def _reactivate_claim_in_transaction(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        run_id: str,
+        repository: str,
+        issue_number: int,
+        max_workers: int,
+    ) -> None:
+        """Reserve a legacy recovery inside the same transaction as its phase change."""
+
+        if not 1 <= max_workers <= 2:
+            raise RuntimeError("persisted writer limit is invalid")
+        claim = connection.execute(
+            "SELECT active FROM claims WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if claim is None:
+            raise RuntimeError("run has no durable claim to reactivate")
+        if bool(claim["active"]):
+            raise RuntimeError("run claim is already active")
+        conflicting = connection.execute(
+            """
+            SELECT run_id FROM claims
+            WHERE repository = ? AND issue_number = ? AND active = 1
+            """,
+            (repository, issue_number),
+        ).fetchone()
+        if conflicting is not None:
+            raise RuntimeError(f"issue already has active run {conflicting['run_id']}")
+        active_count = int(
+            connection.execute("SELECT COUNT(*) FROM claims WHERE active = 1").fetchone()[0]
+        )
+        if active_count >= max_workers:
+            raise RuntimeError(f"writer limit reached ({active_count}/{max_workers})")
+        cursor = connection.execute(
+            """
+            UPDATE claims
+            SET active = 1, claimed_at = ?, released_at = NULL
+            WHERE run_id = ? AND active = 0
+            """,
+            (utc_now(), run_id),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("claim changed before it could be reactivated")
+        cls._append_event(connection, run_id, "claim.reactivated", {})
 
     def active_claims(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
