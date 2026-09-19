@@ -106,6 +106,19 @@ def test_process_lease_allows_only_one_runner(tmp_path: Path) -> None:
     assert store.get_run("run-one")["pid"] is None
 
 
+def test_process_lease_cannot_release_while_agent_is_active(tmp_path: Path) -> None:
+    task = make_task(15, "NSB-041", "nyan/nsb-041-runner-proof")
+    store = StateStore(tmp_path / "state")
+    create(store, "run-one", task, tmp_path)
+    store.acquire_process_lease("run-one", pid=os.getpid(), token="owner-one")
+    store.set_active_agent("run-one", token="owner-one", pid=os.getpid())
+
+    with pytest.raises(RuntimeError, match="agent is active"):
+        store.release_process_lease("run-one", "owner-one")
+
+    assert store.get_run("run-one")["process_token"] == "owner-one"
+
+
 def test_stop_is_terminal_and_releases_claim_when_runner_is_idle(tmp_path: Path) -> None:
     task = make_task(15, "NSB-041", "nyan/nsb-041-runner-proof")
     service = RunnerService(tmp_path, tmp_path / "state")

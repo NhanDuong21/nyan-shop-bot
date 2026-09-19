@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from nyan_shop_bot.orchestrator.adapters import (
     _parse_antigravity_events,
     _parse_codex_events,
+    _run_monitored,
     sanitized_environment,
 )
 from nyan_shop_bot.orchestrator.github import GitHubClient, PauseRequested
@@ -35,6 +39,18 @@ FIXTURE = Path(__file__).parents[1] / "fixtures" / "orchestrator" / "review_chan
 
 def make_task() -> TaskSpec:
     return TaskSpec.model_validate(task_data())
+
+
+def initialize_task_repo(worktree: Path, task: TaskSpec) -> str:
+    worktree.mkdir()
+    git(worktree, "init")
+    git(worktree, "config", "user.name", "Nyan Test")
+    git(worktree, "config", "user.email", "nyan-test@example.invalid")
+    (worktree / "README.md").write_text("base\n", encoding="utf-8")
+    git(worktree, "add", "README.md")
+    git(worktree, "commit", "-m", "base")
+    git(worktree, "branch", "-M", task.branch)
+    return head_sha(worktree)
 
 
 def test_changes_requested_fixture_routes_findings_to_same_worker(tmp_path: Path) -> None:
@@ -96,6 +112,48 @@ def test_ci_backoff_honors_pause_without_model_polling() -> None:
         GitHubClient._controlled_sleep(control, 30)
 
     assert calls == 1
+
+
+def test_monitored_process_reports_child_pid_lifecycle(tmp_path: Path) -> None:
+    started: list[int] = []
+    finished: list[int] = []
+
+    _run_monitored(
+        [sys.executable, "-c", "print('ok')"],
+        cwd=tmp_path,
+        stdin_text=None,
+        stdout_path=tmp_path / "events.jsonl",
+        stderr_path=tmp_path / "stderr.log",
+        control=lambda: DesiredState.RUNNING,
+        timeout_seconds=10,
+        on_process_start=started.append,
+        on_process_end=finished.append,
+    )
+
+    assert len(started) == 1
+    assert finished == started
+
+
+def test_github_command_uses_remaining_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed_timeout: int | None = None
+
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        nonlocal observed_timeout
+        observed_timeout = int(kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("nyan_shop_bot.orchestrator.github.subprocess.run", fake_run)
+    client = GitHubClient(
+        tmp_path,
+        "NhanDuong21/nyan-shop-bot",
+        timeout_reader=lambda: 7,
+    )
+
+    client.command("version")
+
+    assert observed_timeout == 7
 
 
 def test_ci_wait_considers_only_newest_exact_sha_run(
@@ -171,15 +229,18 @@ def test_auto_merge_command_is_bound_to_expected_head(
 
 def test_interrupted_worker_recovers_explicit_session(tmp_path: Path) -> None:
     task = make_task()
+    worktree = tmp_path / "worktree"
+    parent = initialize_task_repo(worktree, task)
     service = RunnerService(tmp_path, tmp_path / "state")
     service.store.create_run(
         run_id="recovery-run",
         task=task,
         task_path=tmp_path / "task.json",
-        base_sha="b" * 40,
-        worktree_path=tmp_path / "worktree",
+        base_sha=parent,
+        worktree_path=worktree,
         max_workers=2,
     )
+    service.store.update_run("recovery-run", worker_parent_sha=parent)
     service.store.transition("recovery-run", RunPhase.WORKER_RUNNING)
     run_dir = service.state_dir / "runs" / "recovery-run"
     run_dir.mkdir(parents=True)
@@ -188,28 +249,161 @@ def test_interrupted_worker_recovers_explicit_session(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    service._recover_interrupted_worker("recovery-run", task)
+    service._recover_interrupted_worker("recovery-run", task, worktree)
 
     run = service.store.get_run("recovery-run")
     assert run["phase"] == RunPhase.CLAIMED
     assert run["worker_session_id"] == "durable-session"
 
 
-def test_runner_owns_commit_after_validating_worker_paths(tmp_path: Path) -> None:
-    worktree = tmp_path / "repo"
-    worktree.mkdir()
-    git(worktree, "init")
-    git(worktree, "config", "user.name", "Nyan Test")
-    git(worktree, "config", "user.email", "nyan-test@example.invalid")
-    (worktree / "README.md").write_text("base\n", encoding="utf-8")
-    git(worktree, "add", "README.md")
-    git(worktree, "commit", "-m", "base")
-    git(worktree, "branch", "-M", "nyan/nsb-041-runner-proof")
-    parent = head_sha(worktree)
+def test_interrupted_worker_reconciles_existing_runner_commit(tmp_path: Path) -> None:
+    task = make_task()
+    worktree = tmp_path / "worktree"
+    parent = initialize_task_repo(worktree, task)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="commit-recovery-run",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=2,
+    )
+    service.store.update_run("commit-recovery-run", worker_parent_sha=parent)
+    service.store.transition("commit-recovery-run", RunPhase.WORKER_RUNNING)
     docs = worktree / "docs"
     docs.mkdir()
     (docs / "runner-demo.md").write_text("proof\n", encoding="utf-8")
+    result = WorkerResult.model_validate(
+        {
+            "status": "SUCCESS",
+            "issue": task.issue_number,
+            "branch": task.branch,
+            "head_sha": parent,
+            "changed_files": ["docs/runner-demo.md"],
+            "tests": [
+                {
+                    "command": "git diff --check",
+                    "result": "PASS",
+                    "evidence": "No whitespace errors.",
+                }
+            ],
+            "blockers": [],
+            "summary": "Ready for the runner-owned commit.",
+        }
+    )
+    run_dir = service.state_dir / "runs" / "commit-recovery-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "worker-initial.result.json").write_text(result.model_dump_json(), encoding="utf-8")
+    committed, _ = validate_and_commit_worker_changes(
+        worktree,
+        task=task,
+        expected_parent=parent,
+        result=result,
+    )
+
+    service._recover_interrupted_worker("commit-recovery-run", task, worktree)
+
+    run = service.store.get_run("commit-recovery-run")
+    assert run["phase"] == RunPhase.WORKER_COMPLETE
+    assert run["head_sha"] == committed
+    assert run["worker_parent_sha"] is None
+    assert git(worktree, "rev-list", "--count", f"{parent}..HEAD") == "1"
+
+
+def test_prepare_launch_refuses_live_orphan_agent(tmp_path: Path) -> None:
     task = make_task()
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="orphan-run",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha="b" * 40,
+        worktree_path=tmp_path / "worktree",
+        max_workers=2,
+    )
+    service.store.acquire_process_lease("orphan-run", pid=999_999_999, token="old-owner")
+    service.store.set_active_agent("orphan-run", token="old-owner", pid=os.getpid())
+
+    with pytest.raises(RuntimeError, match="live agent process"):
+        service.prepare_process_launch("orphan-run")
+
+
+def test_owner_pending_confirmation_can_resume_only_after_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_value = task_data()
+    task_value.update({"pr_base": "main", "auto_merge_eligible": True})
+    task = TaskSpec.model_validate(task_value)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="pending-run",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha="b" * 40,
+        worktree_path=tmp_path / "worktree",
+        max_workers=2,
+    )
+    service.store.update_run(
+        "pending-run",
+        head_sha="a" * 40,
+        reviewed_head_sha="a" * 40,
+        pr_number=42,
+    )
+    service.store.transition("pending-run", RunPhase.MERGE_PENDING_CONFIRMATION)
+
+    with pytest.raises(RuntimeError, match="auto-merge remains disabled"):
+        service.resume_run("pending-run")
+
+    monkeypatch.setattr(service, "owner_authorized", lambda repository: True)
+    service.resume_run("pending-run")
+
+    assert service.store.get_run("pending-run")["phase"] == RunPhase.MERGE_AUTHORIZED
+
+
+def test_owner_manual_merge_reconciles_exact_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = make_task()
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="owner-run",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha="b" * 40,
+        worktree_path=tmp_path / "worktree",
+        max_workers=2,
+    )
+    service.store.update_run(
+        "owner-run",
+        head_sha="a" * 40,
+        reviewed_head_sha="a" * 40,
+        pr_number=42,
+    )
+    service.store.transition("owner-run", RunPhase.READY_FOR_OWNER)
+
+    class FakeGitHub:
+        def merged_commit_if_exact(self, pr_number: int, *, expected_head: str) -> str:
+            assert pr_number == 42
+            assert expected_head == "a" * 40
+            return "c" * 40
+
+    monkeypatch.setattr(service, "_github_for_run", lambda run_id, frozen_task: FakeGitHub())
+
+    service.resume_run("owner-run")
+
+    run = service.store.get_run("owner-run")
+    assert run["phase"] == RunPhase.OWNER_MERGED
+    assert run["merge_sha"] == "c" * 40
+
+
+def test_runner_owns_commit_after_validating_worker_paths(tmp_path: Path) -> None:
+    task = make_task()
+    worktree = tmp_path / "repo"
+    parent = initialize_task_repo(worktree, task)
+    docs = worktree / "docs"
+    docs.mkdir()
+    (docs / "runner-demo.md").write_text("proof\n", encoding="utf-8")
     result = WorkerResult.model_validate(
         {
             "status": "SUCCESS",

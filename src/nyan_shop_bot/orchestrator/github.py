@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from nyan_shop_bot.orchestrator.models import CiEvidence, DesiredState, TaskSpec
+from nyan_shop_bot.orchestrator.models import SHA_PATTERN, CiEvidence, DesiredState, TaskSpec
 
 ControlReader = Callable[[], DesiredState]
 
@@ -23,25 +23,43 @@ class StopRequested(RuntimeError):
     """Raised at a safe wait checkpoint after an owner stop request."""
 
 
+class PullRequestOpen(RuntimeError):
+    """Raised when an exact PR is valid but has not merged yet."""
+
+
 class GitHubClient:
-    def __init__(self, root: Path, repository: str) -> None:
+    def __init__(
+        self,
+        root: Path,
+        repository: str,
+        *,
+        timeout_reader: Callable[[], int] | None = None,
+    ) -> None:
         executable = shutil.which("gh")
         if executable is None:
             raise RuntimeError("GitHub CLI is not installed")
         self.executable = executable
         self.root = root
         self.repository = repository
+        self.timeout_reader = timeout_reader
 
     def command(self, *arguments: str, input_text: str | None = None) -> str:
-        completed = subprocess.run(
-            (self.executable, *arguments),
-            cwd=self.root,
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            input=input_text,
-        )
+        timeout_seconds = 60
+        if self.timeout_reader is not None:
+            timeout_seconds = max(1, min(60, self.timeout_reader()))
+        try:
+            completed = subprocess.run(
+                (self.executable, *arguments),
+                cwd=self.root,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                input=input_text,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise TimeoutError(f"gh {' '.join(arguments)} exceeded {timeout_seconds}s") from error
         if completed.returncode:
             detail = completed.stderr.strip() or completed.stdout.strip()
             raise RuntimeError(f"gh {' '.join(arguments)} failed: {detail}")
@@ -373,6 +391,31 @@ class GitHubClient:
             "--match-head-commit",
             expected_head,
         )
+
+    def merged_commit_if_exact(self, pr_number: int, *, expected_head: str) -> str:
+        """Reconcile a manual owner merge without trusting a changed PR head."""
+
+        pull = self.json_command(
+            "pr",
+            "view",
+            str(pr_number),
+            "--repo",
+            self.repository,
+            "--json",
+            "state,headRefOid,mergeCommit,url",
+        )
+        if not isinstance(pull, dict) or pull.get("headRefOid") != expected_head:
+            raise RuntimeError("owner merge PR HEAD does not match the reviewed exact SHA")
+        state = pull.get("state")
+        if state == "OPEN":
+            raise PullRequestOpen("owner merge is not complete; PR is still open")
+        if state != "MERGED":
+            raise RuntimeError(f"owner merge PR entered unexpected state {state}")
+        commit = pull.get("mergeCommit")
+        merge_sha = commit.get("oid") if isinstance(commit, dict) else None
+        if not isinstance(merge_sha, str) or not SHA_PATTERN.fullmatch(merge_sha):
+            raise RuntimeError("owner-merged PR did not expose a full merge commit SHA")
+        return merge_sha
 
     def wait_for_merge(
         self,

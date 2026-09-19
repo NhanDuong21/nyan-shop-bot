@@ -121,12 +121,14 @@ def main(arguments: list[str] | None = None) -> int:
         print(json.dumps(service.status(run_id), indent=2, default=str))
         return 0
 
-    desired = {
-        "pause": DesiredState.PAUSED,
-        "resume": DesiredState.RUNNING,
-        "stop": DesiredState.STOPPED,
-    }[args.command]
-    service.set_control(run_id, desired)
+    if args.command == "resume":
+        service.resume_run(run_id)
+    else:
+        desired = {
+            "pause": DesiredState.PAUSED,
+            "stop": DesiredState.STOPPED,
+        }[args.command]
+        service.set_control(run_id, desired)
     status = service.status(run_id)
     if args.command == "resume" and not bool(status["process_alive"]):
         status.update(_start_background(service, run_id))

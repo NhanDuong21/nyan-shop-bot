@@ -23,6 +23,8 @@ from nyan_shop_bot.orchestrator.models import (
 )
 
 ControlReader = Callable[[], DesiredState]
+ProcessStarted = Callable[[int], None]
+ProcessFinished = Callable[[int], None]
 
 SAFE_INHERITED_ENV = {
     "APPDATA",
@@ -157,6 +159,8 @@ def _run_monitored(
     stderr_path: Path,
     control: ControlReader,
     timeout_seconds: int,
+    on_process_start: ProcessStarted | None = None,
+    on_process_end: ProcessFinished | None = None,
 ) -> None:
     started = time.monotonic()
     with (
@@ -173,28 +177,37 @@ def _run_monitored(
             encoding="utf-8",
             env=sanitized_environment(stdout_path.parent / "isolated-environment"),
         )
-        if stdin_text is not None:
-            if process.stdin is None:
-                raise RuntimeError("agent stdin was not created")
-            process.stdin.write(stdin_text)
-            process.stdin.close()
-        while process.poll() is None:
-            # Pause/stop are cooperative for an active model turn: finish this bounded
-            # invocation, persist its result, then stop at the next safe checkpoint.
-            # CI waits stop immediately because they have no partial model state.
-            control()
-            if time.monotonic() - started > timeout_seconds:
+        process_attached = False
+        try:
+            if on_process_start is not None:
+                on_process_start(process.pid)
+                process_attached = True
+            if stdin_text is not None:
+                if process.stdin is None:
+                    raise RuntimeError("agent stdin was not created")
+                process.stdin.write(stdin_text)
+                process.stdin.close()
+            while process.poll() is None:
+                # Pause/stop are cooperative for an active model turn: finish this bounded
+                # invocation, persist its result, then stop at the next safe checkpoint.
+                # CI waits stop immediately because they have no partial model state.
+                control()
+                if time.monotonic() - started > timeout_seconds:
+                    raise TimeoutError(f"agent exceeded {timeout_seconds}s invocation limit")
+                time.sleep(1)
+            if process.returncode != 0:
+                tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+                raise RuntimeError(f"agent exited {process.returncode}: {tail}")
+        finally:
+            if process.poll() is None:
                 process.terminate()
                 try:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=10)
-                raise TimeoutError(f"agent exceeded {timeout_seconds}s invocation limit")
-            time.sleep(1)
-        if process.returncode != 0:
-            tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
-            raise RuntimeError(f"agent exited {process.returncode}: {tail}")
+            if process_attached and on_process_end is not None:
+                on_process_end(process.pid)
 
 
 def _load_final[ResultModel: BaseModel](path: Path, model: type[ResultModel]) -> ResultModel:
@@ -249,6 +262,8 @@ class CodexAdapter:
         timeout_seconds: int,
         resume_session_id: str | None = None,
         model: str | None = None,
+        on_process_start: ProcessStarted | None = None,
+        on_process_end: ProcessFinished | None = None,
     ) -> tuple[ResultModel, AgentInvocation]:
         run_dir.mkdir(parents=True, exist_ok=True)
         schema_path = run_dir / f"{name}.schema.json"
@@ -256,6 +271,7 @@ class CodexAdapter:
         events_path = run_dir / f"{name}.events.jsonl"
         stderr_path = run_dir / f"{name}.stderr.log"
         write_schema(result_model, schema_path)
+        result_path.unlink(missing_ok=True)
 
         command = [
             self.executable,
@@ -294,6 +310,8 @@ class CodexAdapter:
             stderr_path=stderr_path,
             control=control,
             timeout_seconds=timeout_seconds,
+            on_process_start=on_process_start,
+            on_process_end=on_process_end,
         )
         result = _load_final(result_path, result_model)
         session_id, usage = _parse_codex_events(events_path)
@@ -319,6 +337,8 @@ class CodexAdapter:
         timeout_seconds: int,
         resume_session_id: str | None = None,
         model: str | None = None,
+        on_process_start: ProcessStarted | None = None,
+        on_process_end: ProcessFinished | None = None,
     ) -> tuple[WorkerResult, AgentInvocation]:
         return self.invoke(
             worktree=worktree,
@@ -331,6 +351,8 @@ class CodexAdapter:
             timeout_seconds=timeout_seconds,
             resume_session_id=resume_session_id,
             model=model,
+            on_process_start=on_process_start,
+            on_process_end=on_process_end,
         )
 
     def reviewer(
@@ -343,6 +365,8 @@ class CodexAdapter:
         control: ControlReader,
         timeout_seconds: int,
         model: str | None = None,
+        on_process_start: ProcessStarted | None = None,
+        on_process_end: ProcessFinished | None = None,
     ) -> tuple[ReviewResult, AgentInvocation]:
         return self.invoke(
             worktree=worktree,
@@ -354,6 +378,8 @@ class CodexAdapter:
             control=control,
             timeout_seconds=timeout_seconds,
             model=model,
+            on_process_start=on_process_start,
+            on_process_end=on_process_end,
         )
 
 
@@ -413,6 +439,8 @@ class AntigravityAdapter:
         timeout_seconds: int,
         resume_session_id: str | None = None,
         model: str | None = None,
+        on_process_start: ProcessStarted | None = None,
+        on_process_end: ProcessFinished | None = None,
     ) -> tuple[WorkerResult, AgentInvocation]:
         run_dir.mkdir(parents=True, exist_ok=True)
         schema_path = run_dir / f"{name}.schema.json"
@@ -420,6 +448,7 @@ class AntigravityAdapter:
         stderr_path = run_dir / f"{name}.stderr.log"
         result_path = run_dir / f"{name}.result.json"
         write_schema(WorkerResult, schema_path)
+        result_path.unlink(missing_ok=True)
         timeout_minutes = max(1, min(60, (timeout_seconds + 59) // 60))
         command = [
             self.executable,
@@ -453,7 +482,9 @@ class AntigravityAdapter:
             stdout_path=events_path,
             stderr_path=stderr_path,
             control=control,
-            timeout_seconds=timeout_seconds + 30,
+            timeout_seconds=timeout_seconds,
+            on_process_start=on_process_start,
+            on_process_end=on_process_end,
         )
         session_id, usage, raw_output = _parse_antigravity_events(events_path)
         if resume_session_id is not None and session_id != resume_session_id:

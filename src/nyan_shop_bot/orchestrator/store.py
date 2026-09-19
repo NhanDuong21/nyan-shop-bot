@@ -17,6 +17,8 @@ RUN_FIELDS = {
     "phase",
     "desired_state",
     "pid",
+    "worker_parent_sha",
+    "merge_sha",
     "worker_session_id",
     "reviewer_session_id",
     "head_sha",
@@ -93,6 +95,8 @@ class StateStore:
                     process_token TEXT,
                     process_started_at TEXT,
                     process_heartbeat_at TEXT,
+                    active_agent_pid INTEGER,
+                    active_agent_started_at TEXT,
                     worker_session_id TEXT,
                     reviewer_session_id TEXT,
                     head_sha TEXT,
@@ -104,6 +108,8 @@ class StateStore:
                     fix_rounds INTEGER NOT NULL DEFAULT 0,
                     agent_invocations INTEGER NOT NULL DEFAULT 0,
                     total_tokens INTEGER NOT NULL DEFAULT 0,
+                    worker_parent_sha TEXT,
+                    merge_sha TEXT,
                     last_error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -143,7 +149,11 @@ class StateStore:
             "process_token": "TEXT",
             "process_started_at": "TEXT",
             "process_heartbeat_at": "TEXT",
+            "active_agent_pid": "INTEGER",
+            "active_agent_started_at": "TEXT",
             "deadline_at": "TEXT",
+            "worker_parent_sha": "TEXT",
+            "merge_sha": "TEXT",
         }
         for name, kind in additions.items():
             if name not in columns:
@@ -252,6 +262,51 @@ class StateStore:
             if cursor.rowcount != 1:
                 raise RuntimeError("runner process lease was lost")
 
+    def set_active_agent(self, run_id: str, *, token: str, pid: int) -> None:
+        now = utc_now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE runs
+                SET active_agent_pid = ?, active_agent_started_at = ?, updated_at = ?
+                WHERE run_id = ? AND process_token = ? AND active_agent_pid IS NULL
+                """,
+                (pid, now, now, run_id, token),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("cannot attach agent process to the current runner lease")
+            self._append_event(connection, run_id, "agent.process_started", {"pid": pid})
+
+    def clear_active_agent(self, run_id: str, *, token: str, pid: int) -> None:
+        now = utc_now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE runs
+                SET active_agent_pid = NULL, active_agent_started_at = NULL, updated_at = ?
+                WHERE run_id = ? AND process_token = ? AND active_agent_pid = ?
+                """,
+                (now, run_id, token, pid),
+            )
+            if cursor.rowcount == 1:
+                self._append_event(connection, run_id, "agent.process_finished", {"pid": pid})
+
+    def clear_stale_active_agent(self, run_id: str, *, token: str, pid: int) -> None:
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE runs
+                SET active_agent_pid = NULL, active_agent_started_at = NULL, updated_at = ?
+                WHERE run_id = ? AND process_token = ? AND active_agent_pid = ?
+                """,
+                (now, run_id, token, pid),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("stale agent process changed before it could be cleared")
+            self._append_event(connection, run_id, "agent.stale_process_cleared", {"pid": pid})
+
     def release_process_lease(self, run_id: str, token: str) -> None:
         now = utc_now()
         with self.connect() as connection:
@@ -260,12 +315,19 @@ class StateStore:
                 UPDATE runs
                 SET pid = NULL, process_token = NULL, process_started_at = NULL,
                     process_heartbeat_at = NULL, updated_at = ?
-                WHERE run_id = ? AND process_token = ?
+                WHERE run_id = ? AND process_token = ? AND active_agent_pid IS NULL
                 """,
                 (now, run_id, token),
             )
             if cursor.rowcount == 1:
                 self._append_event(connection, run_id, "process.lease_released", {})
+            else:
+                active = connection.execute(
+                    "SELECT active_agent_pid FROM runs WHERE run_id = ? AND process_token = ?",
+                    (run_id, token),
+                ).fetchone()
+                if active is not None and active["active_agent_pid"] is not None:
+                    raise RuntimeError("cannot release runner lease while an agent is active")
 
     def clear_stale_process_lease(self, run_id: str, *, pid: int, token: str) -> None:
         now = utc_now()

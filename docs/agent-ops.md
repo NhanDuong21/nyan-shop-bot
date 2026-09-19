@@ -36,4 +36,4 @@ Project-scoped custom agents use the current documented `.codex/agents/*.toml` f
 
 ## Local runner controls
 
-See [orchestration.md](orchestration.md). Durable state and logs live under ignored `.nyan-runner/`; writer worktrees live in a sibling `nyan-shop-bot-nsb-040-worktrees/` directory. `pause` and `stop` are cooperative for an active bounded model turn, then take effect at the next safe checkpoint. `resume` uses the persisted run and exact session ID rather than creating a new issue or PR.
+See [orchestration.md](orchestration.md). Durable state and logs live under ignored `.nyan-runner/`; writer worktrees live in a sibling `nyan-shop-bot-nsb-040-worktrees/` directory. `pause` and `stop` are cooperative for an active bounded model turn, then take effect at the next safe checkpoint. `resume` uses the persisted run and exact session ID rather than creating a new issue or PR; it also reconciles an exact owner merge or a newly authorized pending auto-merge gate. A persisted live child PID always blocks a duplicate launch.
