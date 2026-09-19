@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node scripts/deny-antigravity-delegation.mjs",
+            "command": "node ../scripts/deny-antigravity-delegation.mjs",
             "timeout": 5
           }
         ]
