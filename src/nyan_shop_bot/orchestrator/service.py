@@ -900,7 +900,10 @@ Acceptance criteria:
 Check correctness, scope, tests, secrets, mock-only boundaries, and any path/policy risk. Return
 PASS only when no finding or blocker remains. CHANGES_REQUESTED requires concrete findings with
 evidence. BLOCKED is for missing evidence or an external condition that prevents review. Set
-reviewed_head_sha to exactly {current_head}. Distinguish tests actually run from NOT_RUN.
+reviewed_head_sha to exactly {current_head}. Confirm prerequisites before running a check; record a
+check as NOT_RUN when its prerequisites are absent. Every command actually run that fails must be
+reported as FAIL, and a PASS verdict cannot contain failed test evidence. A later alternative check
+does not erase an executed failure.
 """
 
     def _check_budget(self, run: dict[str, Any], task: TaskSpec) -> None:

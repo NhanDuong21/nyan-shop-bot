@@ -1525,10 +1525,22 @@ def test_agent_environment_removes_ambient_secrets(
     assert "DOCKER_AUTH_CONFIG" not in result
     assert result["GH_CONFIG_DIR"] == str(isolation_dir / "gh")
     assert "PYTHONPATH" not in result
-    assert result["PATH"] == "safe-path"
+    path_entries = result["PATH"].split(os.pathsep)
+    assert path_entries[0] == str(Path(sys.executable).resolve().parent)
+    assert path_entries[1:] == ["safe-path"]
     assert result["DATABASE_URL"].startswith(
         "postgresql+asyncpg://nyan_agent:nyan_agent_local_only@127.0.0.1:55432/"
     )
     assert result["SUPPLIER_MODE"] == "mock"
     assert result["PAYMENT_MODE"] == "disabled"
     assert result["ALLOW_REAL_PURCHASES"] == "false"
+
+
+def test_review_prompt_exposes_fail_closed_test_evidence_contract() -> None:
+    task = make_task()
+
+    prompt = RunnerService._review_prompt(task, "a" * 40, "b" * 40)
+
+    assert "Confirm prerequisites before running a check" in prompt
+    assert "a PASS verdict cannot contain failed test evidence" in prompt
+    assert "does not erase an executed failure" in prompt
