@@ -90,6 +90,16 @@ def initialize_task_repo(worktree: Path, task: TaskSpec) -> str:
         hook_script.write_bytes(
             (REPOSITORY_ROOT / "scripts" / "deny-antigravity-delegation.mjs").read_bytes()
         )
+        for provider in (".agents", ".agent"):
+            skill = worktree / provider / "skills" / "impeccable" / "SKILL.md"
+            skill.parent.mkdir(parents=True, exist_ok=True)
+            skill.write_text(
+                "---\nname: impeccable\nmetadata:\n  version: 4.3.1\n---\n",
+                encoding="utf-8",
+            )
+            version = skill.parent / "scripts" / "VERSION"
+            version.parent.mkdir(parents=True, exist_ok=True)
+            version.write_text("0.1.5\n", encoding="utf-8")
         feature_root = worktree / task.allowed_paths[0][:-3]
         feature_root.mkdir(parents=True)
         (feature_root / "CoordinatorSkeleton.tsx").write_text(
@@ -680,6 +690,60 @@ def test_ui_worker_is_not_constructed_without_committed_workspace_rule(
 
     with pytest.raises(RuntimeError, match="UI policy file is not tracked"):
         service._run_worker("missing-ui-rule", task, worktree, parent, RunPhase.CLAIMED)
+
+    assert not constructed
+
+
+def test_ui_worker_is_not_constructed_with_wrong_impeccable_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw_task = task_data()
+    raw_task.update(
+        {
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/skill-proof/**"],
+        }
+    )
+    task = TaskSpec.model_validate(raw_task)
+    worktree = tmp_path / "worktree"
+    initialize_task_repo(worktree, task)
+    skill = worktree / ".agent" / "skills" / "impeccable" / "SKILL.md"
+    skill.write_text(
+        "---\nname: impeccable\nmetadata:\n  version: 9.9.9\n---\n",
+        encoding="utf-8",
+    )
+    git(worktree, "add", skill.relative_to(worktree).as_posix())
+    git(worktree, "commit", "-m", "tamper skill version")
+    parent = head_sha(worktree)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="wrong-impeccable-version",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha=parent,
+        worktree_path=worktree,
+        max_workers=2,
+    )
+    service.store.transition("wrong-impeccable-version", RunPhase.CLAIMED)
+    constructed = False
+
+    class ForbiddenAdapter:
+        def __init__(self) -> None:
+            nonlocal constructed
+            constructed = True
+
+    monkeypatch.setattr("nyan_shop_bot.orchestrator.service.AntigravityAdapter", ForbiddenAdapter)
+
+    with pytest.raises(RuntimeError, match="unexpected version"):
+        service._run_worker(
+            "wrong-impeccable-version",
+            task,
+            worktree,
+            parent,
+            RunPhase.CLAIMED,
+        )
 
     assert not constructed
 
@@ -3157,8 +3221,27 @@ def test_antigravity_first_turn_creates_project_and_resume_reuses_conversation(
     assert resumed[resumed.index("--conversation") + 1] == ("00000000-0000-4000-8000-000000000099")
     for command in (initial, resumed):
         assert "--sandbox" in command
+        assert "--disable-slash-commands" not in command
         assert command[command.index("--mode") + 1] == "accept-edits"
         assert command[command.index("--output-format") + 1] == "stream-json"
+
+
+def test_ui_worker_prompt_invokes_impeccable_before_task_text(tmp_path: Path) -> None:
+    value = task_data()
+    value.update(
+        {
+            "worker": "antigravity",
+            "worker_model": "gemini-3.8-flash-low",
+            "role": "ui",
+            "allowed_paths": ["admin/src/features/catalog-proof/**"],
+        }
+    )
+    task = TaskSpec.model_validate(value)
+    service = RunnerService(tmp_path, tmp_path / "state")
+
+    prompt = service._worker_prompt(task, "a" * 40)
+
+    assert prompt.startswith("/impeccable polish\n\n")
 
 
 def test_antigravity_hook_policy_is_exact_enabled_and_authenticated() -> None:
