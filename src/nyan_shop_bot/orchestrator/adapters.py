@@ -332,9 +332,17 @@ def sanitized_environment(
     isolation_dir: Path | None = None,
     *,
     isolate_antigravity: bool = False,
+    antigravity_workspace: Path | None = None,
+    antigravity_write_root: Path | None = None,
 ) -> dict[str, str]:
     """Allow only process basics and force non-production application endpoints."""
 
+    if isolate_antigravity and isolation_dir is None:
+        raise ValueError("isolated Antigravity runs require an isolation directory")
+    if not isolate_antigravity and (
+        antigravity_workspace is not None or antigravity_write_root is not None
+    ):
+        raise ValueError("Antigravity permission roots require profile isolation")
     clean = {
         name: value for name, value in os.environ.items() if name.upper() in SAFE_INHERITED_ENV
     }
@@ -386,7 +394,31 @@ def sanitized_environment(
             }
         )
         if isolate_antigravity:
+            if antigravity_workspace is None or antigravity_write_root is None:
+                raise ValueError(
+                    "isolated Antigravity runs require an exact workspace and write root"
+                )
+            workspace = antigravity_workspace.resolve(strict=True)
+            write_root = antigravity_write_root.resolve(strict=True)
+            if not workspace.is_dir() or not write_root.is_dir():
+                raise ValueError("Antigravity permission roots must be existing directories")
+            try:
+                relative_write_root = write_root.relative_to(workspace)
+            except ValueError as error:
+                raise ValueError(
+                    "Antigravity write root must resolve inside its workspace"
+                ) from error
+            if not relative_write_root.parts:
+                raise ValueError("Antigravity write root cannot be the whole workspace")
+            permission_targets = (workspace.as_posix(), write_root.as_posix())
+            if any(
+                character in target
+                for target in permission_targets
+                for character in ("\n", "\r", "(", ")")
+            ):
+                raise ValueError("Antigravity permission paths contain unsupported syntax")
             clean.pop("CODEX_HOME", None)
+            clean["NYAN_UI_ALLOWED_WRITE_ROOT"] = relative_write_root.as_posix()
             profile = isolation_dir / "antigravity-profile"
             settings_dir = profile / ".gemini" / "antigravity-cli"
             settings_dir.mkdir(parents=True, exist_ok=True)
@@ -397,6 +429,19 @@ def sanitized_environment(
                         "artifactReviewPolicy": "asks-for-review",
                         "enableTelemetry": False,
                         "enableTerminalSandbox": True,
+                        "permissions": {
+                            "allow": [
+                                f"read_file({permission_targets[0]})",
+                                f"write_file({permission_targets[1]})",
+                            ],
+                            "deny": [
+                                "command(*)",
+                                "unsandboxed(*)",
+                                "read_url(*)",
+                                "execute_url(*)",
+                                "mcp(*)",
+                            ],
+                        },
                         "toolPermission": "request-review",
                         "useG1Credits": False,
                     },
@@ -472,6 +517,7 @@ def _run_monitored(
     on_process_end: ProcessFinished | None = None,
     on_stream_line: StreamLine | None = None,
     isolate_antigravity: bool = False,
+    antigravity_write_root: Path | None = None,
 ) -> ActivityDelivery:
     launch_stem = stdout_path.stem
     launch_spec = stdout_path.parent / f"{launch_stem}.launch.json"
@@ -594,6 +640,8 @@ def _run_monitored(
             env=sanitized_environment(
                 stdout_path.parent / "isolated-environment",
                 isolate_antigravity=isolate_antigravity,
+                antigravity_workspace=cwd if isolate_antigravity else None,
+                antigravity_write_root=antigravity_write_root,
             ),
             creationflags=WINDOWS_CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             start_new_session=os.name != "nt",
@@ -1137,6 +1185,7 @@ class AntigravityAdapter:
         prompt: str,
         control: ControlReader,
         timeout_seconds: int,
+        allowed_write_root: Path,
         resume_session_id: str | None = None,
         model: str | None = None,
         on_process_start: ProcessStarted | None = None,
@@ -1171,6 +1220,7 @@ class AntigravityAdapter:
             on_process_end=on_process_end,
             on_stream_line=on_stream_line,
             isolate_antigravity=True,
+            antigravity_write_root=allowed_write_root,
         )
         if activity is None:  # compatibility with narrow unit-test fakes
             activity = ActivityDelivery()

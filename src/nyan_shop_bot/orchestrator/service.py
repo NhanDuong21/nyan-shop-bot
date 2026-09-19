@@ -70,7 +70,7 @@ UI_ANTIGRAVITY_HOOK_POLICY_SHA256 = (
     "8878b3b13970bd8fd8f4d3802337460a3f8946906e5e5d924896927939df44ed"
 )
 UI_ANTIGRAVITY_HOOK_HANDLER_SHA256 = (
-    "ea69c723f63d3e27f21ad60833836b158a91c7f115423ed6d3c81e76cf1d6c18"
+    "6a4a6145916a579d24f3a5ec0023d7ac4b995b7beeeaba91595f4612832523dc"
 )
 
 AUTO_MERGE_BLOCKER = (
@@ -605,6 +605,7 @@ class RunnerService:
                 prompt=prompt,
                 control=lambda: self._control_state(run_id),
                 timeout_seconds=timeout_seconds,
+                allowed_write_root=worktree / task.allowed_paths[0][:-3],
                 resume_session_id=resume_session,
                 model=task.worker_model,
                 on_process_start=lambda pid, identity, path, nonce: self._agent_started(

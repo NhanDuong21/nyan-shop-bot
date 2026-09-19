@@ -29,6 +29,34 @@ const protectedPaths = new Set([
   ".agents/rules/ui-worker.md",
   "scripts/deny-antigravity-delegation.mjs",
 ]);
+const forbiddenPathSegments = new Set([
+  ".agent",
+  ".agents",
+  ".codex",
+  ".git",
+  ".github",
+  "_agent",
+  "_agents",
+]);
+const forbiddenFileNames = new Set([
+  ".env",
+  ".gitattributes",
+  ".gitignore",
+  ".gitmodules",
+  ".npmrc",
+  "agents.md",
+  "gemini.md",
+  "package.json",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+]);
+const forbiddenConfigPrefixes = [
+  "eslint.config.",
+  "tsconfig",
+  "vite.config.",
+  "vitest.config.",
+];
 
 let input = "";
 for await (const chunk of process.stdin) {
@@ -105,6 +133,15 @@ if (!writeTools.has(toolName)) {
   process.exit(0);
 }
 
+const allowedWriteRoot = process.env.NYAN_UI_ALLOWED_WRITE_ROOT;
+if (
+  typeof allowedWriteRoot !== "string" ||
+  !/^admin\/src\/features\/[a-z0-9][a-z0-9-]*$/.test(allowedWriteRoot)
+) {
+  emit("deny", "Trusted Nyan UI write scope is missing or malformed; fail closed.");
+  process.exit(0);
+}
+
 const targetFile = request?.toolCall?.args?.TargetFile;
 const workspacePaths = Array.isArray(request?.workspacePaths) ? request.workspacePaths : [];
 if (typeof targetFile !== "string" || targetFile.length === 0 || workspacePaths.length === 0) {
@@ -116,7 +153,8 @@ if (unsafeWindowsAlias(targetFile)) {
   process.exit(0);
 }
 
-let permittedWorkspaceWrite = false;
+let insideWorkspace = false;
+let permittedFeatureWrite = false;
 for (const rawWorkspace of workspacePaths) {
   if (typeof rawWorkspace !== "string" || rawWorkspace.length === 0) {
     continue;
@@ -136,7 +174,7 @@ for (const rawWorkspace of workspacePaths) {
   if (relative === null) {
     continue;
   }
-  permittedWorkspaceWrite = true;
+  insideWorkspace = true;
   const rootName = relative.includes("/") ? "" : relative;
   const executableShim =
     rootName === "node" ||
@@ -157,11 +195,29 @@ for (const rawWorkspace of workspacePaths) {
     emit("deny", "The trusted Nyan hook, rule, handler, or command resolver is immutable.");
     process.exit(0);
   }
+  const parts = relative.toLowerCase().split("/");
+  const fileName = parts.at(-1) ?? "";
+  if (
+    parts.some((part) => forbiddenPathSegments.has(part)) ||
+    fileName.startsWith(".env") ||
+    forbiddenFileNames.has(fileName) ||
+    forbiddenConfigPrefixes.some((prefix) => fileName.startsWith(prefix))
+  ) {
+    emit("deny", "Coordinator-owned policy, manifest, lock, or build files are immutable.");
+    process.exit(0);
+  }
+  if (relative.startsWith(`${allowedWriteRoot}/`)) {
+    permittedFeatureWrite = true;
+  }
 }
 
-if (!permittedWorkspaceWrite) {
+if (!insideWorkspace) {
   emit("deny", "Writes outside the mounted workspace are disabled.");
   process.exit(0);
 }
+if (!permittedFeatureWrite) {
+  emit("deny", "Write target is outside the exact trusted UI feature grant.");
+  process.exit(0);
+}
 
-emit("allow", "Workspace write does not target the trusted Nyan execution guard.");
+emit("allow", "Write target is inside the exact trusted UI feature grant.");
