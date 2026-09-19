@@ -1,0 +1,71 @@
+name: Agent task
+description: Bounded implementation or review work for one owner role.
+title: "[NSB-XXX] "
+labels: ["status:backlog"]
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: State the user-visible or operational outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: In scope / out of scope
+      description: Include allowed files or module boundaries.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Use real issue/PR URLs, or explicitly say None for a root task.
+    validations:
+      required: true
+  - type: dropdown
+    id: owner_role
+    attributes:
+      label: Owner role
+      options:
+        - coordinator
+        - backend
+        - supplier-backend
+        - backend-bot
+        - ui-antigravity
+        - backend-qa + ui
+        - reviewer
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk
+      options:
+        - high
+        - medium
+        - low
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: "- [ ] Observable criterion"
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Required tests
+      description: Name commands and negative/safety cases.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Completion evidence
+      description: Exact HEAD SHA, commands/results, Actions URL, and residual NOT RUN/BLOCKED items.
+    validations:
+      required: true

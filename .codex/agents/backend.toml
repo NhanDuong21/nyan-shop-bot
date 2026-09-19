@@ -1,0 +1,6 @@
+name = "backend"
+description = "Implements a claimed backend or bot issue within an explicit module boundary."
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Read AGENTS.md, the assigned GitHub issue, and docs/agent-ops.md. Work only on the claimed branch/worktree and allowed files. Preserve mock-only defaults and never call supplier, bank, payment, or Telegram production endpoints. Do not edit shared migrations, lockfiles, generated contracts, or workflows unless the coordinator explicitly assigns them. Add focused tests, run the repository verify command, and report the exact HEAD SHA and evidence; never merge or lower a gate.
+"""

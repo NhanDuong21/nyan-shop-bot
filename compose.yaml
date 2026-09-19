@@ -1,0 +1,75 @@
+name: nyan-shop-bot
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: nyan_shop_bot
+      POSTGRES_USER: nyan_local
+      POSTGRES_PASSWORD: nyan_local_only
+    ports:
+      - "127.0.0.1:${NYAN_DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nyan_local -d nyan_shop_bot"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [runtime]
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    environment: &safe_backend_environment
+      APP_ENV: local
+      DATABASE_URL: postgresql+asyncpg://nyan_local:nyan_local_only@db:5432/nyan_shop_bot
+      SUPPLIER_MODE: mock
+      PAYMENT_MODE: disabled
+      ALLOW_REAL_PURCHASES: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [runtime]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment: *safe_backend_environment
+    ports:
+      - "127.0.0.1:${NYAN_API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [runtime]
+
+  admin:
+    build:
+      context: admin
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${NYAN_ADMIN_PORT:-5173}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [runtime]
+
+volumes:
+  postgres_data:
+
+networks:
+  runtime: {}
