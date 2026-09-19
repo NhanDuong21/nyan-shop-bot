@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "task_id": "NSB-043",
+  "issue_number": 22,
+  "issue_url": "https://github.com/NhanDuong21/nyan-shop-bot/issues/22",
+  "repository": "NhanDuong21/nyan-shop-bot",
+  "title": "Antigravity catalog visibility UI handoff proof",
+  "base_ref": "nyan/nsb-042-ui-skeleton",
+  "pr_base": "nyan/nsb-042-ui-skeleton",
+  "branch": "nyan/nsb-043-antigravity-catalog-visibility",
+  "worker": "antigravity",
+  "worker_model": "gemini-3.8-flash-low",
+  "reviewer_model": "gpt-5.6-luna",
+  "role": "ui",
+  "risk": "low",
+  "queue_phase": "demo",
+  "queue_eligible": false,
+  "trusted_prompt": "Polish the already mounted catalog visibility feature without changing its architecture. Your only create/edit grant is the literal admin/src/features/catalog-visibility/** root. The Codex coordinator owns admin/src/api.ts, admin/src/catalog-state.ts, App.tsx, routing, shared/global styles, manifests, lockfiles, build configuration, CI, runner, rules, hooks, and every other path. Use the injected CatalogVisibilityProps and its explicit loading, error, empty, and success state union; never call fetch, change the API contract, or replace injected catalog items with hard-coded data. Keep MOCK, localhost-only, read-only, and no-purchase/no-payment messaging unmistakable. You may redesign the feature markup and component-local CSS for strong visual hierarchy, responsive mobile/desktop behavior, keyboard-visible focus, semantic headings, sufficient contrast, and prefers-reduced-motion. Add or update feature-local tests under the same grant for all four states and retry behavior. Do not add dependencies, change config, disable checks, or create/delegate to/resume any subagent, background agent, browser subagent, or second writer. If a required change is outside the grant, return BLOCKED with the reason. Run only the existing frontend lint, typecheck, test, and build commands if authorized; report unavailable checks as NOT_RUN. Return exact changed paths and real evidence in the required structured result.",
+  "acceptance_criteria": [
+    "Only admin/src/features/catalog-visibility/** changes.",
+    "Loading, error with retry, empty, and success render from the injected coordinator-owned state contract.",
+    "The feature never fetches directly or replaces backend catalog data with hard-coded demo items.",
+    "MOCK, localhost-only, read-only, and no-purchase/no-payment safety messaging remains visible.",
+    "The layout works at narrow mobile and desktop widths with semantic structure, keyboard focus, contrast, and reduced-motion handling.",
+    "Feature-local tests cover the four states and retry interaction.",
+    "No dependency, manifest, lockfile, configuration, CI, runner, rule, hook, supplier, payment, merge, or deployment change occurs.",
+    "No subagent or second writer is created; a valid reviewer finding resumes this same conversation."
+  ],
+  "allowed_paths": [
+    "admin/src/features/catalog-visibility/**"
+  ],
+  "required_checks": [
+    "ci-gate"
+  ],
+  "dependencies": [
+    1,
+    12,
+    21
+  ],
+  "auto_merge_eligible": false,
+  "budget": {
+    "max_agent_invocations": 5,
+    "max_total_tokens": 600000,
+    "max_elapsed_seconds": 7200,
+    "max_fix_rounds": 3,
+    "ci_timeout_seconds": 3600,
+    "poll_initial_seconds": 10,
+    "poll_max_seconds": 60
+  }
+}
