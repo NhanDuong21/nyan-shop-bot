@@ -2237,7 +2237,7 @@ def test_antigravity_delegation_hook_denies_before_tool_execution() -> None:
         environment["NYAN_UI_ALLOWED_WRITE_ROOT"] = "admin/src/features/catalog-visibility"
         completed = subprocess.run(
             command,
-            cwd=REPOSITORY_ROOT,
+            cwd=REPOSITORY_ROOT / ".agents",
             input=json.dumps(
                 {
                     "toolCall": {"name": tool_name, "args": args},
@@ -2301,7 +2301,7 @@ def test_antigravity_delegation_hook_denies_before_tool_execution() -> None:
     missing_scope_environment.pop("NYAN_UI_ALLOWED_WRITE_ROOT", None)
     missing_scope = subprocess.run(
         command,
-        cwd=REPOSITORY_ROOT,
+        cwd=REPOSITORY_ROOT / ".agents",
         input=json.dumps(
             {
                 "toolCall": {

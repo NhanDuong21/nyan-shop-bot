@@ -65,9 +65,9 @@ UI_ANTIGRAVITY_HOOK_MATCHER = (
     "schedule|ask_permission|invoke_subagent|define_subagent|send_message|manage_subagents|"
     "browser_subagent|command_status|send_command_input|call_mcp_tool)$"
 )
-UI_ANTIGRAVITY_HOOK_COMMAND = "node scripts/deny-antigravity-delegation.mjs"
+UI_ANTIGRAVITY_HOOK_COMMAND = "node ../scripts/deny-antigravity-delegation.mjs"
 UI_ANTIGRAVITY_HOOK_POLICY_SHA256 = (
-    "8878b3b13970bd8fd8f4d3802337460a3f8946906e5e5d924896927939df44ed"
+    "ffe8707dd73aaeee494b4d9f209ded1062e49a96902d5c06b28d57757bf070a2"
 )
 UI_ANTIGRAVITY_HOOK_HANDLER_SHA256 = (
     "6a4a6145916a579d24f3a5ec0023d7ac4b995b7beeeaba91595f4612832523dc"
