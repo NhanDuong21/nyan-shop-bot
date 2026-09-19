@@ -350,6 +350,7 @@ def test_ui_findings_return_to_same_antigravity_conversation(
         def worker(self, **kwargs: object) -> tuple[WorkerResult, AgentInvocation]:
             observed["resume_session_id"] = kwargs.get("resume_session_id")
             observed["prompt"] = kwargs.get("prompt")
+            observed["allowed_write_root"] = kwargs.get("allowed_write_root")
             feature = worktree / "admin" / "src" / "features" / "admin-dashboard"
             feature.mkdir(parents=True, exist_ok=True)
             changed = feature / "AdminDashboard.tsx"
@@ -395,6 +396,9 @@ def test_ui_findings_return_to_same_antigravity_conversation(
     service._run_worker("ui-fix-flow", task, worktree, parent, RunPhase.FIX_REQUESTED)
 
     assert observed["resume_session_id"] == "ui-conversation-123"
+    assert observed["allowed_write_root"] == (
+        worktree / "admin" / "src" / "features" / "admin-dashboard"
+    )
     assert "Expose an explicit empty state" in str(observed["prompt"])
     assert service.store.get_run("ui-fix-flow")["worker_session_id"] == "ui-conversation-123"
     assert head_sha(worktree) != parent
@@ -2229,6 +2233,8 @@ def test_antigravity_delegation_hook_denies_before_tool_execution() -> None:
     assert command == UI_ANTIGRAVITY_HOOK_COMMAND
 
     def run_hook(tool_name: str, args: dict[str, object]) -> dict[str, str]:
+        environment = os.environ.copy()
+        environment["NYAN_UI_ALLOWED_WRITE_ROOT"] = "admin/src/features/catalog-visibility"
         completed = subprocess.run(
             command,
             cwd=REPOSITORY_ROOT,
@@ -2243,6 +2249,7 @@ def test_antigravity_delegation_hook_denies_before_tool_execution() -> None:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            env=environment,
             shell=True,
         )
         return json.loads(completed.stdout)
@@ -2273,6 +2280,49 @@ def test_antigravity_delegation_hook_denies_before_tool_execution() -> None:
         {"TargetFile": "admin/src/features/catalog-visibility/CatalogVisibility.tsx"},
     )
     assert feature_write["decision"] == "allow"
+
+    for outside_target in ("README.md", "admin/src/App.tsx"):
+        outside_write = run_hook("write_to_file", {"TargetFile": outside_target})
+        assert outside_write["decision"] == "deny"
+        assert "exact trusted UI feature grant" in outside_write["reason"]
+
+    manifest_write = run_hook("write_to_file", {"TargetFile": "admin/package.json"})
+    assert manifest_write["decision"] == "deny"
+    assert "Coordinator-owned" in manifest_write["reason"]
+
+    nested_policy_write = run_hook(
+        "write_to_file",
+        {"TargetFile": "admin/src/features/catalog-visibility/AGENTS.md"},
+    )
+    assert nested_policy_write["decision"] == "deny"
+    assert "Coordinator-owned" in nested_policy_write["reason"]
+
+    missing_scope_environment = os.environ.copy()
+    missing_scope_environment.pop("NYAN_UI_ALLOWED_WRITE_ROOT", None)
+    missing_scope = subprocess.run(
+        command,
+        cwd=REPOSITORY_ROOT,
+        input=json.dumps(
+            {
+                "toolCall": {
+                    "name": "write_to_file",
+                    "args": {
+                        "TargetFile": (
+                            "admin/src/features/catalog-visibility/CatalogVisibility.tsx"
+                        )
+                    },
+                },
+                "workspacePaths": [str(REPOSITORY_ROOT)],
+            }
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=missing_scope_environment,
+        shell=True,
+    )
+    assert json.loads(missing_scope.stdout)["decision"] == "deny"
 
     if os.name == "nt":
         import ctypes
@@ -2339,21 +2389,71 @@ def test_agent_environment_removes_ambient_secrets(
 
 
 def test_antigravity_environment_uses_per_run_safe_profile(tmp_path: Path) -> None:
-    result = sanitized_environment(tmp_path, isolate_antigravity=True)
-    profile = tmp_path / "antigravity-profile"
+    worktree = tmp_path / "worktree"
+    feature_root = worktree / "admin" / "src" / "features" / "catalog-visibility"
+    feature_root.mkdir(parents=True)
+    result = sanitized_environment(
+        tmp_path / "isolated",
+        isolate_antigravity=True,
+        antigravity_workspace=worktree,
+        antigravity_write_root=feature_root,
+    )
+    profile = tmp_path / "isolated" / "antigravity-profile"
     settings_path = profile / ".gemini" / "antigravity-cli" / "settings.json"
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
 
     assert result["HOME"] == str(profile)
     assert result["USERPROFILE"] == str(profile)
+    assert result["NYAN_UI_ALLOWED_WRITE_ROOT"] == ("admin/src/features/catalog-visibility")
     assert settings == {
         "allowNonWorkspaceAccess": False,
         "artifactReviewPolicy": "asks-for-review",
         "enableTelemetry": False,
         "enableTerminalSandbox": True,
+        "permissions": {
+            "allow": [
+                f"read_file({worktree.resolve().as_posix()})",
+                f"write_file({feature_root.resolve().as_posix()})",
+            ],
+            "deny": [
+                "command(*)",
+                "unsandboxed(*)",
+                "read_url(*)",
+                "execute_url(*)",
+                "mcp(*)",
+            ],
+        },
         "toolPermission": "request-review",
         "useG1Credits": False,
     }
+
+
+def test_antigravity_environment_rejects_broad_or_external_write_root(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+
+    with pytest.raises(ValueError, match="require an isolation directory"):
+        sanitized_environment(
+            isolate_antigravity=True,
+            antigravity_workspace=worktree,
+            antigravity_write_root=external,
+        )
+    with pytest.raises(ValueError, match="cannot be the whole workspace"):
+        sanitized_environment(
+            tmp_path / "whole-workspace",
+            isolate_antigravity=True,
+            antigravity_workspace=worktree,
+            antigravity_write_root=worktree,
+        )
+    with pytest.raises(ValueError, match="must resolve inside"):
+        sanitized_environment(
+            tmp_path / "external-write",
+            isolate_antigravity=True,
+            antigravity_workspace=worktree,
+            antigravity_write_root=external,
+        )
 
 
 def test_agent_environment_preserves_posix_venv_symlink_parent(
