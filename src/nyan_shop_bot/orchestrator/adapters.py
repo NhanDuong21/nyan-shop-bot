@@ -1185,7 +1185,6 @@ def _build_antigravity_command(
             "--mode",
             "accept-edits",
             "--sandbox",
-            "--disable-slash-commands",
             "--output-format",
             "stream-json",
             "--json-schema",
