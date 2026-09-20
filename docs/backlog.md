@@ -27,6 +27,9 @@ GitHub Issues and Milestones are the coordination source of truth. Stable NSB co
 
 ## M4 — Unattended agent dispatch
 
-- [NSB-040 — Owner-gated agent runner and cost limits](https://github.com/NhanDuong21/nyan-shop-bot/issues/12) — backlog only; not enabled by Phase 0.
+- [NSB-040 — Durable local agent orchestrator and owner-gated merge controls](https://github.com/NhanDuong21/nyan-shop-bot/issues/12) — accelerated by explicit owner direction; implemented in a separate stacked PR, with auto-merge still disabled.
+- [NSB-041 — Prove runner with a no-money operator quickstart](https://github.com/NhanDuong21/nyan-shop-bot/issues/15) — low-risk real worker/CI/reviewer proof task; never independently mergeable from its runner base.
+- [NSB-042 — Codex-owned mounted frontend skeleton for UI proof](https://github.com/NhanDuong21/nyan-shop-bot/issues/21) — Codex prerequisite now also owns the light-first theme mechanism, canonical product/design context, and project-local Impeccable installation.
+- [NSB-043 — Antigravity catalog visibility UI handoff proof](https://github.com/NhanDuong21/nyan-shop-bot/issues/22) — BLOCKED at the existing token ceiling; preserve its failed proof and use the same runner for a successor only after the updated NSB-042 base and explicit budget authority.
 
-After NSB-001 merges, move only NSB-010 to Ready. After NSB-010 merges, the coordinator may select at most one supplier/backend issue alongside NSB-014; do not make every downstream issue Ready at once.
+After NSB-001 and the separately reviewed NSB-040 merge, move only NSB-010 to Ready. After NSB-010 merges, the coordinator may select at most one supplier/backend issue alongside NSB-014; do not make every downstream issue Ready at once. The Codex coordinator may start a committed dependency-ready M0–M2 task with the existing local command without asking Nyan to assign it or relay agent output; the runner's automatic next-task selector remains disabled until separately implemented and reviewed. Automatic merge is separately blocked because GitHub cannot atomically bind both the reviewed head and base, so reviewer PASS always stops at `READY_FOR_OWNER`.

@@ -1,0 +1,22 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "reviewed_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "findings": [
+    {
+      "severity": "medium",
+      "file": "docs/runner-demo.md",
+      "line": 8,
+      "message": "The fixture document omits the stop command required by its acceptance criteria.",
+      "evidence": "The fixture's command section lists status and resume but has no stop entry."
+    }
+  ],
+  "tests": [
+    {
+      "command": "fixture-review",
+      "result": "PASS",
+      "evidence": "Deterministic fixture inspection completed."
+    }
+  ],
+  "blockers": [],
+  "summary": "Fixture requests one bounded documentation correction."
+}

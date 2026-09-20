@@ -29,6 +29,7 @@ admin/coverage/
 
 # Local data and logs
 data/
+.nyan-runner/
 *.db
 *.sqlite
 *.sqlite3
