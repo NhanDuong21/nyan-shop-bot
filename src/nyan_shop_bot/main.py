@@ -7,7 +7,11 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from nyan_shop_bot.catalog.mock import MockCatalogReader
-from nyan_shop_bot.catalog.models import CatalogResponse, SupplierCapabilities
+from nyan_shop_bot.catalog.models import (
+    CatalogDetailResponse,
+    CatalogResponse,
+    SupplierCapabilities,
+)
 from nyan_shop_bot.catalog.ports import CatalogReader
 from nyan_shop_bot.config import Settings, get_settings
 from nyan_shop_bot.database import DatabaseProbe, PostgresDatabase
@@ -69,7 +73,15 @@ def create_app(
 
     @application.get("/api/v1/catalog", response_model=CatalogResponse, tags=["catalog"])
     async def list_catalog() -> CatalogResponse:
-        return CatalogResponse(items=await catalog_reader.list_products())
+        return await catalog_reader.read_catalog()
+
+    @application.get(
+        "/api/v1/catalog/{product_id}",
+        response_model=CatalogDetailResponse,
+        tags=["catalog"],
+    )
+    async def catalog_detail(product_id: str) -> CatalogDetailResponse:
+        return await catalog_reader.get_product(product_id)
 
     @application.get(
         "/api/v1/capabilities",

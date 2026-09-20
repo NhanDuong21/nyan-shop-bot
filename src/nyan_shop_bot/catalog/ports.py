@@ -1,16 +1,20 @@
-"""Read-only supplier boundary for Phase 0."""
+"""Read-only supplier boundary for normalized catalog data."""
 
 from typing import Protocol
 
-from nyan_shop_bot.catalog.models import CatalogItem, SupplierCapabilities
+from nyan_shop_bot.catalog.models import (
+    CatalogDetailResponse,
+    CatalogResponse,
+    SupplierCapabilities,
+)
 
 
 class CatalogReader(Protocol):
-    """The only supplier-facing capability allowed in NSB-001."""
+    """The complete supplier-facing boundary authorized for NSB-010."""
 
     @property
     def capabilities(self) -> SupplierCapabilities: ...
 
-    async def list_products(self) -> list[CatalogItem]: ...
+    async def read_catalog(self) -> CatalogResponse: ...
 
-    async def get_product(self, product_id: str) -> CatalogItem | None: ...
+    async def get_product(self, product_id: str) -> CatalogDetailResponse: ...
