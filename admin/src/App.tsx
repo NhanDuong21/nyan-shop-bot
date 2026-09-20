@@ -1,79 +1,42 @@
-import { useEffect, useState } from "react";
-
-import { type CatalogItem, fetchCatalog } from "./api";
-
-type CatalogState =
-  | { kind: "loading" }
-  | { kind: "ready"; items: CatalogItem[] }
-  | { kind: "error"; message: string };
-
-const moneyFormatter = new Intl.NumberFormat("vi-VN", {
-  style: "currency",
-  currency: "VND",
-  maximumFractionDigits: 0,
-});
+import { useCatalogState } from "./catalog-state";
+import { CatalogVisibility } from "./features/catalog-visibility/CatalogVisibility";
+import { ThemeToggle } from "./ThemeToggle";
+import { useAdminTheme } from "./theme";
 
 export function App() {
-  const [catalog, setCatalog] = useState<CatalogState>({ kind: "loading" });
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    void fetchCatalog(controller.signal)
-      .then((result) => setCatalog({ kind: "ready", items: result.items }))
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          const message = error instanceof Error ? error.message : "Lỗi không xác định";
-          setCatalog({ kind: "error", message });
-        }
-      });
-
-    return () => controller.abort();
-  }, []);
+  const catalog = useCatalogState();
+  const theme = useAdminTheme();
 
   return (
-    <main>
-      <header className="hero">
-        <div>
-          <p className="eyebrow">NYAN SHOP BOT · FOUNDATION</p>
-          <h1>Danh mục quản trị</h1>
-          <p className="lede">
-            Bản local chỉ đọc catalog tổng hợp từ backend. Không có thao tác mua hàng hay thanh toán.
-          </p>
+    <div className="app-shell">
+      <a className="skip-link" href="#catalog-content">
+        Bỏ qua đến nội dung
+      </a>
+      <header className="app-bar">
+        <div className="app-identity" aria-label="Nyan Shop Bot admin">
+          <span className="app-mark" aria-hidden="true">
+            N
+          </span>
+          <div>
+            <strong>Nyan Shop Bot</strong>
+            <span>Quản trị vận hành</span>
+          </div>
         </div>
-        <span className="mode-badge" aria-label="Môi trường mock">
-          MOCK
-        </span>
+        <div className="app-actions">
+          <span className="environment-badge" aria-label="Môi trường mock">
+            MOCK
+          </span>
+          <span className="environment-badge environment-badge-muted">READ-ONLY</span>
+          <ThemeToggle theme={theme.theme} onToggle={theme.toggleTheme} />
+        </div>
       </header>
 
-      <aside className="warning" role="note">
-        Admin chưa có xác thực hoàn chỉnh và chỉ được bind vào localhost trong Phase 0.
+      <aside className="environment-notice" role="note">
+        <strong>Môi trường thử nghiệm chỉ chạy trên localhost.</strong>
+        <span> Không mua hàng, thanh toán hoặc gọi supplier thật.</span>
       </aside>
 
-      <section aria-live="polite" aria-busy={catalog.kind === "loading"}>
-        {catalog.kind === "loading" && <p className="status">Đang tải catalog mock…</p>}
-        {catalog.kind === "error" && (
-          <p className="status error">Không đọc được backend: {catalog.message}</p>
-        )}
-        {catalog.kind === "ready" && catalog.items.length === 0 && (
-          <p className="status">Catalog mock đang trống.</p>
-        )}
-        {catalog.kind === "ready" && catalog.items.length > 0 && (
-          <div className="catalog-grid">
-            {catalog.items.map((item) => (
-              <article className="product-card" key={item.id}>
-                <div className="card-meta">
-                  <span>MOCK</span>
-                  <span>{item.available_quantity > 0 ? `${item.available_quantity} mẫu` : "Hết mẫu"}</span>
-                </div>
-                <h2>{item.name}</h2>
-                <p>{item.description}</p>
-                <strong>{moneyFormatter.format(item.price.amount_minor)}</strong>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-    </main>
+      <CatalogVisibility state={catalog.state} onRetry={catalog.retry} />
+    </div>
   );
 }

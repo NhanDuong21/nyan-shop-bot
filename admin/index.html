@@ -1,9 +1,28 @@
 <!doctype html>
-<html lang="vi">
+<html lang="vi" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
+    <script id="theme-bootstrap">
+      (() => {
+        const storageKey = "nyan-admin-theme";
+        let theme = "light";
+
+        try {
+          const savedTheme = window.localStorage.getItem(storageKey);
+          if (savedTheme === "light" || savedTheme === "dark") {
+            theme = savedTheme;
+          }
+        } catch {
+          theme = "light";
+        }
+
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.querySelector('meta[name="color-scheme"]').content = theme;
+      })();
+    </script>
     <meta name="description" content="Nyan Shop Bot local mock catalog" />
     <title>Nyan Shop Bot · Mock Admin</title>
   </head>
