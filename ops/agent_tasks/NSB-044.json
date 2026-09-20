@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "task_id": "NSB-044",
+  "issue_number": 29,
+  "issue_url": "https://github.com/NhanDuong21/nyan-shop-bot/issues/29",
+  "repository": "NhanDuong21/nyan-shop-bot",
+  "title": "Normalize and isolate agent budget telemetry",
+  "base_ref": "main",
+  "pr_base": "main",
+  "branch": "nyan/nsb-044-budget-policy",
+  "worker": "codex",
+  "worker_model": "gpt-5.6-sol",
+  "reviewer_model": "codex-auto-review",
+  "role": "backend",
+  "risk": "high",
+  "queue_phase": "M1",
+  "queue_eligible": true,
+  "trusted_prompt": "Implement only the minimum runner accounting and persistence policy required by Issue #29 inside the exact granted files. Do not refactor unrelated orchestration, change GitHub workflows or auto-merge behavior, touch suppliers/payments/frontend, restart any historical session, or read/write the live ignored .nyan-runner state. Use only temporary SQLite stores and the committed sanitized regression fixture in tests. Preserve provider telemetry as raw audit data while deriving a separate repository-policy value for task-budget enforcement. For each newly accounted invocation, persist nullable raw input tokens, cached input tokens, fresh input tokens, raw output tokens, reasoning tokens, optional raw provider total, normalization state COMPLETE/PARTIAL/UNKNOWN, and nullable enforceable tokens. Missing provider fields must remain null or explicitly unknown, never silently become zero. Official OpenAI documentation establishes for the Codex usage shape that cached_input_tokens is included within input_tokens and reasoning_output_tokens is included within output_tokens. Validate 0 <= cached <= input and 0 <= reasoning <= output when both sides are known. For complete Codex terminal usage, compute fresh_input_tokens = input_tokens - cached_input_tokens and enforceable_tokens = fresh_input_tokens + output_tokens; retain cached and reasoning counts separately but do not add either subset again. This formula is a Nyan runner policy, not a claim about ChatGPT subscription quota, API billing, rate limits, or money. raw_provider_total is audit-only when components are complete. When a provider exposes only a trustworthy cumulative raw total, retain the existing conservative cumulative-delta enforcement, mark normalization PARTIAL, and never manufacture component counts. Add separate optional max_worker_tokens and max_reviewer_tokens task-budget ceilings with a documented backward-compatible fallback from legacy max_total_tokens for existing version-1 specs. Persist and report separate worker and reviewer enforceable totals; one role must never consume the other role's ceiling. Before each worker or reviewer invocation, enforce that role's ceiling along with the existing shared invocation-count, elapsed-time, fix-round, and process-timeout guards. A role at its exact ceiling is refused before launch. The runner cannot promise a precise mid-invocation token kill because Codex exposes final usage at turn.completed; document and test only fail-before-the-next-invocation behavior. Add an invocation-level durable usage ledger or equivalently durable unique accounting identity. Replaying or recovering an invocation already persisted must return its prior accounting result without adding it again, even when another invocation was persisted afterward. Continue to bind records to run, role, session, and terminal event evidence. If terminal usage is absent or insufficient to normalize, persist UNKNOWN/PARTIAL audit evidence and block before another model invocation; do not turn it into zero. Keep legacy run columns readable for compatibility, add schema elements idempotently, and do not backfill or reinterpret historical totals. Add a sanitized JSON fixture containing only NSB-011 values input_tokens 2589292, cached_input_tokens 2407168, output_tokens 9451, and reasoning_output_tokens 4843. It must prove fresh_input_tokens 182124 and enforceable_tokens 191575, while raw values remain unchanged. Do not include the historical session ID, paths, prompts, logs, credentials, supplier data, or any other local evidence. Add focused tests for valid and invalid subset relationships, raw totals, partial/unknown usage, worker/reviewer isolation, exact and over-limit preflight, replay after a later invocation, existing-state schema compatibility without historical rewrites, terminal-only telemetry, and preservation of the independent hard guards. Update docs/orchestration.md with the raw-versus-enforceable field map, formulas, provider-specific fallback, role ceilings, replay identity, UNKNOWN/PARTIAL semantics, terminal-only limitation, and explicit non-equivalence to billing/quota. Run focused tests, backend verification, security verification, and the full repository verify when prerequisites are available. Report PASS/FAIL/NOT RUN exactly. This task does not authorize changing any existing run budget or persisted record, increasing Antigravity budget, restarting NSB-043, dispatching NSB-012, automatic merge, supplier/payment/live calls, or deployment.",
+  "acceptance_criteria": [
+    "New invocation records persist raw input, cached input, fresh input, raw output, reasoning, optional provider total, normalization state, and nullable enforceable tokens without mutating provider values.",
+    "Complete Codex usage validates cached <= input and reasoning <= output, computes fresh input as input minus cached input, and computes enforceable tokens as fresh input plus output without double-counting either subset.",
+    "Documentation and code identify enforceable tokens as repository runner policy only and make no claim about ChatGPT subscription quota, API billing, rate limits, or monetary cost.",
+    "Task specs can configure separate worker and reviewer ceilings with a documented backward-compatible legacy fallback, and persisted/status/audit totals remain isolated by role.",
+    "A worker or reviewer at its exact role ceiling is refused before the next invocation while invocation-count, elapsed-time, fix-round, and process-timeout guards remain independent.",
+    "Durable invocation accounting is idempotent across recovery and replay, including replay of an older invocation after a newer invocation was persisted.",
+    "Missing terminal usage remains UNKNOWN or PARTIAL with nullable raw/enforceable fields and cannot silently authorize another invocation as zero usage.",
+    "The sanitized NSB-011 fixture preserves 2589292 raw input, 2407168 cached input, 9451 output, and 4843 reasoning while deriving 182124 fresh input and 191575 enforceable tokens.",
+    "Opening existing SQLite state is backward compatible and does not backfill, rewrite, resume, or reinterpret the historical NSB-011 run or any prior usage evidence.",
+    "No runner architecture, workflow, auto-merge, Antigravity budget, supplier/payment/live-operation, frontend, or deployment behavior is broadened."
+  ],
+  "allowed_paths": [
+    "src/nyan_shop_bot/orchestrator/models.py",
+    "src/nyan_shop_bot/orchestrator/adapters.py",
+    "src/nyan_shop_bot/orchestrator/activity.py",
+    "src/nyan_shop_bot/orchestrator/store.py",
+    "src/nyan_shop_bot/orchestrator/service.py",
+    "tests/unit/test_orchestrator_models.py",
+    "tests/unit/test_orchestrator_activity.py",
+    "tests/unit/test_orchestrator_store.py",
+    "tests/unit/test_orchestrator_flow.py",
+    "tests/fixtures/orchestrator/**",
+    "docs/orchestration.md"
+  ],
+  "required_checks": [
+    "ci-gate"
+  ],
+  "dependencies": [
+    12
+  ],
+  "auto_merge_eligible": false,
+  "budget": {
+    "max_agent_invocations": 4,
+    "max_total_tokens": 1000000,
+    "max_elapsed_seconds": 10800,
+    "max_fix_rounds": 1,
+    "ci_timeout_seconds": 3600,
+    "poll_initial_seconds": 10,
+    "poll_max_seconds": 60
+  }
+}
