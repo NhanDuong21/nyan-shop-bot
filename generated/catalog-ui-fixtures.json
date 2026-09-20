@@ -1,0 +1,299 @@
+{
+  "scenarios": {
+    "empty": {
+      "error": null,
+      "freshness": {
+        "evaluated_at": "2026-09-20T00:05:00Z",
+        "max_age_seconds": 900,
+        "observed_at": "2026-09-20T00:00:00Z",
+        "status": "fresh"
+      },
+      "items": [],
+      "mode": "mock",
+      "state": "empty"
+    },
+    "error": {
+      "error": {
+        "code": "source_unavailable",
+        "message": "The deterministic mock catalog is unavailable.",
+        "retryable": true
+      },
+      "freshness": null,
+      "items": [],
+      "mode": "mock",
+      "state": "error"
+    },
+    "fresh": {
+      "error": null,
+      "freshness": {
+        "evaluated_at": "2026-09-20T00:05:00Z",
+        "max_age_seconds": 900,
+        "observed_at": "2026-09-20T00:00:00Z",
+        "status": "fresh"
+      },
+      "items": [
+        {
+          "available_quantity": 12,
+          "description": "Fixture-only access used to test the normalized catalog.",
+          "id": "learning-pass",
+          "mode": "mock",
+          "name": "Synthetic learning pass",
+          "price": {
+            "amount_minor": 49000,
+            "currency": "VND",
+            "unit": "minor"
+          },
+          "supplier": "mock",
+          "variants": [
+            {
+              "available_quantity": 12,
+              "id": "learning-pass-30d",
+              "mapping": {
+                "approval": {
+                  "approved_at": "2026-09-20T00:00:00Z",
+                  "approved_by_admin_id": "fixture-admin",
+                  "status": "approved"
+                },
+                "supplier_product": {
+                  "supplier_id": "fake-supplier",
+                  "supplier_product_id": "supplier-learning-pass"
+                },
+                "supplier_variant": {
+                  "supplier_id": "fake-supplier",
+                  "supplier_variant_id": "supplier-learning-pass-30d"
+                }
+              },
+              "name": "30 days",
+              "price": {
+                "amount_minor": 49000,
+                "currency": "VND",
+                "unit": "minor"
+              }
+            }
+          ]
+        },
+        {
+          "available_quantity": 5,
+          "description": "Synthetic inventory that does not represent a real supplier offer.",
+          "id": "design-seat",
+          "mode": "mock",
+          "name": "Synthetic design seat",
+          "price": {
+            "amount_minor": 25000,
+            "currency": "VND",
+            "unit": "minor"
+          },
+          "supplier": "mock",
+          "variants": [
+            {
+              "available_quantity": 5,
+              "id": "design-seat-7d",
+              "mapping": {
+                "approval": {
+                  "approved_at": "2026-09-20T00:00:00Z",
+                  "approved_by_admin_id": "fixture-admin",
+                  "status": "approved"
+                },
+                "supplier_product": {
+                  "supplier_id": "fake-supplier",
+                  "supplier_product_id": "supplier-design-seat"
+                },
+                "supplier_variant": {
+                  "supplier_id": "fake-supplier",
+                  "supplier_variant_id": "supplier-design-seat-7d"
+                }
+              },
+              "name": "7 days",
+              "price": {
+                "amount_minor": 25000,
+                "currency": "VND",
+                "unit": "minor"
+              }
+            }
+          ]
+        },
+        {
+          "available_quantity": 0,
+          "description": "Out-of-stock fixture that cannot be purchased or delivered.",
+          "id": "toolkit",
+          "mode": "mock",
+          "name": "Synthetic toolkit",
+          "price": {
+            "amount_minor": 79000,
+            "currency": "VND",
+            "unit": "minor"
+          },
+          "supplier": "mock",
+          "variants": [
+            {
+              "available_quantity": 0,
+              "id": "toolkit-1m",
+              "mapping": {
+                "approval": {
+                  "approved_at": "2026-09-20T00:00:00Z",
+                  "approved_by_admin_id": "fixture-admin",
+                  "status": "approved"
+                },
+                "supplier_product": {
+                  "supplier_id": "fake-supplier",
+                  "supplier_product_id": "supplier-toolkit"
+                },
+                "supplier_variant": {
+                  "supplier_id": "fake-supplier",
+                  "supplier_variant_id": "supplier-toolkit-1m"
+                }
+              },
+              "name": "1 month",
+              "price": {
+                "amount_minor": 79000,
+                "currency": "VND",
+                "unit": "minor"
+              }
+            }
+          ]
+        }
+      ],
+      "mode": "mock",
+      "state": "fresh"
+    },
+    "stale": {
+      "error": {
+        "code": "source_unavailable",
+        "message": "The deterministic refresh failed; cached mock data is shown.",
+        "retryable": true
+      },
+      "freshness": {
+        "evaluated_at": "2026-09-20T01:00:00Z",
+        "max_age_seconds": 900,
+        "observed_at": "2026-09-20T00:00:00Z",
+        "status": "stale"
+      },
+      "items": [
+        {
+          "available_quantity": 12,
+          "description": "Fixture-only access used to test the normalized catalog.",
+          "id": "learning-pass",
+          "mode": "mock",
+          "name": "Synthetic learning pass",
+          "price": {
+            "amount_minor": 49000,
+            "currency": "VND",
+            "unit": "minor"
+          },
+          "supplier": "mock",
+          "variants": [
+            {
+              "available_quantity": 12,
+              "id": "learning-pass-30d",
+              "mapping": {
+                "approval": {
+                  "approved_at": "2026-09-20T00:00:00Z",
+                  "approved_by_admin_id": "fixture-admin",
+                  "status": "approved"
+                },
+                "supplier_product": {
+                  "supplier_id": "fake-supplier",
+                  "supplier_product_id": "supplier-learning-pass"
+                },
+                "supplier_variant": {
+                  "supplier_id": "fake-supplier",
+                  "supplier_variant_id": "supplier-learning-pass-30d"
+                }
+              },
+              "name": "30 days",
+              "price": {
+                "amount_minor": 49000,
+                "currency": "VND",
+                "unit": "minor"
+              }
+            }
+          ]
+        },
+        {
+          "available_quantity": 5,
+          "description": "Synthetic inventory that does not represent a real supplier offer.",
+          "id": "design-seat",
+          "mode": "mock",
+          "name": "Synthetic design seat",
+          "price": {
+            "amount_minor": 25000,
+            "currency": "VND",
+            "unit": "minor"
+          },
+          "supplier": "mock",
+          "variants": [
+            {
+              "available_quantity": 5,
+              "id": "design-seat-7d",
+              "mapping": {
+                "approval": {
+                  "approved_at": "2026-09-20T00:00:00Z",
+                  "approved_by_admin_id": "fixture-admin",
+                  "status": "approved"
+                },
+                "supplier_product": {
+                  "supplier_id": "fake-supplier",
+                  "supplier_product_id": "supplier-design-seat"
+                },
+                "supplier_variant": {
+                  "supplier_id": "fake-supplier",
+                  "supplier_variant_id": "supplier-design-seat-7d"
+                }
+              },
+              "name": "7 days",
+              "price": {
+                "amount_minor": 25000,
+                "currency": "VND",
+                "unit": "minor"
+              }
+            }
+          ]
+        },
+        {
+          "available_quantity": 0,
+          "description": "Out-of-stock fixture that cannot be purchased or delivered.",
+          "id": "toolkit",
+          "mode": "mock",
+          "name": "Synthetic toolkit",
+          "price": {
+            "amount_minor": 79000,
+            "currency": "VND",
+            "unit": "minor"
+          },
+          "supplier": "mock",
+          "variants": [
+            {
+              "available_quantity": 0,
+              "id": "toolkit-1m",
+              "mapping": {
+                "approval": {
+                  "approved_at": "2026-09-20T00:00:00Z",
+                  "approved_by_admin_id": "fixture-admin",
+                  "status": "approved"
+                },
+                "supplier_product": {
+                  "supplier_id": "fake-supplier",
+                  "supplier_product_id": "supplier-toolkit"
+                },
+                "supplier_variant": {
+                  "supplier_id": "fake-supplier",
+                  "supplier_variant_id": "supplier-toolkit-1m"
+                }
+              },
+              "name": "1 month",
+              "price": {
+                "amount_minor": 79000,
+                "currency": "VND",
+                "unit": "minor"
+              }
+            }
+          ]
+        }
+      ],
+      "mode": "mock",
+      "state": "stale"
+    }
+  },
+  "schema_version": 1,
+  "source": "FastAPI CatalogResponse"
+}
