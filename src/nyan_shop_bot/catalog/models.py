@@ -122,6 +122,10 @@ class CatalogProduct(ContractModel):
     id: Identifier
     name: DisplayText
     description: DisplayText
+    supplier: Literal["mock"] = "mock"
+    mode: Literal["mock"] = "mock"
+    price: Money
+    available_quantity: NonNegativeInt
     variants: Annotated[tuple[CatalogVariant, ...], Field(min_length=1)]
 
     @model_validator(mode="after")
@@ -139,6 +143,12 @@ class CatalogProduct(ContractModel):
         ]
         if len(supplier_variants) != len(set(supplier_variants)):
             raise ValueError("supplier variant identities must be unique within a product")
+
+        primary_variant = self.variants[0]
+        if self.price != primary_variant.price:
+            raise ValueError("compatibility price must match the primary variant")
+        if self.available_quantity != primary_variant.available_quantity:
+            raise ValueError("compatibility quantity must match the primary variant")
         return self
 
 

@@ -230,6 +230,11 @@
         "additionalProperties": false,
         "description": "A normalized product containing one or more distinct variants.",
         "properties": {
+          "available_quantity": {
+            "minimum": 0.0,
+            "title": "Available Quantity",
+            "type": "integer"
+          },
           "description": {
             "minLength": 1,
             "pattern": ".*\\S.*",
@@ -242,10 +247,25 @@
             "title": "Id",
             "type": "string"
           },
+          "mode": {
+            "const": "mock",
+            "default": "mock",
+            "title": "Mode",
+            "type": "string"
+          },
           "name": {
             "minLength": 1,
             "pattern": ".*\\S.*",
             "title": "Name",
+            "type": "string"
+          },
+          "price": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "supplier": {
+            "const": "mock",
+            "default": "mock",
+            "title": "Supplier",
             "type": "string"
           },
           "variants": {
@@ -261,6 +281,8 @@
           "id",
           "name",
           "description",
+          "price",
+          "available_quantity",
           "variants"
         ],
         "title": "CatalogProduct",
@@ -655,6 +677,8 @@
             "name": "product_id",
             "required": true,
             "schema": {
+              "minLength": 1,
+              "pattern": ".*\\S.*",
               "title": "Product Id",
               "type": "string"
             }

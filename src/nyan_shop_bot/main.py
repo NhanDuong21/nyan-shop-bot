@@ -2,8 +2,9 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Path, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from nyan_shop_bot.catalog.mock import MockCatalogReader
@@ -80,7 +81,9 @@ def create_app(
         response_model=CatalogDetailResponse,
         tags=["catalog"],
     )
-    async def catalog_detail(product_id: str) -> CatalogDetailResponse:
+    async def catalog_detail(
+        product_id: Annotated[str, Path(min_length=1, pattern=r".*\S.*")],
+    ) -> CatalogDetailResponse:
         return await catalog_reader.get_product(product_id)
 
     @application.get(

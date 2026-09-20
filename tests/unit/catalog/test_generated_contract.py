@@ -67,3 +67,13 @@ def test_ui_fixtures_cover_and_validate_every_required_state() -> None:
     for name, value in scenarios.items():
         response = CatalogResponse.model_validate(value)
         assert response.state.value == name
+
+
+def test_fresh_fixture_retains_the_merged_admin_projection() -> None:
+    fixtures = decode_json(rendered_artifacts()["catalog-ui-fixtures.json"])
+
+    for item in fixtures["scenarios"]["fresh"]["items"]:
+        assert item["supplier"] == "mock"
+        assert item["mode"] == "mock"
+        assert item["price"] == item["variants"][0]["price"]
+        assert item["available_quantity"] == item["variants"][0]["available_quantity"]

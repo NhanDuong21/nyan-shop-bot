@@ -64,6 +64,8 @@ _PRODUCTS = (
         id="learning-pass",
         name="Synthetic learning pass",
         description="Fixture-only access used to test the normalized catalog.",
+        price=Money(amount_minor=49_000, currency="VND", unit="minor"),
+        available_quantity=12,
         variants=(
             CatalogVariant(
                 id="learning-pass-30d",
@@ -78,6 +80,8 @@ _PRODUCTS = (
         id="design-seat",
         name="Synthetic design seat",
         description="Synthetic inventory that does not represent a real supplier offer.",
+        price=Money(amount_minor=25_000, currency="VND", unit="minor"),
+        available_quantity=5,
         variants=(
             CatalogVariant(
                 id="design-seat-7d",
@@ -92,6 +96,8 @@ _PRODUCTS = (
         id="toolkit",
         name="Synthetic toolkit",
         description="Out-of-stock fixture that cannot be purchased or delivered.",
+        price=Money(amount_minor=79_000, currency="VND", unit="minor"),
+        available_quantity=0,
         variants=(
             CatalogVariant(
                 id="toolkit-1m",

@@ -64,6 +64,12 @@ async def test_catalog_exposes_normalized_identifiers_money_and_freshness() -> N
         != variant["mapping"]["supplier_variant"]["supplier_variant_id"]
         for variant in variants
     )
+    assert all(item["supplier"] == "mock" and item["mode"] == "mock" for item in body["items"])
+    assert all(item["price"] == item["variants"][0]["price"] for item in body["items"])
+    assert all(
+        item["available_quantity"] == item["variants"][0]["available_quantity"]
+        for item in body["items"]
+    )
 
 
 async def test_catalog_detail_uses_normalized_id_only() -> None:
@@ -79,6 +85,13 @@ async def test_catalog_detail_uses_normalized_id_only() -> None:
         "state": "not_found",
         "product_id": "Synthetic learning pass",
     }
+
+
+async def test_catalog_detail_rejects_blank_identifier() -> None:
+    async with make_client() as client:
+        response = await client.get("/api/v1/catalog/%20")
+
+    assert response.status_code == 422
 
 
 async def test_catalog_error_is_a_typed_client_state() -> None:

@@ -22,6 +22,12 @@ A normalized catalog product owns normalized variants. Every variant mapping ret
 separate supplier identities: `supplier_product_id` and `supplier_variant_id`, each namespaced
 by `supplier_id`. Display names do not participate in lookup or mapping.
 
+During the foundation transition, each product also exposes the merged admin's read-only flat
+projection: `supplier`, `mode`, `price`, and `available_quantity`. Price and quantity are
+validated mirrors of the first (primary) variant, so the compatibility fields cannot silently
+diverge from the normalized contract. A later UI issue may consume variants directly and remove
+this projection through an explicit contract migration.
+
 A mapping is active only when its discriminated approval record has status `approved`, an
 explicit `approved_by_admin_id`, and an aware `approved_at` timestamp. A `pending` record has
 no implicit approval evidence.
