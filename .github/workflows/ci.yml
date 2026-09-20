@@ -1,0 +1,295 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.13"
+  NODE_VERSION: "24"
+
+jobs:
+  python-quality:
+    name: Python lint and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install locked dependencies
+        run: python -m pip install -r requirements-dev.lock
+      - name: Run shared quality verification
+        run: python scripts/verify.py --scope python-quality
+
+  python-tests:
+    name: Python unit and offline bot tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install locked dependencies
+        run: python -m pip install -r requirements-dev.lock
+      - name: Run shared unit verification
+        run: python scripts/verify.py --scope python-tests
+
+  database:
+    name: PostgreSQL migration and integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: nyan_shop_bot
+          POSTGRES_USER: nyan_local
+          POSTGRES_PASSWORD: nyan_local_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nyan_local -d nyan_shop_bot"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot
+      SUPPLIER_MODE: mock
+      PAYMENT_MODE: disabled
+      ALLOW_REAL_PURCHASES: "false"
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install locked dependencies
+        run: python -m pip install -r requirements-dev.lock
+      - name: Verify migration and PostgreSQL
+        run: python scripts/verify.py --scope database
+
+  frontend:
+    name: Admin lint, typecheck, test, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: admin/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+        working-directory: admin
+      - name: Run shared frontend verification
+        run: python scripts/verify.py --scope frontend
+
+  security:
+    name: Secret and workflow security checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install locked dependencies
+        run: python -m pip install -r requirements-dev.lock
+      - name: Run repository policy checks
+        run: python scripts/verify.py --scope security
+      - name: Install checksum-verified security tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            --output /tmp/actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  /tmp/actionlint.tar.gz" | sha256sum --check
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          curl --fail --location --silent --show-error \
+            --output /tmp/gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum --check
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+      - name: Validate workflow syntax
+        run: /tmp/actionlint
+      - name: Scan the checked-out tree for secrets
+        run: /tmp/gitleaks dir . --redact --no-banner
+
+  docker-build:
+    name: Build API and admin images
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build API without pushing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+      - name: Build admin without pushing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: admin
+          file: admin/Dockerfile
+          push: false
+
+  mock-smoke:
+    name: Mock API and admin smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and start isolated mock stack
+        run: docker compose -p nyan-shop-bot-ci up -d --build --wait
+      - name: Run read-only smoke checks
+        run: python scripts/smoke.py
+      - name: Remove isolated test stack
+        if: ${{ always() }}
+        run: docker compose -p nyan-shop-bot-ci down --volumes --remove-orphans
+
+  ci-gate:
+    name: ci-gate
+    if: ${{ always() }}
+    needs:
+      - python-quality
+      - python-tests
+      - database
+      - frontend
+      - security
+      - docker-build
+      - mock-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Require every mandatory check to succeed
+        env:
+          PYTHON_QUALITY: ${{ needs.python-quality.result }}
+          PYTHON_TESTS: ${{ needs.python-tests.result }}
+          DATABASE: ${{ needs.database.result }}
+          FRONTEND: ${{ needs.frontend.result }}
+          SECURITY: ${{ needs.security.result }}
+          DOCKER_BUILD: ${{ needs.docker-build.result }}
+          MOCK_SMOKE: ${{ needs.mock-smoke.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$PYTHON_QUALITY" = success
+          test "$PYTHON_TESTS" = success
+          test "$DATABASE" = success
+          test "$FRONTEND" = success
+          test "$SECURITY" = success
+          test "$DOCKER_BUILD" = success
+          test "$MOCK_SMOKE" = success
+
+  publish:
+    name: Publish trusted main images
+    if: >-
+      ${{ needs.ci-gate.result == 'success' &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          github.repository == 'NhanDuong21/nyan-shop-bot' }}
+    needs: [ci-gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the gated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Assert checkout matches the gated SHA
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Publish API by full commit SHA
+        id: api
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ghcr.io/nhanduong21/nyan-shop-bot-api:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Publish admin by full commit SHA
+        id: admin
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: admin
+          file: admin/Dockerfile
+          push: true
+          tags: ghcr.io/nhanduong21/nyan-shop-bot-admin:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Record immutable delivery evidence
+        env:
+          API_DIGEST: ${{ steps.api.outputs.digest }}
+          ADMIN_DIGEST: ${{ steps.admin.outputs.digest }}
+        run: |
+          {
+            echo "## Published images"
+            echo "Commit: \`$GITHUB_SHA\`"
+            echo "API digest: \`$API_DIGEST\`"
+            echo "Admin digest: \`$ADMIN_DIGEST\`"
+            echo "Deployment: BLOCKED (no staging target configured)"
+          } >> "$GITHUB_STEP_SUMMARY"

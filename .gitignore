@@ -1,0 +1,39 @@
+# Local bootstrap inputs and partner source material
+nyan-bootstrap/
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+*.p12
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node / frontend
+node_modules/
+admin/node_modules/
+admin/dist/
+admin/coverage/
+*.tsbuildinfo
+
+# Local data and logs
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
