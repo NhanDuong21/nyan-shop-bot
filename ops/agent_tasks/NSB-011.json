@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "task_id": "NSB-011",
+  "issue_number": 3,
+  "issue_url": "https://github.com/NhanDuong21/nyan-shop-bot/issues/3",
+  "repository": "NhanDuong21/nyan-shop-bot",
+  "title": "VietShare read-only adapter and signing tests",
+  "base_ref": "main",
+  "pr_base": "main",
+  "branch": "nyan/nsb-011-vietshare-readonly",
+  "worker": "codex",
+  "worker_model": "gpt-5.6-sol",
+  "reviewer_model": "codex-auto-review",
+  "role": "backend",
+  "risk": "high",
+  "queue_phase": "M1",
+  "queue_eligible": true,
+  "trusted_prompt": "Implement a dependency-free, offline-testable VietShare v1 read adapter inside the granted paths only. This sanitized prompt contains the supplier facts verified from Nyan's local VietShare snapshot and is the worker's source of truth; do not browse the live supplier, use credentials, or infer fields that are not listed here. The production base URL shown by the source is https://token.vietshare.site/v1. Signed business reads are GET /v1/account, GET /v1/products (with /v1/catalog as an alias), GET /v1/products/{product_id}, and GET /v1/stock/{product_id} as a detail alias. Do not implement or call any /orders route, including order history, and do not implement top-up, refund, delivery, payment, or purchase operations. Authentication headers are X-Shop-API-ID, X-Timestamp (Unix seconds), X-Nonce (12-128 characters, never reused), and X-Signature (lowercase hex HMAC-SHA256 with the API secret). The exact canonical string is timestamp|nonce|METHOD|PATH_WITH_QUERY|sha256(raw_body). METHOD is uppercase; PATH_WITH_QUERY must include /v1; its query order must exactly match the emitted URL; a GET uses the SHA-256 of empty bytes. Build the URL and canonical path from the same ordered sequence rather than re-sorting a mapping. Accept already-encoded raw request bytes and hash those exact bytes without JSON reserialization. Inject the clock, nonce source, transport, and retry sleeper so tests are deterministic and open no socket. Each bounded retry after a read timeout or HTTP 429 must regenerate timestamp, nonce, and signature; parse and respect a valid Retry-After value without sleeping for real in tests. Return typed timeout/rate-limit/error outcomes and redact API IDs, secrets, signatures, authorization headers, and sensitive response content from repr, exceptions, and logs. The only documented product-list response fields are count and products; each product has id integer, name string, description string, price non-negative integer VND, flash_sale_id integer or null, stock non-negative integer, allow_quantity boolean, and max_quantity positive integer. Reject unknown or malformed product fields rather than guessing. The supplied snapshot does not define an account response body, product-detail response body, or a products pagination cursor/page/query contract. Keep those response schemas and pagination beyond the documented single product-list response explicitly unsupported; test that the adapter does not invent page, cursor, or limit parameters. This missing schema locks only those projections, not deterministic signing, safe request construction, product-list parsing, retry modeling, redaction, or capabilities. Expose capabilities with catalog reads only where supported and keep purchase, payment, top-up, refund, and delivery disabled. Add deterministic signing vectors, /v1 and ordered-query tests, exact raw-body hash tests, fake clock/nonce retry tests, product fixture validation, timeout/429/Retry-After tests, redaction tests, explicit unsupported-gap tests, and outbound-network guard tests. Run only repository-provided checks; never execute supplier examples or make a real network request.",
+  "acceptance_criteria": [
+    "HMAC-SHA256 signing uses the exact raw body bytes, uppercase method, lowercase hex output, and a PATH_WITH_QUERY that includes /v1 and preserves the emitted URL query order.",
+    "Clock, nonce, transport, and retry sleeping are injected; deterministic tests prove each bounded timeout or 429 retry refreshes timestamp, nonce, and signature and respects valid Retry-After without a real sleep.",
+    "The documented product-list fixture is parsed strictly with integer VND price and stock while undocumented account/detail response schemas and products pagination fields remain explicitly unsupported rather than guessed.",
+    "Tests prove no page, cursor, or limit parameters are invented for product reads, while ordered query construction remains deterministic for any documented future continuation.",
+    "Secrets and sensitive payloads are redacted from representations, errors, and logs; tests cannot reach the real supplier network.",
+    "No order, purchase, payment, top-up, refund, or delivery operation exists and all corresponding capabilities remain disabled.",
+    "Focused VietShare tests and the full repository verification pass without real credentials or outbound supplier traffic."
+  ],
+  "allowed_paths": [
+    "src/nyan_shop_bot/suppliers/vietshare/**",
+    "tests/suppliers/vietshare/**"
+  ],
+  "required_checks": [
+    "ci-gate"
+  ],
+  "dependencies": [
+    2
+  ],
+  "auto_merge_eligible": false,
+  "budget": {
+    "max_agent_invocations": 5,
+    "max_total_tokens": 300000,
+    "max_elapsed_seconds": 10800,
+    "max_fix_rounds": 3,
+    "ci_timeout_seconds": 3600,
+    "poll_initial_seconds": 10,
+    "poll_max_seconds": 60
+  }
+}
