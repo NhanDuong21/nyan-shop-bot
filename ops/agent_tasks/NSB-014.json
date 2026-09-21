@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "task_id": "NSB-014",
+  "issue_number": 6,
+  "issue_url": "https://github.com/NhanDuong21/nyan-shop-bot/issues/6",
+  "repository": "NhanDuong21/nyan-shop-bot",
+  "title": "Admin catalog, suppliers, and environment state",
+  "base_ref": "main",
+  "pr_base": "main",
+  "branch": "nyan/nsb-014-admin-dashboard",
+  "worker": "antigravity",
+  "worker_model": "gemini-3.8-flash-low",
+  "reviewer_model": "gpt-5.6-luna",
+  "role": "ui",
+  "risk": "medium",
+  "queue_phase": "M1",
+  "queue_eligible": true,
+  "trusted_prompt": "Polish the already mounted admin dashboard presentation for Issue #6. Your only create/edit grant is the literal admin/src/features/admin-dashboard/** root. The Codex coordinator owns admin/src/api.ts, admin/src/catalog-state.ts, App.tsx, generated contracts and fixtures, routing, shared/global styles, theme mechanism, manifests, lockfiles, dependencies, build configuration, CI, runner, rules, hooks, and every other path. Read only inside the current worktree and do not inspect or reuse PR #24, its branch, session, worktree, uncommitted evidence, or conclusions; NSB-014 is a separate product run from a new main base and must not be used to evade or rewrite the blocked NSB-043 run. Begin with the required Impeccable polish skill supplied by the runner, but keep the established basic operator-console direction: light is the first-load default, dark remains an explicit optional theme, and the feature must not become a marketing page, neon/glass showcase, or motion-heavy demo. Consume only the injected AdminDashboardProps state and onRetry callback. Never call fetch, change the contract, create hard-coded product/supplier/balance/currency values, expose supplier mappings or identifiers, or replace backend data with demo content. Render the coordinator-provided states honestly and distinctly: catalog loading, backend transport/envelope error, empty, fresh success, stale cached success with refresh warning, filtered empty, supplier loading, supplier error, and supplier ready with balance explicitly unsupported. Display money as the provided integer amount_minor together with its exact currency and unit; do not convert, divide, use float, assume an exponent, aggregate currencies, or invent a balance. Keep MOCK, READ-ONLY, localhost-only, and no-purchase/no-payment truth unmistakable. Disabled purchase, payment, top-up, refund, and delivery capability states must remain visible and must never become controls. Improve only feature-local markup, CSS, and tests for visual hierarchy, concise Vietnamese copy, desktop/mobile layout, labels that travel with data, semantic headings/tables/lists, aria live behavior, keyboard-visible focus, contrast in both themes, enlarged-text resilience, and prefers-reduced-motion. Feature-local tests must cover every state above, retry callbacks, explicit money/currency/unit, unsupported balance, disabled write capabilities, filtering based only on injected items, and safety messaging. Do not add dependencies, edit configuration or nested policy files, use a subagent/background agent/browser, invoke live supplier/Telegram/payment operations, read credentials, merge, deploy, or change runner policy. If any required architecture change lies outside the grant, return BLOCKED with the exact reason. Run only existing frontend lint, typecheck, test, and build commands when the sandbox permits them; report unavailable checks as NOT_RUN and never claim CI before GitHub runs it. Return the exact pre-commit HEAD, changed paths, and real PASS/FAIL/NOT_RUN evidence in the required structured result.",
+  "acceptance_criteria": [
+    "Only admin/src/features/admin-dashboard/** changes, with no nested config, policy, manifest, lockfile, dependency, runner, hook, API, contract, or theme-mechanism edit.",
+    "The injected catalog loading, backend error, empty, fresh, stale, and filtered-empty states and supplier loading, error, ready, and balance-unsupported states remain distinct and honest.",
+    "MOCK, READ-ONLY, localhost-only, no-purchase/no-payment truth and disabled write capabilities are prominent in both themes and at narrow and desktop widths.",
+    "Catalog rows come only from injected data; money shows the exact integer amount_minor plus currency and unit without float, conversion, assumed exponent, aggregation, or invented balance.",
+    "Semantic structure, live announcements, labeled responsive data, keyboard focus, contrast, enlarged-text behavior, and reduced-motion behavior are covered by feature-local implementation and tests.",
+    "PR #24, NSB-043 session/worktree/usage, and its failed evidence are not reused, mutated, or presented as NSB-014 evidence.",
+    "Exact-HEAD ci-gate and a fresh independent Codex review are required; any new commit invalidates earlier CI and review evidence."
+  ],
+  "allowed_paths": [
+    "admin/src/features/admin-dashboard/**"
+  ],
+  "required_checks": [
+    "ci-gate"
+  ],
+  "dependencies": [
+    2,
+    21
+  ],
+  "auto_merge_eligible": false,
+  "budget": {
+    "max_agent_invocations": 4,
+    "max_total_tokens": 600000,
+    "max_worker_tokens": 600000,
+    "max_reviewer_tokens": 200000,
+    "max_elapsed_seconds": 7200,
+    "max_fix_rounds": 1,
+    "ci_timeout_seconds": 3600,
+    "poll_initial_seconds": 10,
+    "poll_max_seconds": 60
+  }
+}

@@ -1,5 +1,5 @@
 import { useCatalogState } from "./catalog-state";
-import { CatalogVisibility } from "./features/catalog-visibility/CatalogVisibility";
+import { AdminDashboard } from "./features/admin-dashboard/AdminDashboard";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAdminTheme } from "./theme";
 
@@ -36,7 +36,7 @@ export function App() {
         <span> Không mua hàng, thanh toán hoặc gọi supplier thật.</span>
       </aside>
 
-      <CatalogVisibility state={catalog.state} onRetry={catalog.retry} />
+      <AdminDashboard state={catalog.state} onRetry={catalog.retry} />
     </div>
   );
 }
