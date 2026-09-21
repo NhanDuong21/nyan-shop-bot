@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "task_id": "NSB-012",
+  "issue_number": 4,
+  "issue_url": "https://github.com/NhanDuong21/nyan-shop-bot/issues/4",
+  "repository": "NhanDuong21/nyan-shop-bot",
+  "title": "KhoMMO read-only adapter",
+  "base_ref": "main",
+  "pr_base": "main",
+  "branch": "nyan/nsb-012-khommo-readonly",
+  "worker": "codex",
+  "worker_model": "gpt-5.6-sol",
+  "reviewer_model": "codex-auto-review",
+  "role": "backend",
+  "risk": "high",
+  "queue_phase": "M1",
+  "queue_eligible": true,
+  "trusted_prompt": "Implement a dependency-free, offline-testable KhoMMO read-only adapter inside the granted paths only. This sanitized prompt contains the supplier facts verified from Nyan's local KhoMMO partner-document excerpt and is the worker's source of truth; do not browse or call the live supplier, use real credentials, or infer response fields or guarantees absent from this prompt. The documented production base URL is https://api.khommo.vn/api/partner/v1, but tests and implementation verification must use only an injected fake transport and must never open a supplier socket. Authentication is an Authorization header with the value Bearer followed by the token. The token must never appear in a URL, repr, exception, log, fixture, snapshot, or frontend-facing object. The only enabled request targets are GET /api/partner/v1/me, GET /api/partner/v1/products, and GET /api/partner/v1/products/{id}. Do not implement any /orders request, including order-history reads, and do not implement purchase, payment, top-up, refund, or delivery operations. There is no separate documented stock endpoint: stock and inStock are product fields, so do not invent a /stock route. Products query parameters are page with documented default 1, limit with documented default 20 and maximum 500, and optional search by name or SKU. Validate page as a positive integer and limit as an integer from 1 through 500; do not emit cursor, offset, sort, filter, or any other invented parameter. Construct the URL from one ordered parameter sequence and test the exact emitted query. The excerpt names /me fields username, firstName, wallet.credit, and wallet.vnd. It names product fields id, sku, name, description, priceCredit, priceVnd, paymentMode, deliveryType, stock, and inStock, and says product detail includes stock and inStock. The supplied excerpt is not a complete response schema: it does not establish envelope keys, pagination response metadata, nullability, every field type, enum values for deliveryType, or whether undocumented fields may appear. Keep those gaps explicit. Parse only a conservative documented projection: wallet CREDIT and VND values and product priceCredit, priceVnd, and stock must be non-negative integers, never float; inStock must be boolean; textual fields must be strings; paymentMode may only be represented when it is the documented CREDIT or VND token. Keep CREDIT and VND in distinct typed unit fields and never add, compare, convert, or treat CREDIT as postpaid. Treat a missing required documented projection, an unknown envelope, ambiguous pagination metadata, an unsupported type, or an undocumented field as a typed unsupported-schema result rather than guessing or silently coercing it. It is acceptable for this missing-schema condition to lock a projection while request construction, pagination validation, redaction, error modeling, and capability safety remain testable. The published priceCredit and priceVnd already include the Partner API five-percent discount; preserve the supplied values and never apply another discount. Model 400, 401, 404, 502, timeout, malformed JSON, and unsupported-schema outcomes without exposing response bodies or credentials. Do not automatically retry timeouts or 502 responses; the supplied excerpt gives no retry or outcome guarantee. Inject transport and any clock/sleeper needed by the interface, but do not sleep in tests. Expose only confirmed read capabilities, and keep order, purchase, payment, top-up, refund, and delivery capabilities disabled. Add synthetic fixture tests for the conservative documented /me and product projections, products page/limit/search construction and bounds, product detail, separate CREDIT/VND units, no second discount, redaction, error and missing-schema outcomes, no retry on timeout/502, absence of every order/write operation, and an outbound-network guard. Run only repository-provided checks; never execute supplier examples or make a real network request.",
+  "acceptance_criteria": [
+    "Bearer authentication is emitted only in the Authorization header and is redacted from URLs, representations, exceptions, logs, fixtures, and frontend-facing values.",
+    "Only GET /api/partner/v1/me, GET /api/partner/v1/products, and GET /api/partner/v1/products/{id} are constructible; products page, limit, and search validation follows the documented bounds and emits no invented query parameter.",
+    "Synthetic documented projections keep CREDIT and VND wallet/price values as separate non-negative integer units, preserve already-discounted supplier prices without another five-percent reduction, and retain stock/inStock without inventing a stock endpoint.",
+    "Incomplete or ambiguous response envelopes, pagination metadata, field types, nullability, enums, missing documented projections, and undocumented fields produce a typed unsupported-schema outcome instead of guessed parsing or coercion.",
+    "Timeout and 502 outcomes are surfaced without an automatic retry; 400, 401, 404, malformed JSON, and sensitive bodies are modeled safely and redacted.",
+    "No order request, purchase, payment, top-up, refund, delivery, or live supplier transport exists and all corresponding capabilities remain disabled.",
+    "Focused KhoMMO tests and full repository verification pass without real credentials or outbound supplier traffic."
+  ],
+  "allowed_paths": [
+    "src/nyan_shop_bot/suppliers/khommo/**",
+    "tests/suppliers/khommo/**"
+  ],
+  "required_checks": [
+    "ci-gate"
+  ],
+  "dependencies": [
+    2
+  ],
+  "auto_merge_eligible": false,
+  "budget": {
+    "max_agent_invocations": 5,
+    "max_total_tokens": 500000,
+    "max_worker_tokens": 500000,
+    "max_reviewer_tokens": 200000,
+    "max_elapsed_seconds": 10800,
+    "max_fix_rounds": 3,
+    "ci_timeout_seconds": 3600,
+    "poll_initial_seconds": 10,
+    "poll_max_seconds": 60
+  }
+}
