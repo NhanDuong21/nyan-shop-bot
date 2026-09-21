@@ -12,7 +12,7 @@ from decimal import Decimal
 from enum import Enum, StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Never
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, unquote_plus, urlsplit
 
 from nyan_shop_bot.suppliers.roboticvn.provenance import (
     API_PREFIX,
@@ -121,7 +121,22 @@ def _request_path_is_authorized(path: str) -> bool:
     return False
 
 
-def _validate_request_target(url: str) -> None:
+def _request_target_contains_api_key(url: str, api_key: str) -> bool:
+    candidate = url
+    for _ in range(len(url) + 1):
+        if api_key in candidate:
+            return True
+        try:
+            decoded = unquote_plus(candidate, errors="strict")
+        except UnicodeDecodeError:
+            raise RoboticvnConfigurationError("Roboticvn request target is invalid") from None
+        if decoded == candidate:
+            return False
+        candidate = decoded
+    return True
+
+
+def _validate_request_target(url: str, api_key: str) -> None:
     if type(url) is not str:
         raise RoboticvnConfigurationError("Roboticvn request target is invalid")
     try:
@@ -145,6 +160,8 @@ def _validate_request_target(url: str) -> None:
         for name, _ in parse_qsl(target.query, keep_blank_values=True)
     ):
         raise RoboticvnConfigurationError("API key must not be placed in the request URL")
+    if _request_target_contains_api_key(url, api_key):
+        raise RoboticvnConfigurationError("API key must not appear in the request URL")
 
 
 @dataclass(frozen=True, repr=False)
@@ -158,11 +175,11 @@ class RoboticvnRequest:
     def __post_init__(self) -> None:
         if self.method != "GET":
             raise RoboticvnConfigurationError("Roboticvn requests must use GET")
-        _validate_request_target(self.url)
         headers = dict(self.headers)
         if set(headers) != {GLOBAL_AUTH_HEADER}:
             raise RoboticvnConfigurationError("API key must be the only request header")
-        RoboticvnApiKey(headers[GLOBAL_AUTH_HEADER])
+        api_key = RoboticvnApiKey(headers[GLOBAL_AUTH_HEADER])
+        _validate_request_target(self.url, api_key.value)
         object.__setattr__(self, "headers", SensitiveHeaders(headers))
 
     def __repr__(self) -> str:
@@ -383,7 +400,7 @@ _PAGINATION_REQUIRED = frozenset({"count", "limit", "offset"})
 _TRANSACTION_FIELDS = frozenset(
     {"type", "reason", "description", "amount", "currency_code", "created_at"}
 )
-_RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
+_RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$")
 
 
 def _reject_json_constant(_value: str) -> Never:
@@ -571,8 +588,13 @@ def _date_time(value: object, location: str) -> str:
     text = _text(value, location)
     if not _RFC3339.fullmatch(text):
         raise UnsupportedSchemaError(location, "expected an RFC 3339 date-time")
+    if int(text[11:13]) > 23:
+        raise UnsupportedSchemaError(location, "expected an RFC 3339 date-time")
+    normalized = text[:10] + "T" + text[11:]
+    if normalized.endswith(("Z", "z")):
+        normalized = normalized[:-1] + "+00:00"
     try:
-        parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+        parsed = datetime.fromisoformat(normalized)
     except ValueError:
         raise UnsupportedSchemaError(location, "expected an RFC 3339 date-time") from None
     if parsed.tzinfo is None or parsed.utcoffset() is None:

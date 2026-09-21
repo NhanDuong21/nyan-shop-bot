@@ -7,6 +7,7 @@ import json
 import logging
 import socket
 from collections.abc import Iterable
+from urllib.parse import quote, quote_plus
 
 import pytest
 
@@ -346,6 +347,32 @@ async def test_api_key_exists_only_in_redacted_header_mapping(
     )
     assert secret not in combined
     assert "<redacted>" in combined
+
+
+@pytest.mark.parametrize(
+    "method,kwargs",
+    [
+        ("list_products", {"search": "api key+private-marker"}),
+        ("list_products", {"category_id": quote_plus("api key+private-marker", safe="")}),
+        ("get_product", {"product_id": "api key+private-marker"}),
+        ("get_product", {"product_id": quote("api key+private-marker", safe="")}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_api_key_repeated_in_query_or_path_never_reaches_transport(
+    method: str,
+    kwargs: dict[str, object],
+) -> None:
+    secret = "api key+private-marker"
+    transport = FakeTransport([])
+    operation = getattr(adapter(transport, key=secret), method)
+
+    with pytest.raises(RoboticvnConfigurationError) as caught:
+        await operation(**kwargs)
+
+    assert secret not in str(caught.value)
+    assert secret not in repr(caught.value)
+    assert transport.requests == []
 
 
 def test_raw_response_representation_hides_body_and_headers() -> None:

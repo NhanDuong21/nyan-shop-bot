@@ -302,6 +302,23 @@ def test_wallet_transactions_preserve_non_money_fields_and_discard_amount() -> N
     assert not hasattr(item.amount, "amount")
 
 
+@pytest.mark.parametrize(
+    "created_at",
+    [
+        "2026-09-21t03:05:06z",
+        "2026-09-21t03:05:06.125+07:00",
+    ],
+)
+def test_wallet_transaction_accepts_lowercase_rfc3339_markers_and_preserves_source(
+    created_at: str,
+) -> None:
+    parsed = parse_wallet_transactions(
+        encoded({"data": [transaction(created_at=created_at)], "meta": meta()})
+    )
+
+    assert parsed.data[0].created_at == created_at
+
+
 def test_wallet_transaction_declares_no_required_fields() -> None:
     parsed = parse_wallet_transactions(encoded({"data": [{}], "meta": meta()}))
     item = parsed.data[0]
@@ -327,6 +344,9 @@ def test_wallet_transaction_declares_no_required_fields() -> None:
         {"currency_code": 1},
         {"created_at": "2026-09-21"},
         {"created_at": "2026-09-21 03:05:06Z"},
+        {"created_at": "2026-09-21t24:00:00z"},
+        {"created_at": "2026-09-21t03:60:00z"},
+        {"created_at": "2026-09-21t03:05:60z"},
         {"unexpected": "forbidden"},
     ],
 )
