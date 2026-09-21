@@ -123,7 +123,12 @@ class KhoMmoReadAdapter:
         return await self._send(self._request("/products", tuple(query)), parse_products)
 
     async def get_product(self, product_id: str) -> ReadOutcome:
-        if type(product_id) is not str or not product_id or "/" in product_id:
+        if (
+            type(product_id) is not str
+            or not product_id
+            or product_id in {".", ".."}
+            or "/" in product_id
+        ):
             raise KhoMmoConfigurationError("Product ID must be non-empty path-safe text")
         return await self._send(
             self._request("/products/" + quote(product_id, safe="")), parse_product

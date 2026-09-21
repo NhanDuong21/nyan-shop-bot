@@ -108,6 +108,19 @@ async def test_exact_ordered_query_defaults_search_and_detail_target() -> None:
     assert all(request.method == "GET" for request in transport.requests)
 
 
+@pytest.mark.parametrize("product_id", [".", ".."])
+@pytest.mark.asyncio
+async def test_product_detail_rejects_dot_segments_without_emitting_request(
+    product_id: str,
+) -> None:
+    transport = FakeTransport([])
+
+    with pytest.raises(KhoMmoConfigurationError):
+        await adapter(transport).get_product(product_id)
+
+    assert transport.requests == []
+
+
 @pytest.mark.parametrize("page,limit", [(0, 20), (True, 20), (1, 0), (1, 501), (1, 2.0)])
 @pytest.mark.asyncio
 async def test_page_and_limit_bounds(page: object, limit: object) -> None:
