@@ -19,6 +19,17 @@ from nyan_shop_bot.orders.ports import DeliverySink, PurchasePort
 from nyan_shop_bot.orders.repository import PostgresOrderRepository
 from nyan_shop_bot.orders.service import OrderService
 
+DISPOSABLE_ORDER_DATABASE_URL = (
+    "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot"
+)
+
+
+def require_disposable_order_database_url(value: str) -> str:
+    """Allow destructive fixture cleanup only for the documented local test database."""
+    if value != DISPOSABLE_ORDER_DATABASE_URL:
+        raise RuntimeError("Refusing to reset an unapproved order integration database.")
+    return value
+
 
 def request(
     *,

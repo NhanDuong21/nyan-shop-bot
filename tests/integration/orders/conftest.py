@@ -14,12 +14,16 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from tests.integration.orders.support import (
+    DISPOSABLE_ORDER_DATABASE_URL,
+    require_disposable_order_database_url,
+)
+
 
 @pytest.fixture
 async def postgres_engine() -> AsyncIterator[AsyncEngine]:
-    database_url = os.environ.get(
-        "DATABASE_URL",
-        "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot",
+    database_url = require_disposable_order_database_url(
+        os.environ.get("DATABASE_URL", DISPOSABLE_ORDER_DATABASE_URL)
     )
     engine = create_async_engine(database_url, hide_parameters=True)
     async with engine.begin() as connection:
