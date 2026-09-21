@@ -27,6 +27,8 @@ from nyan_shop_bot.suppliers.roboticvn import (
     WalletCurrencyCode,
 )
 
+_DECIMAL_CAPACITY_NUMBER = b"1e999999999999999999999999999999999999"
+
 
 def encoded(value: object) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -325,6 +327,25 @@ async def test_timeout_transport_malformed_and_schema_failures_are_typed_without
     assert result.attempts == 1
     assert result.retryable is False
     assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_decimal_capacity_failure_is_typed_redacted_and_never_retried(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    body = b'{"data":{"vnd":' + _DECIMAL_CAPACITY_NUMBER + b"}}"
+    transport = FakeTransport([RoboticvnResponse(200, body)])
+
+    with caplog.at_level(logging.DEBUG):
+        outcome = await adapter(transport).get_wallet_balance()
+
+    assert outcome == ReadFailure(OutcomeCode.UNSUPPORTED_SCHEMA)
+    assert outcome.attempts == 1
+    assert outcome.retryable is False
+    assert len(transport.requests) == 1
+    combined = repr(outcome) + caplog.text
+    assert _DECIMAL_CAPACITY_NUMBER.decode() not in combined
+    assert body.decode() not in combined
 
 
 @pytest.mark.asyncio

@@ -8,7 +8,7 @@ import unicodedata
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from enum import Enum, StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Never
@@ -424,6 +424,8 @@ def _decode_json(body: bytes) -> Any:
             parse_constant=_reject_json_constant,
             object_pairs_hook=_unique_object,
         )
+    except DecimalException:
+        raise UnsupportedSchemaError("response", "contains an unsupported JSON number") from None
     except (UnicodeDecodeError, ValueError, RecursionError, MemoryError):
         raise MalformedJsonError from None
 

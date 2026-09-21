@@ -22,6 +22,8 @@ from nyan_shop_bot.suppliers.roboticvn import (
     parse_wallet_transactions,
 )
 
+_DECIMAL_CAPACITY_NUMBER = b"1e999999999999999999999999999999999999"
+
 
 def encoded(value: object) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -243,6 +245,37 @@ def test_variant_decimal_prices_become_typed_gap_without_amount_or_float() -> No
     }
     assert not hasattr(projection, "amount")
     assert not hasattr(projection, "amount_minor")
+
+
+@pytest.mark.parametrize(
+    "parser,raw_body",
+    [
+        (
+            parse_product_detail,
+            b'{"data":{"variants":[{"id":"v-1","title":"Synthetic",'
+            b'"prices":{"vnd":'
+            + _DECIMAL_CAPACITY_NUMBER
+            + b'},"in_stock":true,"available_quantity":1}]}}',
+        ),
+        (parse_wallet_balance, b'{"data":{"vnd":' + _DECIMAL_CAPACITY_NUMBER + b"}}"),
+        (
+            parse_wallet_transactions,
+            b'{"data":[{"amount":'
+            + _DECIMAL_CAPACITY_NUMBER
+            + b',"currency_code":"vnd"}],"meta":{"count":1,"limit":20,"offset":0}}',
+        ),
+    ],
+)
+def test_decimal_capacity_failures_are_typed_and_redacted(
+    parser: Any,
+    raw_body: bytes,
+) -> None:
+    with pytest.raises(UnsupportedSchemaError) as caught:
+        parser(raw_body)
+
+    combined = str(caught.value) + repr(caught.value)
+    assert _DECIMAL_CAPACITY_NUMBER.decode() not in combined
+    assert raw_body.decode() not in combined
 
 
 def test_wallet_balance_accepts_extensions_and_fails_closed_on_all_numeric_values() -> None:
