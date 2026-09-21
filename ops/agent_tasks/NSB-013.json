@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "task_id": "NSB-013",
+  "issue_number": 5,
+  "issue_url": "https://github.com/NhanDuong21/nyan-shop-bot/issues/5",
+  "repository": "NhanDuong21/nyan-shop-bot",
+  "title": "Roboticvn schema audit and read-only adapter",
+  "base_ref": "main",
+  "pr_base": "main",
+  "branch": "nyan/nsb-013-roboticvn-readonly",
+  "worker": "codex",
+  "worker_model": "gpt-5.6-sol",
+  "reviewer_model": "codex-auto-review",
+  "role": "backend",
+  "risk": "high",
+  "queue_phase": "M1",
+  "queue_eligible": true,
+  "trusted_prompt": "Implement a dependency-free, offline-testable Roboticvn v2 read adapter and a sanitized provenance note inside the granted paths only. This prompt is the worker's source of truth; do not browse or call the live supplier, use a real credential, commit the raw partner document or raw OpenAPI, or infer fields or guarantees absent here. The coordinator compared Nyan's local pasted Swagger snapshot (SHA-256 09be6d7dd099c57115ecd611d67bc0a28b0dcb12634b7435051d98e20db0cc9f) with a credential-free GET of https://api.roboticvn.com/api/v2/docs/openapi.json at 2026-09-21T03:05:06Z. The public response was HTTP 200 application/json, 19,482 raw bytes, OpenAPI 3.0.3, API title Roboticvn Customer API, version 2.2.0, and raw-byte SHA-256 22de68f114b6c30e68cc88ded579bf4b77632f43bc67fe9c74bbe60f8cdb1930. Record only those sanitized facts, the enabled read boundary, and the gaps below in docs/provenance; do not copy schemas, examples, credentials, delivery data, or partner prose wholesale. The documented production origin is https://api.roboticvn.com and every data path includes /api/v2. Global authentication is the x-api-key header. The key must never appear in a URL, repr, exception, log, fixture, snapshot, provenance note, or frontend-facing value. There must be no concrete/default network client: all requests use an injected transport, and tests use only fakes that cannot open a socket. The only constructible operations are GET /api/v2/products, GET /api/v2/products/{id}, GET /api/v2/wallet/balance, and GET /api/v2/wallet/transactions. Do not implement /api/v2/me because it is outside Issue #5's granted product/variant/wallet scope. Products accepts limit integer default 20, minimum 1, maximum 100; offset integer default 0, minimum 0; optional search string; optional category_id string; and optional locale exactly vi-VN or en-US. Wallet transactions accepts currency_code exactly vnd or usd with documented default vnd, plus the same limit/offset bounds and optional locale. Product detail and wallet balance accept optional locale. Build each URL from one deterministic ordered parameter sequence and test the exact emitted URL. Validate identifiers as non-empty single path segments, percent-encode them, and reject dot segments, slash/backslash separators, control characters, encoded path separators, and normalization escapes before transport. The products 200 envelope is an object requiring data and meta. Its inline schema does not set additionalProperties false, so accept extension members at the envelope level rather than inventing a rejection rule. data is an array of ProductSummary objects; each summary requires string id and string title and explicitly rejects additional properties. meta is PaginationMeta requiring integer count, limit, and offset; PaginationMeta also does not set additionalProperties false, so accept its extension members. The product-detail 200 envelope requires data referencing Product and likewise accepts envelope extension members because it does not set additionalProperties false. Product rejects additional properties, but the public schema declares no Product field required: id, title, nullable description, nullable thumbnail, boolean in_stock, and the variants array are therefore optional and must not be silently defaulted or promoted to upstream-required. When variants is present, each ProductVariant rejects additional properties and requires string id, string title, prices object, boolean in_stock, and integer available_quantity; nullable description, delivery_instructions, and reseller_notes are optional. Keep product and variant identities distinct and reject booleans where integers are required. The source defines variant prices and wallet balance as currency-keyed objects whose values are OpenAPI number, and transaction amount as number plus currency_code, but it defines neither precision/scale nor whether values are major or minor units. Repository policy requires integer minor units with explicit currency and forbids float. Therefore never parse these with binary float, never guess a scale, never map them to shared Money, and never expose or persist a guessed amount. Preserve useful non-money product/variant identity and stock fields while returning an explicit typed unsupported-monetary-projection result for variant prices. Wallet balance and transaction amount projections must fail closed with the same explicit unit/scale gap; their request construction, pagination validation, envelope validation, error handling, and redaction remain testable. Do not convert USD or VND using an assumed exponent. The wallet-balance 200 envelope is an object requiring data referencing Balance and accepts envelope extension members because it does not set additionalProperties false. Balance is an object whose currency-keyed additional-property values are number and it declares no required currency. The wallet-transactions 200 envelope is an object requiring data and meta, accepts envelope extension members because it does not set additionalProperties false, defines data as an array of WalletTransaction, and references PaginationMeta for meta with the extension semantics above. WalletTransaction explicitly rejects additional properties but declares no fields required; its possible fields are type enum credit/debit, reason enum topup/refund/purchase/adjustment/other, description string, amount number, currency_code string, and created_at date-time. Do not invent missing fields or use transaction reason to enable a write. The OpenAPI maps 400, 401, 404, 429, and 500 to the Error envelope. It documents no Retry-After header, retry interval, or retry guarantee. Surface typed, redacted outcomes for those statuses, timeout, malformed JSON, and unsupported schema; do not automatically retry, sleep, or expose response bodies. The pasted Swagger rendered blank request-body schema sections for POST quote, POST orders, and POST topup. The current public OpenAPI now marks those bodies required and references ProductQuoteRequest, CreateOrderRequest, and TopupRequest, respectively, but this task does not authorize those operations and does not establish idempotency, uncertain-outcome reconciliation, supplier-obligation, settlement, or delivery-credential safety. Record that audit delta without implementing any write. Do not construct or call quote, orders, order history/detail/payment status, delivery, top-up, purchase, payment, or refund operations. Sensitive delivery remains a separate disabled endpoint. Expose catalog read/detail capabilities only for the supported non-money projections; keep purchase, payment, top-up, refund, and delivery capabilities disabled. Add synthetic tests for provenance constants, API-key placement/redaction, exact /api/v2 paths and ordered queries, bounds and locale/currency enums, path-normalization rejection, required envelope members, permitted envelope/meta extensions, and additional-property rejection only where the OpenAPI explicitly sets it, Product's documented optionality, distinct product/variant identities, required variant stock fields, explicit unsupported monetary unit/scale behavior without float, wallet request construction and fail-closed monetary projection, 400/401/404/429/500/timeout/malformed responses with no retry, absence of every quote/order/top-up/delivery/write operation, and an outbound-network guard. Run only repository-provided checks; never execute supplier examples or make a real supplier request.",
+  "acceptance_criteria": [
+    "A sanitized provenance note records the two source checksums, public fetch metadata, enabled GET boundary, and request-body audit delta without publishing raw partner/OpenAPI content or sensitive examples.",
+    "Only the four authorized /api/v2 GET operations are constructible through an injected transport; exact paths, ordered query parameters, bounds, locale/currency enums, and hostile product identifiers are tested offline.",
+    "Product and wallet parsing enforces documented required envelope members, permits extensions where OpenAPI omits additionalProperties false, rejects extras only in schemas that explicitly forbid them, keeps product and variant identities distinct, and preserves non-money stock fields.",
+    "Numeric variant prices, wallet balances, and wallet transaction amounts never use float or an assumed currency scale; the missing major/minor-unit contract produces an explicit typed unsupported monetary projection instead of guessed shared Money values.",
+    "API keys and response bodies are redacted; 400, 401, 404, 429, 500, timeout, malformed JSON, and unsupported schema outcomes are typed and no automatic retry or real sleep occurs.",
+    "No account, quote, order, order-history, payment-status, purchase, payment, top-up, refund, delivery, live supplier transport, or production credential path exists and all write/money/delivery capabilities remain disabled.",
+    "Focused Roboticvn tests, security checks, and full repository verification pass without credentials or outbound supplier traffic."
+  ],
+  "allowed_paths": [
+    "src/nyan_shop_bot/suppliers/roboticvn/**",
+    "tests/suppliers/roboticvn/**",
+    "docs/provenance/**"
+  ],
+  "required_checks": [
+    "ci-gate"
+  ],
+  "dependencies": [
+    2
+  ],
+  "auto_merge_eligible": false,
+  "budget": {
+    "max_agent_invocations": 5,
+    "max_total_tokens": 500000,
+    "max_worker_tokens": 500000,
+    "max_reviewer_tokens": 200000,
+    "max_elapsed_seconds": 10800,
+    "max_fix_rounds": 3,
+    "ci_timeout_seconds": 3600,
+    "poll_initial_seconds": 10,
+    "poll_max_seconds": 60
+  }
+}
