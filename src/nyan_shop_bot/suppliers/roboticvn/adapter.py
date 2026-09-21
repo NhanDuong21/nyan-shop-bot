@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import math
-import unicodedata
 from collections.abc import Callable
 from enum import StrEnum
 from typing import Protocol
-from urllib.parse import quote, unquote, urlencode
+from urllib.parse import quote, urlencode
 
 from nyan_shop_bot.catalog.models import Capability, CapabilityStatus, SupplierCapabilities
 from nyan_shop_bot.suppliers.roboticvn.models import (
@@ -22,6 +21,7 @@ from nyan_shop_bot.suppliers.roboticvn.models import (
     RoboticvnRequest,
     RoboticvnResponse,
     UnsupportedSchemaError,
+    _is_safe_product_path_segment,
     parse_product_detail,
     parse_product_list,
     parse_wallet_balance,
@@ -106,36 +106,8 @@ def _currency(value: str | WalletCurrencyCode) -> str:
     return str(value)
 
 
-def _contains_control(value: str) -> bool:
-    return any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in value)
-
-
-def _reject_unsafe_segment_form(value: str) -> None:
-    normalized = unicodedata.normalize("NFKC", value)
-    for candidate in (value, normalized):
-        if candidate in {".", ".."} or "/" in candidate or "\\" in candidate:
-            raise RoboticvnConfigurationError("Product ID must be one non-empty, path-safe segment")
-        if _contains_control(candidate):
-            raise RoboticvnConfigurationError("Product ID must be one non-empty, path-safe segment")
-
-
 def _encoded_product_id(value: str) -> str:
-    if type(value) is not str or not value:
-        raise RoboticvnConfigurationError("Product ID must be one non-empty, path-safe segment")
-
-    candidate = value
-    for _ in range(len(value) + 1):
-        _reject_unsafe_segment_form(candidate)
-        try:
-            decoded = unquote(candidate, errors="strict")
-        except UnicodeDecodeError:
-            raise RoboticvnConfigurationError(
-                "Product ID must be one non-empty, path-safe segment"
-            ) from None
-        if decoded == candidate:
-            break
-        candidate = decoded
-    else:
+    if type(value) is not str or not _is_safe_product_path_segment(value):
         raise RoboticvnConfigurationError("Product ID must be one non-empty, path-safe segment")
     return quote(value, safe="")
 

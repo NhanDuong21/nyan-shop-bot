@@ -307,6 +307,8 @@ def test_wallet_transactions_preserve_non_money_fields_and_discard_amount() -> N
     [
         "2026-09-21t03:05:06z",
         "2026-09-21t03:05:06.125+07:00",
+        "2026-09-21T03:05:06+23:59",
+        "2026-09-21T03:05:06-23:59",
     ],
 )
 def test_wallet_transaction_accepts_lowercase_rfc3339_markers_and_preserves_source(
@@ -347,6 +349,10 @@ def test_wallet_transaction_declares_no_required_fields() -> None:
         {"created_at": "2026-09-21t24:00:00z"},
         {"created_at": "2026-09-21t03:60:00z"},
         {"created_at": "2026-09-21t03:05:60z"},
+        {"created_at": "2026-09-21T03:05:06+00:60"},
+        {"created_at": "2026-09-21T03:05:06-00:60"},
+        {"created_at": "2026-09-21T03:05:06+24:00"},
+        {"created_at": "2026-09-21T03:05:06-24:00"},
         {"unexpected": "forbidden"},
     ],
 )

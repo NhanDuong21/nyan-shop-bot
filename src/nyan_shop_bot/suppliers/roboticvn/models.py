@@ -12,7 +12,7 @@ from decimal import Decimal
 from enum import Enum, StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Never
-from urllib.parse import parse_qsl, unquote, unquote_plus, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 from nyan_shop_bot.suppliers.roboticvn.provenance import (
     API_PREFIX,
@@ -85,6 +85,28 @@ class SensitiveHeaders(Mapping[str, str]):
     __str__ = __repr__
 
 
+def _is_safe_product_path_segment(segment: str) -> bool:
+    if not segment:
+        return False
+
+    candidate = segment
+    for _ in range(len(segment) + 1):
+        normalized = unicodedata.normalize("NFKC", candidate)
+        for form in (candidate, normalized):
+            if form in {".", ".."} or "/" in form or "\\" in form:
+                return False
+            if any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in form):
+                return False
+        try:
+            decoded = unquote(normalized, errors="strict")
+        except UnicodeDecodeError:
+            return False
+        if decoded == candidate:
+            return True
+        candidate = decoded
+    return False
+
+
 def _request_path_is_authorized(path: str) -> bool:
     static_paths = {
         f"{API_PREFIX}/products",
@@ -97,43 +119,20 @@ def _request_path_is_authorized(path: str) -> bool:
     if not path.startswith(detail_prefix):
         return False
     segment = path.removeprefix(detail_prefix)
-    if not segment or "/" in segment or "\\" in segment:
-        return False
-    for _ in range(len(segment) + 1):
-        try:
-            decoded = unquote(segment, errors="strict")
-        except UnicodeDecodeError:
-            return False
-        normalized = unicodedata.normalize("NFKC", decoded)
-        if (
-            decoded in {".", ".."}
-            or normalized in {".", ".."}
-            or "/" in decoded
-            or "\\" in decoded
-            or "/" in normalized
-            or "\\" in normalized
-            or any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in decoded)
-        ):
-            return False
-        if decoded == segment:
-            return True
-        segment = decoded
-    return False
+    return _is_safe_product_path_segment(segment)
 
 
-def _request_target_contains_api_key(url: str, api_key: str) -> bool:
-    candidate = url
-    for _ in range(len(url) + 1):
-        if api_key in candidate:
-            return True
-        try:
-            decoded = unquote_plus(candidate, errors="strict")
-        except UnicodeDecodeError:
-            raise RoboticvnConfigurationError("Roboticvn request target is invalid") from None
-        if decoded == candidate:
-            return False
-        candidate = decoded
-    return True
+def _request_target_contains_api_key(
+    url: str,
+    decoded_path: str,
+    query_fields: list[tuple[str, str]],
+    api_key: str,
+) -> bool:
+    return (
+        api_key in url
+        or api_key in decoded_path
+        or any(api_key in component for pair in query_fields for component in pair)
+    )
 
 
 def _validate_request_target(url: str, api_key: str) -> None:
@@ -142,7 +141,9 @@ def _validate_request_target(url: str, api_key: str) -> None:
     try:
         target = urlsplit(url)
         port = target.port
-    except ValueError:
+        decoded_path = unquote(target.path, errors="strict")
+        query_fields = parse_qsl(target.query, keep_blank_values=True, errors="strict")
+    except (UnicodeDecodeError, ValueError):
         raise RoboticvnConfigurationError("Roboticvn request target is invalid") from None
     if (
         target.scheme != "https"
@@ -155,12 +156,9 @@ def _validate_request_target(url: str, api_key: str) -> None:
         or not _request_path_is_authorized(target.path)
     ):
         raise RoboticvnConfigurationError("Roboticvn request target is not an authorized read")
-    if any(
-        name.casefold() == GLOBAL_AUTH_HEADER
-        for name, _ in parse_qsl(target.query, keep_blank_values=True)
-    ):
+    if any(name.casefold() == GLOBAL_AUTH_HEADER for name, _ in query_fields):
         raise RoboticvnConfigurationError("API key must not be placed in the request URL")
-    if _request_target_contains_api_key(url, api_key):
+    if _request_target_contains_api_key(url, decoded_path, query_fields, api_key):
         raise RoboticvnConfigurationError("API key must not appear in the request URL")
 
 
@@ -589,6 +587,8 @@ def _date_time(value: object, location: str) -> str:
     if not _RFC3339.fullmatch(text):
         raise UnsupportedSchemaError(location, "expected an RFC 3339 date-time")
     if int(text[11:13]) > 23:
+        raise UnsupportedSchemaError(location, "expected an RFC 3339 date-time")
+    if text[-1] not in {"Z", "z"} and (int(text[-5:-3]) > 23 or int(text[-2:]) > 59):
         raise UnsupportedSchemaError(location, "expected an RFC 3339 date-time")
     normalized = text[:10] + "T" + text[11:]
     if normalized.endswith(("Z", "z")):

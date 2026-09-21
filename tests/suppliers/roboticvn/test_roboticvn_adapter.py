@@ -7,7 +7,6 @@ import json
 import logging
 import socket
 from collections.abc import Iterable
-from urllib.parse import quote, quote_plus
 
 import pytest
 
@@ -233,6 +232,14 @@ async def test_query_bounds_and_enums_fail_before_transport(
         "%252e%252e",
         "%c0%af",
         "%ef%bc%8f",
+        "\uff052e",
+        "\uff052e\uff052e",
+        "\uff05252e",
+        "%ef%bc%852e",
+        "%25ef%25bc%25852e",
+        "safe\uff052funsafe",
+        "safe\uff055cunsafe",
+        "\uff052500",
         "\uff0f",
         "\uff3c",
         "\uff0e\uff0e",
@@ -353,9 +360,8 @@ async def test_api_key_exists_only_in_redacted_header_mapping(
     "method,kwargs",
     [
         ("list_products", {"search": "api key+private-marker"}),
-        ("list_products", {"category_id": quote_plus("api key+private-marker", safe="")}),
+        ("list_products", {"category_id": "api key+private-marker"}),
         ("get_product", {"product_id": "api key+private-marker"}),
-        ("get_product", {"product_id": quote("api key+private-marker", safe="")}),
     ],
 )
 @pytest.mark.asyncio
@@ -373,6 +379,42 @@ async def test_api_key_repeated_in_query_or_path_never_reaches_transport(
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
     assert transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_api_key_guard_uses_single_decode_component_semantics() -> None:
+    secret = "alpha beta"
+    transport = FakeTransport(
+        [
+            RoboticvnResponse(200, product_body()),
+            RoboticvnResponse(200, product_body()),
+            RoboticvnResponse(200, products_body()),
+        ]
+    )
+    client = adapter(transport, key=secret)
+
+    outcomes = (
+        await client.get_product("alpha+beta"),
+        await client.get_product("alpha%20beta"),
+        await client.list_products(search="alpha%20beta"),
+    )
+
+    assert all(isinstance(outcome, ReadSuccess) for outcome in outcomes)
+    assert [request.url for request in transport.requests] == [
+        PRODUCTION_ORIGIN + "/api/v2/products/alpha%2Bbeta",
+        PRODUCTION_ORIGIN + "/api/v2/products/alpha%2520beta",
+        PRODUCTION_ORIGIN + "/api/v2/products?limit=20&offset=0&search=alpha%2520beta",
+    ]
+
+
+def test_raw_request_preserves_literal_plus_path_semantics() -> None:
+    request = RoboticvnRequest(
+        method="GET",
+        url=PRODUCTION_ORIGIN + "/api/v2/products/alpha+beta",
+        headers={GLOBAL_AUTH_HEADER: "alpha beta"},
+    )
+
+    assert request.url.endswith("/alpha+beta")
 
 
 def test_raw_response_representation_hides_body_and_headers() -> None:
@@ -511,6 +553,26 @@ def test_raw_request_model_cannot_construct_an_unauthorized_or_misplaced_key_tar
     with pytest.raises(RoboticvnConfigurationError) as caught:
         RoboticvnRequest(method="GET", url=url, headers=headers)
     assert "url-secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "segment",
+    [
+        "\uff052e",
+        "\uff05252e",
+        "%ef%bc%852e",
+        "%25ef%25bc%25852e",
+        "safe\uff052funsafe",
+        "safe\uff055cunsafe",
+    ],
+)
+def test_raw_request_rejects_nfkc_percent_decode_path_escapes(segment: str) -> None:
+    with pytest.raises(RoboticvnConfigurationError):
+        RoboticvnRequest(
+            method="GET",
+            url=PRODUCTION_ORIGIN + "/api/v2/products/" + segment,
+            headers={GLOBAL_AUTH_HEADER: "synthetic"},
+        )
 
 
 @pytest.mark.asyncio
