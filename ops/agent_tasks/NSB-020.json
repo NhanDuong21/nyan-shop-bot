@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "task_id": "NSB-020",
+  "issue_number": 8,
+  "issue_url": "https://github.com/NhanDuong21/nyan-shop-bot/issues/8",
+  "repository": "NhanDuong21/nyan-shop-bot",
+  "title": "Order orchestration, dedupe, and reconciliation with fake supplier",
+  "base_ref": "main",
+  "pr_base": "main",
+  "branch": "nyan/nsb-020-fake-order-orchestration",
+  "worker": "codex",
+  "worker_model": "gpt-5.6-sol",
+  "reviewer_model": "codex-auto-review",
+  "role": "backend",
+  "risk": "high",
+  "queue_phase": "M2",
+  "queue_eligible": true,
+  "trusted_prompt": "Implement Issue #8 only inside the granted order source and test paths, on top of the coordinator-owned 20260921_0002 migration already present on main. Do not edit migrations, database/config entry points, API, bot, admin, catalog, supplier adapters, workflows, runner, dependencies, or shared verification scripts. This is a deterministic fake-supplier orchestration only: do not browse, open a socket, call Telegram or any live supplier, import or invoke VietShare/KhoMMO/Roboticvn write operations, read a production credential, create a public checkout endpoint, or deploy anything. Keep SUPPLIER_MODE=mock, PAYMENT_MODE=disabled, and ALLOW_REAL_PURCHASES=false, and add a fail-closed execution guard so the orchestration cannot run when those values are not the safe defaults. Model money only as integer minor units with explicit currency and unit; reject float, negative amounts, currency/unit mismatches, invalid quantity, and empty/unbounded identities. Build injected ports plus deterministic in-memory fakes and a PostgreSQL repository using the existing SQLAlchemy async dependency only. Inject the existing CatalogReader and re-resolve every requested product and variant before persistence or dispatch; client input is only an opaque product/variant identity, positive quantity, idempotency key, and maximum acceptable unit price. Product name, supplier mapping, current price, currency, unit, stock, and availability come only from the current server-side CatalogDetailFound object. Persist the server-derived unit-price snapshot separately from the client price cap, reject missing/unsupported/stale identities safely, and never expose SupplierMapping or supplier-side identifiers. The existing tables are the contract: order_intents has one unique idempotency_key and the normalized customer/product/variant/quantity/server-price/max-price snapshot; supplier_order_attempts stores one unique attempt per intent, its stable request_key, canonical request payload and SHA-256 fingerprint before outbound, and its purchase status; delivery_attempts is a separate retry ledger. Use only the declared PREPARED, DISPATCHING, SUCCEEDED, FAILED_SAFE, UNKNOWN, and RECONCILING purchase states and PENDING, SUCCEEDED, and FAILED delivery states. Creating an intent and its PREPARED supplier attempt must be one database transaction committed before any fake supplier call. Reusing the same globally unique opaque idempotency key with the identical canonical request must return the same intent without a second call; reusing it with a different payload must return a typed conflict. The database unique constraints plus transactional compare-and-set/row locking, not a process-local lock, are authoritative under concurrent duplicate clicks or callbacks. Only PREPARED may be claimed once for submit; persist DISPATCHING and commit before invoking purchase. A terminal fake success records the supplier reference and SUCCEEDED once. Explicit price-changed, out-of-stock, or insufficient-balance outcomes are FAILED_SAFE and are never retried or failed over automatically. A timeout, cancellation after dispatch, accepted/non-terminal response, exception without proof of non-acceptance, or crash-visible DISPATCHING row becomes UNKNOWN and then RECONCILING; never guess FAILED or SUCCEEDED, never refund, fail over, or call purchase again. Recovery may call only an injected reconciliation operation using the original request identity. Reconciliation may record confirmed success, confirmed safe failure, or remain RECONCILING; missing/ambiguous evidence stays RECONCILING. Do not manufacture supplier semantics: capabilities for idempotency and reconciliation are explicit on the fake port, and unsupported reconciliation remains safely unresolved. Delivery starts only after purchase SUCCEEDED, records a distinct delivery attempt/key, and its retry path may add a delivery attempt but must never call purchase or create another supplier_order_attempt. Do not persist a delivery credential, delivered account material, or secret. Provide deterministic fake outcomes for success, price change, stock failure, balance failure, accepted/unknown, timeout, and reconciliation without real sleep, background scheduler, or network. Add unit tests under tests/unit/orders/** for state transitions, CatalogReader authority and forged client values, canonical request fingerprinting, explicit money boundaries, safe-mode guard, same-key same-payload dedupe, same-key different-payload conflict, concurrent duplicate submission, safe business failures, timeout/accepted/exception uncertainty, crash recovery, reconciliation without repurchase/failover/refund, unsupported reconciliation, and delivery retries that cannot purchase. Add PostgreSQL integration tests under tests/integration/orders/** for migration head/tables and constraints, atomic intent+attempt persistence, cross-instance idempotency under concurrency, payload conflict, one-attempt-per-intent, persisted UNKNOWN/RECONCILING recovery, and independent delivery attempt numbering. Every test must use synthetic data and injected fakes; add a hard outbound-network guard and prove repr/log/error surfaces contain no secret or fulfillment material. Preserve all existing SupplierCapabilities write/payment/top-up/refund/delivery flags outside this fake module as disabled. Run focused order tests, backend verification, database verification when local PostgreSQL is available, security verification, and full repository verify when prerequisites are available; report each command as PASS, FAIL, or NOT RUN without turning missing PostgreSQL into a claimed pass.",
+  "acceptance_criteria": [
+    "A PostgreSQL-backed order service re-resolves product/variant data through CatalogReader and atomically persists one normalized server-price intent plus one PREPARED supplier attempt before any injected fake purchase call, with database-enforced idempotency across concurrent callers.",
+    "The same idempotency key and canonical payload returns the existing intent without another obligation; a different payload produces a typed conflict and cannot overwrite or create an attempt.",
+    "Price change, out-of-stock, and insufficient-balance outcomes fail safely; timeout, accepted/non-terminal, ambiguous exception, and crash-visible in-flight work become UNKNOWN/RECONCILING and never trigger automatic purchase retry, failover, refund, or guessed completion.",
+    "Recovery uses only the original request identity and an explicit reconciliation capability; confirmed outcomes are recorded once and absent or ambiguous evidence remains unresolved.",
+    "Delivery attempts are persisted and retried independently after purchase success, and no delivery path can call purchase or create another supplier order attempt.",
+    "All money uses integer minor units plus explicit currency/unit; fake capabilities are explicit; safe environment guards reject non-mock, payment-enabled, or real-purchase execution.",
+    "Unit and PostgreSQL integration tests cover duplicate callbacks, cross-instance concurrency, transaction rollback, crash recovery, UNKNOWN/RECONCILING, price/stock/balance failures, delivery retry separation, and a hard outbound-network guard.",
+    "Focused order tests, backend/database/security verification, and full repository verification pass where their prerequisites exist, with unavailable local PostgreSQL reported as NOT RUN rather than PASS."
+  ],
+  "allowed_paths": [
+    "src/nyan_shop_bot/orders/**",
+    "tests/unit/orders/**",
+    "tests/integration/orders/**"
+  ],
+  "required_checks": [
+    "ci-gate"
+  ],
+  "dependencies": [
+    2
+  ],
+  "auto_merge_eligible": false,
+  "budget": {
+    "max_agent_invocations": 4,
+    "max_total_tokens": 600000,
+    "max_worker_tokens": 600000,
+    "max_reviewer_tokens": 400000,
+    "max_elapsed_seconds": 10800,
+    "max_fix_rounds": 1,
+    "ci_timeout_seconds": 3600,
+    "poll_initial_seconds": 10,
+    "poll_max_seconds": 60
+  }
+}
