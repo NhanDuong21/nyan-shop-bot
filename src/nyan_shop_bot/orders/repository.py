@@ -419,7 +419,7 @@ class PostgresOrderRepository:
         intent_id = (await session.execute(statement)).scalar_one_or_none()
         if intent_id is None:
             raise PersistenceInvariantError
-        return await self._load(session, str(intent_id), for_update=False)
+        return await self._load(session, str(intent_id), for_update=for_update)
 
     async def _load(
         self,
@@ -431,6 +431,12 @@ class PostgresOrderRepository:
         intent_statement = sa.select(_order_intents).where(_order_intents.c.id == intent_id)
         if for_update:
             intent_statement = intent_statement.with_for_update()
+        else:
+            # Every purchase transition takes an exclusive lock on this row before
+            # updating both the intent and supplier attempt. A shared lock keeps the
+            # two following reads on one side of that transition under READ COMMITTED,
+            # so callers cannot observe a torn aggregate.
+            intent_statement = intent_statement.with_for_update(read=True)
         intent_row = (await session.execute(intent_statement)).mappings().one_or_none()
         if intent_row is None:
             raise OrderNotFound

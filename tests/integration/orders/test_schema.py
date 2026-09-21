@@ -7,6 +7,22 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from tests.integration.orders.support import require_disposable_order_database_url
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "database_url",
+    (
+        "postgresql+asyncpg://db.example.invalid:5432/shop",
+        "postgresql+asyncpg://127.0.0.1:5432/other",
+        "postgresql+asyncpg://127.0.0.1:5432/nyan_shop_bot?ssl=require",
+    ),
+)
+def test_order_fixture_rejects_unapproved_database(database_url: str) -> None:
+    with pytest.raises(RuntimeError, match="unapproved order integration database"):
+        require_disposable_order_database_url(database_url)
+
 
 @pytest.mark.integration
 async def test_order_migration_is_head_with_expected_tables_and_constraints(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from typing import Any
 
 import pytest
 from sqlalchemy import text
@@ -294,3 +295,76 @@ async def test_delivery_numbering_is_independent_across_repository_instances(
     ]
     assert supplier_attempts == 1
     assert supplier.purchase_calls == 1
+
+
+@pytest.mark.integration
+async def test_read_snapshot_blocks_transition_instead_of_tearing(
+    postgres_engine: AsyncEngine,
+    postgres_sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    candidate = prepared_candidate(key="read-snapshot-lock")
+    await PostgresOrderRepository(postgres_sessions).prepare(candidate)
+    reader_has_lock = asyncio.Event()
+    release_reader = asyncio.Event()
+    writer_entered_execute = asyncio.Event()
+
+    class PausingReadSession(AsyncSession):
+        async def execute(
+            self,
+            statement: Any,
+            params: Any = None,
+            **kwargs: Any,
+        ) -> Any:
+            result = await super().execute(statement, params, **kwargs)
+            if not self.info.get("paused_after_intent"):
+                self.info["paused_after_intent"] = True
+                reader_has_lock.set()
+                await release_reader.wait()
+            return result
+
+    class SignallingWriterSession(AsyncSession):
+        async def execute(
+            self,
+            statement: Any,
+            params: Any = None,
+            **kwargs: Any,
+        ) -> Any:
+            if not self.info.get("signalled_execute"):
+                self.info["signalled_execute"] = True
+                writer_entered_execute.set()
+            return await super().execute(statement, params, **kwargs)
+
+    reader_sessions = async_sessionmaker(
+        postgres_engine,
+        class_=PausingReadSession,
+        expire_on_commit=False,
+    )
+    writer_sessions = async_sessionmaker(
+        postgres_engine,
+        class_=SignallingWriterSession,
+        expire_on_commit=False,
+    )
+    reader = PostgresOrderRepository(reader_sessions)
+    writer = PostgresOrderRepository(writer_sessions)
+
+    reader_task = asyncio.create_task(reader.get(candidate.intent.id))
+    await asyncio.wait_for(reader_has_lock.wait(), timeout=2)
+    writer_task = asyncio.create_task(writer.claim_prepared(candidate.intent.id))
+    await asyncio.wait_for(writer_entered_execute.wait(), timeout=2)
+
+    writer_was_blocked = False
+    try:
+        await asyncio.wait_for(asyncio.shield(writer_task), timeout=0.2)
+    except TimeoutError:
+        writer_was_blocked = True
+    finally:
+        release_reader.set()
+
+    read_snapshot = await asyncio.wait_for(reader_task, timeout=2)
+    claimed = await asyncio.wait_for(writer_task, timeout=2)
+
+    assert writer_was_blocked
+    assert read_snapshot.intent.purchase_state is PurchaseState.PREPARED
+    assert read_snapshot.supplier_attempt.status is PurchaseState.PREPARED
+    assert claimed is not None
+    assert claimed.intent.purchase_state is PurchaseState.DISPATCHING
