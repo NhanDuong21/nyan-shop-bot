@@ -14,9 +14,9 @@ from tests.integration.orders.support import require_disposable_order_database_u
 @pytest.mark.parametrize(
     "database_url",
     (
-        "postgresql+asyncpg://synthetic:synthetic@db.example.invalid:5432/shop",
-        "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/other",
-        "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot?ssl=require",
+        "postgresql+asyncpg://db.example.invalid:5432/shop",
+        "postgresql+asyncpg://127.0.0.1:5432/other",
+        "postgresql+asyncpg://127.0.0.1:5432/nyan_shop_bot?ssl=require",
     ),
 )
 def test_order_fixture_rejects_unapproved_database(database_url: str) -> None:
