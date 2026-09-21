@@ -48,6 +48,12 @@ class ReviewVerdict(StrEnum):
     BLOCKED = "BLOCKED"
 
 
+class UsageNormalization(StrEnum):
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+    UNKNOWN = "UNKNOWN"
+
+
 class RunPhase(StrEnum):
     CREATED = "CREATED"
     CLAIMED = "CLAIMED"
@@ -95,6 +101,8 @@ class Finding(StrictModel):
 class Budget(StrictModel):
     max_agent_invocations: int = Field(default=5, ge=2, le=8)
     max_total_tokens: int = Field(default=300_000, ge=1_000, le=1_000_000)
+    max_worker_tokens: int | None = Field(default=None, ge=1_000, le=1_000_000)
+    max_reviewer_tokens: int | None = Field(default=None, ge=1_000, le=1_000_000)
     max_elapsed_seconds: int = Field(default=7_200, ge=60, le=43_200)
     max_fix_rounds: int = Field(default=3, ge=0, le=3)
     ci_timeout_seconds: int = Field(default=3_600, ge=60, le=14_400)
@@ -106,6 +114,12 @@ class Budget(StrictModel):
         if self.poll_initial_seconds > self.poll_max_seconds:
             raise ValueError("poll_initial_seconds cannot exceed poll_max_seconds")
         return self
+
+    def token_ceiling(self, role: Literal["worker", "reviewer"]) -> int:
+        """Resolve a role ceiling, falling back to the version-1 shared field."""
+
+        configured = self.max_worker_tokens if role == "worker" else self.max_reviewer_tokens
+        return configured if configured is not None else self.max_total_tokens
 
 
 class TaskSpec(StrictModel):
@@ -253,18 +267,125 @@ class ReviewResult(StrictModel):
         return self
 
 
-class Usage(StrictModel):
-    input_tokens: int = Field(default=0, ge=0)
-    cached_input_tokens: int = Field(default=0, ge=0)
-    output_tokens: int = Field(default=0, ge=0)
-    reasoning_output_tokens: int = Field(default=0, ge=0)
-    reported_total_tokens: int | None = Field(default=None, ge=0)
+class UsageAccounting(StrictModel):
+    """Raw provider telemetry plus the runner's separate enforcement policy value."""
 
-    @property
-    def total(self) -> int:
-        if self.reported_total_tokens is not None:
-            return self.reported_total_tokens
-        return self.input_tokens + self.output_tokens + self.reasoning_output_tokens
+    raw_input_tokens: int | None = Field(default=None, ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
+    fresh_input_tokens: int | None = Field(default=None, ge=0)
+    raw_output_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    raw_provider_total: int | None = Field(default=None, ge=0)
+    normalization_state: UsageNormalization
+    enforceable_tokens: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_normalized_values(self) -> Self:
+        if self.normalization_state is UsageNormalization.COMPLETE:
+            components = (
+                self.raw_input_tokens,
+                self.cached_input_tokens,
+                self.raw_output_tokens,
+                self.reasoning_tokens,
+            )
+            if any(value is None for value in components):
+                raise ValueError("COMPLETE usage requires every raw component")
+            assert self.raw_input_tokens is not None
+            assert self.cached_input_tokens is not None
+            assert self.raw_output_tokens is not None
+            expected_fresh = self.raw_input_tokens - self.cached_input_tokens
+            expected_enforceable = expected_fresh + self.raw_output_tokens
+            if self.fresh_input_tokens != expected_fresh:
+                raise ValueError("fresh input does not match raw input minus cached input")
+            if self.enforceable_tokens != expected_enforceable:
+                raise ValueError("enforceable tokens do not match fresh input plus raw output")
+        if self.normalization_state is UsageNormalization.UNKNOWN:
+            raw_values = (
+                self.raw_input_tokens,
+                self.cached_input_tokens,
+                self.raw_output_tokens,
+                self.reasoning_tokens,
+                self.raw_provider_total,
+            )
+            if any(value is not None for value in raw_values):
+                raise ValueError("UNKNOWN usage cannot contain raw provider telemetry")
+            if self.fresh_input_tokens is not None or self.enforceable_tokens is not None:
+                raise ValueError("UNKNOWN usage cannot contain derived token values")
+        return self
+
+
+class Usage(StrictModel):
+    """Nullable raw telemetry; omitted provider fields never become zero."""
+
+    raw_input_tokens: int | None = Field(default=None, ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
+    raw_output_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    raw_provider_total: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_subset_relationships(self) -> Self:
+        if (
+            self.raw_input_tokens is not None
+            and self.cached_input_tokens is not None
+            and self.cached_input_tokens > self.raw_input_tokens
+        ):
+            raise ValueError("cached input tokens cannot exceed input tokens")
+        if (
+            self.raw_output_tokens is not None
+            and self.reasoning_tokens is not None
+            and self.reasoning_tokens > self.raw_output_tokens
+        ):
+            raise ValueError("reasoning tokens cannot exceed output tokens")
+        return self
+
+    def normalize_codex(self) -> UsageAccounting:
+        """Apply the repository's Codex enforcement formula to complete telemetry."""
+
+        components = (
+            self.raw_input_tokens,
+            self.cached_input_tokens,
+            self.raw_output_tokens,
+            self.reasoning_tokens,
+        )
+        if all(value is not None for value in components):
+            assert self.raw_input_tokens is not None
+            assert self.cached_input_tokens is not None
+            assert self.raw_output_tokens is not None
+            fresh = self.raw_input_tokens - self.cached_input_tokens
+            return UsageAccounting(
+                **self.model_dump(),
+                fresh_input_tokens=fresh,
+                normalization_state=UsageNormalization.COMPLETE,
+                enforceable_tokens=fresh + self.raw_output_tokens,
+            )
+        if all(value is None for value in (*components, self.raw_provider_total)):
+            return UsageAccounting(normalization_state=UsageNormalization.UNKNOWN)
+        partial_fresh: int | None = None
+        if self.raw_input_tokens is not None and self.cached_input_tokens is not None:
+            partial_fresh = self.raw_input_tokens - self.cached_input_tokens
+        return UsageAccounting(
+            **self.model_dump(),
+            fresh_input_tokens=partial_fresh,
+            normalization_state=UsageNormalization.PARTIAL,
+        )
+
+    def normalize_cumulative_provider(self) -> UsageAccounting:
+        """Retain provider fields while deferring cumulative-delta enforcement to storage."""
+
+        raw_values = (
+            self.raw_input_tokens,
+            self.cached_input_tokens,
+            self.raw_output_tokens,
+            self.reasoning_tokens,
+            self.raw_provider_total,
+        )
+        state = (
+            UsageNormalization.UNKNOWN
+            if all(value is None for value in raw_values)
+            else UsageNormalization.PARTIAL
+        )
+        return UsageAccounting(**self.model_dump(), normalization_state=state)
 
 
 class AgentInvocation(StrictModel):
