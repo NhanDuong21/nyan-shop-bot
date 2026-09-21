@@ -68,6 +68,18 @@ def upgrade() -> None:
             name="ck_order_intents_price_nonnegative",
         ),
         sa.CheckConstraint(
+            "unit_price_minor <= max_unit_price_minor",
+            name="ck_order_intents_price_within_cap",
+        ),
+        sa.CheckConstraint(
+            "currency ~ '^[A-Z]{3}$'",
+            name="ck_order_intents_currency_code",
+        ),
+        sa.CheckConstraint(
+            "money_unit = 'minor'",
+            name="ck_order_intents_money_unit_minor",
+        ),
+        sa.CheckConstraint(
             f"purchase_state IN ({_quoted(PURCHASE_STATES)})",
             name="ck_order_intents_purchase_state",
         ),
