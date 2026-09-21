@@ -155,6 +155,22 @@ def test_error_state_rejects_items_or_freshness() -> None:
         )
 
 
+def test_catalog_source_and_mode_cannot_disagree() -> None:
+    with pytest.raises(ValidationError, match="supplier and mode"):
+        CatalogResponse(
+            supplier="khommo",
+            mode="mock",
+            state=CatalogState.ERROR,
+            freshness=None,
+            items=(),
+            error=CatalogError(
+                code=CatalogErrorCode.SOURCE_UNAVAILABLE,
+                message="Synthetic error.",
+                retryable=False,
+            ),
+        )
+
+
 def test_write_capabilities_cannot_be_enabled() -> None:
     enabled = Capability(status=CapabilityStatus.ENABLED, reason=None)
     disabled = Capability(status=CapabilityStatus.DISABLED, reason="Mock-only boundary.")

@@ -10,7 +10,9 @@
       },
       "items": [],
       "mode": "mock",
-      "state": "empty"
+      "read_only": true,
+      "state": "empty",
+      "supplier": "mock"
     },
     "error": {
       "error": {
@@ -21,7 +23,9 @@
       "freshness": null,
       "items": [],
       "mode": "mock",
-      "state": "error"
+      "read_only": true,
+      "state": "error",
+      "supplier": "mock"
     },
     "fresh": {
       "error": null,
@@ -43,6 +47,7 @@
             "currency": "VND",
             "unit": "minor"
           },
+          "read_only": true,
           "supplier": "mock",
           "variants": [
             {
@@ -83,6 +88,7 @@
             "currency": "VND",
             "unit": "minor"
           },
+          "read_only": true,
           "supplier": "mock",
           "variants": [
             {
@@ -123,6 +129,7 @@
             "currency": "VND",
             "unit": "minor"
           },
+          "read_only": true,
           "supplier": "mock",
           "variants": [
             {
@@ -154,7 +161,9 @@
         }
       ],
       "mode": "mock",
-      "state": "fresh"
+      "read_only": true,
+      "state": "fresh",
+      "supplier": "mock"
     },
     "stale": {
       "error": {
@@ -180,6 +189,7 @@
             "currency": "VND",
             "unit": "minor"
           },
+          "read_only": true,
           "supplier": "mock",
           "variants": [
             {
@@ -220,6 +230,7 @@
             "currency": "VND",
             "unit": "minor"
           },
+          "read_only": true,
           "supplier": "mock",
           "variants": [
             {
@@ -260,6 +271,7 @@
             "currency": "VND",
             "unit": "minor"
           },
+          "read_only": true,
           "supplier": "mock",
           "variants": [
             {
@@ -291,7 +303,9 @@
         }
       ],
       "mode": "mock",
-      "state": "stale"
+      "read_only": true,
+      "state": "stale",
+      "supplier": "mock"
     }
   },
   "schema_version": 1,

@@ -6,6 +6,10 @@ import { useAdminTheme } from "./theme";
 export function App() {
   const catalog = useCatalogState();
   const theme = useAdminTheme();
+  const supplier = catalog.state.supplier;
+  const environmentLabel =
+    supplier.kind === "ready" ? supplier.mode.toLocaleUpperCase("vi-VN") : "LOADING";
+  const isLiveRead = supplier.kind === "ready" && supplier.mode === "khommo-readonly";
 
   return (
     <div className="app-shell">
@@ -23,8 +27,8 @@ export function App() {
           </div>
         </div>
         <div className="app-actions">
-          <span className="environment-badge" aria-label="Môi trường mock">
-            MOCK
+          <span className="environment-badge" aria-label={`Môi trường ${environmentLabel}`}>
+            {environmentLabel}
           </span>
           <span className="environment-badge environment-badge-muted">READ-ONLY</span>
           <ThemeToggle theme={theme.theme} onToggle={theme.toggleTheme} />
@@ -33,7 +37,11 @@ export function App() {
 
       <aside className="environment-notice" role="note">
         <strong>Môi trường thử nghiệm chỉ chạy trên localhost.</strong>
-        <span> Không mua hàng, thanh toán hoặc gọi supplier thật.</span>
+        <span>
+          {isLiveRead
+            ? " KhoMMO chỉ cho phép đọc catalog; mua hàng, thanh toán và giao hàng vẫn bị khóa."
+            : " Không mua hàng, thanh toán hoặc gọi supplier thật."}
+        </span>
       </aside>
 
       <AdminDashboard state={catalog.state} onRetry={catalog.retry} />

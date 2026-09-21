@@ -5,7 +5,8 @@ from httpx import ASGITransport, AsyncClient
 from nyan_shop_bot.catalog.mock import FakeCatalogReader, FakeCatalogScenario
 from nyan_shop_bot.catalog.ports import CatalogReader
 from nyan_shop_bot.config import Settings
-from nyan_shop_bot.main import create_app
+from nyan_shop_bot.main import build_catalog_reader, create_app
+from nyan_shop_bot.suppliers.khommo import KhoMmoCatalogReader
 
 
 class ReadyDatabase:
@@ -32,7 +33,27 @@ async def test_health_exposes_safety_state() -> None:
         "supplier_mode": "mock",
         "payment_mode": "disabled",
         "allow_real_purchases": False,
+        "read_only": True,
     }
+
+
+async def test_live_read_factory_constructs_khommo_without_contacting_supplier() -> None:
+    secret = "local-secret-marker"
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        supplier_mode="khommo-readonly",
+        khommo_api_token=secret,
+        payment_mode="disabled",
+        allow_real_purchases=False,
+    )
+
+    catalog, close_catalog = build_catalog_reader(settings)
+    try:
+        assert isinstance(catalog, KhoMmoCatalogReader)
+        assert secret not in repr(catalog)
+    finally:
+        assert close_catalog is not None
+        await close_catalog()
 
 
 async def test_readiness_uses_database_probe() -> None:
@@ -109,6 +130,8 @@ async def test_catalog_error_is_a_typed_client_state() -> None:
             "message": "The deterministic mock catalog is unavailable.",
             "retryable": True,
         },
+        "supplier": "mock",
+        "read_only": True,
     }
 
 

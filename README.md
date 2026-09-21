@@ -24,7 +24,11 @@ PAYMENT_MODE=disabled
 ALLOW_REAL_PURCHASES=false
 ```
 
-Startup rejects any other Phase 0 combination. Tests block non-loopback sockets, catalog fixtures are synthetic, no purchase/top-up/refund/delivery routes exist, and CI receives no supplier, bank, Telegram, or OpenAI production secrets.
+These remain the defaults. The owner-approved local mode `SUPPLIER_MODE=khommo-readonly`
+enables only KhoMMO's documented GET catalog boundary and still requires
+`PAYMENT_MODE=disabled` plus `ALLOW_REAL_PURCHASES=false`. Generic live mode remains invalid,
+no purchase/top-up/refund/delivery routes exist, and CI receives no supplier, bank, Telegram,
+or OpenAI production secrets. See the runbook before configuring `KHOMMO_API_TOKEN` locally.
 
 ## Repository map
 

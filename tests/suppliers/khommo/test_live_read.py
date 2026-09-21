@@ -1,0 +1,213 @@
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+
+import httpx
+import pytest
+
+from nyan_shop_bot.catalog.models import (
+    CapabilityStatus,
+    CatalogDetailFound,
+    CatalogDetailNotFound,
+    CatalogState,
+)
+from nyan_shop_bot.suppliers.khommo import (
+    KhoMmoCatalogReader,
+    KhoMmoHttpTransport,
+    KhoMmoReadAdapter,
+    KhoMmoRequest,
+    KhoMmoResponse,
+    KhoMmoToken,
+    KhoMmoTransportSafetyError,
+)
+
+
+def product(**changes: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "id": "p-1",
+        "sku": "SKU-1",
+        "name": "Documented product",
+        "description": "Synthetic response fixture",
+        "priceCredit": 100,
+        "priceVnd": 25_000,
+        "paymentMode": "VND",
+        "deliveryType": "fixture-only",
+        "stock": 4,
+        "inStock": True,
+    }
+    value.update(changes)
+    return value
+
+
+class FakeTransport:
+    def __init__(self, *responses: KhoMmoResponse) -> None:
+        self._responses = iter(responses)
+        self.requests: list[KhoMmoRequest] = []
+
+    async def send(self, request: KhoMmoRequest, *, timeout_seconds: float) -> KhoMmoResponse:
+        self.requests.append(request)
+        return next(self._responses)
+
+
+def reader(*responses: KhoMmoResponse) -> tuple[KhoMmoCatalogReader, FakeTransport]:
+    transport = FakeTransport(*responses)
+    adapter = KhoMmoReadAdapter(token=KhoMmoToken("synthetic-secret"), transport=transport)
+    fixed_now = datetime(2026, 9, 21, 8, 0, tzinfo=UTC)
+    return KhoMmoCatalogReader(adapter, clock=lambda: fixed_now), transport
+
+
+@pytest.mark.asyncio
+async def test_live_catalog_projects_vnd_product_with_explicit_source_and_pending_mapping() -> None:
+    catalog, transport = reader(KhoMmoResponse(200, json.dumps([product()]).encode("utf-8")))
+
+    response = await catalog.read_catalog()
+
+    assert response.state is CatalogState.FRESH
+    assert response.supplier == "khommo"
+    assert response.mode == "khommo-readonly"
+    assert response.read_only is True
+    assert response.freshness is not None
+    assert response.freshness.observed_at == response.freshness.evaluated_at
+    assert transport.requests[0].url.endswith("/products?page=1&limit=500")
+    assert len(response.items) == 1
+    item = response.items[0]
+    assert item.supplier == "khommo" and item.mode == "khommo-readonly"
+    assert item.price.amount_minor == 25_000 and item.price.currency == "VND"
+    assert item.variants[0].mapping.approval.status == "pending"
+    public_json = response.model_dump_json()
+    assert "fixture-only" not in public_json  # deliveryType stays inside the adapter boundary
+    assert "synthetic-secret" not in public_json
+
+
+@pytest.mark.asyncio
+async def test_credit_and_inconsistent_stock_fail_closed_instead_of_guessing_price() -> None:
+    for fixture in (
+        product(paymentMode="CREDIT"),
+        product(stock=4, inStock=False),
+    ):
+        catalog, _ = reader(KhoMmoResponse(200, json.dumps([fixture]).encode("utf-8")))
+        response = await catalog.read_catalog()
+        assert response.state is CatalogState.ERROR
+        assert response.error is not None
+        assert response.error.code == "unsupported"
+        assert response.items == ()
+
+
+@pytest.mark.asyncio
+async def test_catalog_and_detail_failures_are_safe_and_never_enable_writes() -> None:
+    catalog, _ = reader(
+        KhoMmoResponse(401, b"private body"),
+        KhoMmoResponse(404, b"private body"),
+    )
+
+    listing = await catalog.read_catalog()
+    detail = await catalog.get_product("missing")
+
+    assert listing.state is CatalogState.ERROR
+    assert listing.error is not None and listing.error.retryable is False
+    assert "private body" not in listing.model_dump_json()
+    assert isinstance(detail, CatalogDetailNotFound)
+    assert {
+        catalog.capabilities.purchase.status,
+        catalog.capabilities.payment.status,
+        catalog.capabilities.top_up.status,
+        catalog.capabilities.refund.status,
+        catalog.capabilities.delivery.status,
+    } == {CapabilityStatus.DISABLED}
+
+
+@pytest.mark.asyncio
+async def test_product_detail_uses_same_normalized_live_read_projection() -> None:
+    catalog, transport = reader(KhoMmoResponse(200, json.dumps(product()).encode("utf-8")))
+
+    detail = await catalog.get_product("p-1")
+
+    assert isinstance(detail, CatalogDetailFound)
+    assert detail.item.id == "p-1"
+    assert detail.item.read_only is True
+    assert transport.requests[0].url.endswith("/products/p-1")
+
+
+@pytest.mark.asyncio
+async def test_http_transport_sends_only_redacted_get_and_does_not_follow_redirects() -> None:
+    secret = "never-print-this-token"
+    seen: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            302, headers={"Location": "https://api.khommo.vn/api/partner/v1/orders"}
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = KhoMmoHttpTransport(client=client)
+        response = await transport.send(
+            KhoMmoRequest(
+                method="GET",
+                url="https://api.khommo.vn/api/partner/v1/products?page=1&limit=20",
+                headers={"Authorization": f"Bearer {secret}"},
+            ),
+            timeout_seconds=2,
+        )
+
+    assert response.status_code == 302
+    assert len(seen) == 1
+    assert seen[0].method == "GET"
+    assert seen[0].headers["Authorization"] == f"Bearer {secret}"
+    assert secret not in repr(transport)
+    assert secret not in repr(response)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.khommo.vn/api/partner/v1/orders",
+        "https://api.khommo.vn/api/partner/v1/products?page=1&limit=20&sort=name",
+        "https://example.invalid/api/partner/v1/products?page=1&limit=20",
+        "http://api.khommo.vn/api/partner/v1/me",
+    ],
+)
+@pytest.mark.asyncio
+async def test_http_transport_rejects_every_unapproved_target_before_network(url: str) -> None:
+    called = False
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json=[])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = KhoMmoHttpTransport(client=client)
+        with pytest.raises(KhoMmoTransportSafetyError):
+            await transport.send(
+                KhoMmoRequest(
+                    method="GET",
+                    url=url,
+                    headers={"Authorization": "Bearer synthetic-secret"},
+                ),
+                timeout_seconds=2,
+            )
+
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_http_transport_bounds_response_without_leaking_body() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"private-response-body")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = KhoMmoHttpTransport(client=client, max_response_bytes=4)
+        with pytest.raises(KhoMmoTransportSafetyError) as caught:
+            await transport.send(
+                KhoMmoRequest(
+                    method="GET",
+                    url="https://api.khommo.vn/api/partner/v1/me",
+                    headers={"Authorization": "Bearer synthetic-secret"},
+                ),
+                timeout_seconds=2,
+            )
+
+    assert "private-response-body" not in str(caught.value)
+    assert "synthetic-secret" not in str(caught.value)

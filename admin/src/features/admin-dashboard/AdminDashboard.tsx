@@ -25,6 +25,11 @@ function capabilityLabel(status: "enabled" | "disabled" | "unsupported"): string
 
 export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
   const [filterQuery, setFilterQuery] = useState("");
+  const sourceLabel = state.supplier.kind === "ready" ? state.supplier.supplier : "backend";
+  const modeLabel =
+    state.supplier.kind === "ready"
+      ? `${state.supplier.mode.toLocaleUpperCase("vi-VN")} · ${state.supplier.readOnly ? "READ-ONLY" : "UNKNOWN"}`
+      : "ĐANG XÁC MINH";
   const normalizedQuery = filterQuery.trim().toLocaleLowerCase("vi-VN");
   const visibleItems =
     state.catalog.kind === "success"
@@ -41,8 +46,8 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
         <div>
           <h1>Danh mục vận hành</h1>
           <p>
-            Dữ liệu tổng hợp từ backend mock. Giá hiển thị theo đơn vị minor và không tạo giao
-            dịch.
+            Dữ liệu đi qua FastAPI từ nguồn {sourceLabel}. Giá hiển thị theo đơn vị minor và
+            không tạo giao dịch.
           </p>
         </div>
         {state.catalog.kind === "success" && (
@@ -65,7 +70,7 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
 
           {state.catalog.kind === "loading" && (
             <div className="dashboard-state-panel" role="status">
-              <strong>Đang tải catalog mock…</strong>
+              <strong>Đang tải catalog qua FastAPI…</strong>
               <span>Backend đang chuẩn bị dữ liệu tổng hợp.</span>
             </div>
           )}
@@ -82,7 +87,7 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
           )}
           {state.catalog.kind === "empty" && (
             <div className="dashboard-state-panel" role="status">
-              <strong>Catalog mock đang trống.</strong>
+              <strong>Catalog đang trống.</strong>
               <span>Backend phản hồi thành công nhưng chưa có sản phẩm tổng hợp.</span>
             </div>
           )}
@@ -120,7 +125,7 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
                 <div
                   className="dashboard-table-region"
                   tabIndex={0}
-                  aria-label="Bảng danh mục mock"
+                  aria-label="Bảng danh mục chỉ đọc"
                 >
                   <table className="dashboard-table">
                     <thead>
@@ -128,7 +133,7 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
                         <th scope="col">Sản phẩm</th>
                         <th scope="col">Supplier</th>
                         <th scope="col">Tồn kho</th>
-                        <th scope="col">Giá mock</th>
+                        <th scope="col">Giá</th>
                         <th scope="col">Trạng thái</th>
                       </tr>
                     </thead>
@@ -141,7 +146,7 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
                           </th>
                           <td data-label="Supplier">{item.supplier}</td>
                           <td data-label="Tồn kho">{item.available_quantity}</td>
-                          <td data-label="Giá mock">{formatMinorMoney(item.price)}</td>
+                          <td data-label="Giá">{formatMinorMoney(item.price)}</td>
                           <td data-label="Trạng thái">
                             <span
                               className={
@@ -150,7 +155,7 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
                                   : "dashboard-availability dashboard-availability-empty"
                               }
                             >
-                              {item.available_quantity > 0 ? "Có sẵn" : "Hết mẫu"}
+                              {item.available_quantity > 0 ? "Có sẵn" : "Hết hàng"}
                             </span>
                           </td>
                         </tr>
@@ -188,7 +193,7 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
                 </div>
                 <div>
                   <dt>Chế độ</dt>
-                  <dd>MOCK · READ-ONLY</dd>
+                  <dd>{modeLabel}</dd>
                 </div>
                 <div>
                   <dt>Tiền tệ catalog</dt>

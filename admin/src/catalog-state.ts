@@ -4,7 +4,9 @@ import {
   type CatalogError,
   type CatalogFreshness,
   type CatalogItem,
+  type CatalogMode,
   type CatalogResponse,
+  type CatalogSupplier,
   fetchCapabilities,
   fetchCatalog,
   type SupplierCapabilities,
@@ -26,8 +28,9 @@ export type SupplierPanelState =
   | { kind: "error"; message: string }
   | {
       kind: "ready";
-      supplier: "mock";
-      mode: "mock";
+      supplier: CatalogSupplier;
+      mode: CatalogMode;
+      readOnly: true;
       currencies: string[];
       balance: {
         kind: "unsupported";
@@ -140,15 +143,16 @@ export function useCatalogState(): CatalogStateController {
               }
             : mapCatalogState(catalogResponse),
         supplier:
-          capabilitiesResult.status === "fulfilled"
+          capabilitiesResult.status === "fulfilled" && catalogResponse !== null
             ? {
                 kind: "ready",
-                supplier: "mock",
-                mode: "mock",
+                supplier: catalogResponse.supplier,
+                mode: catalogResponse.mode,
+                readOnly: catalogResponse.read_only,
                 currencies: catalogCurrencies(catalogResponse),
                 balance: {
                   kind: "unsupported",
-                  reason: "Backend mock không cung cấp số dư supplier.",
+                  reason: "Catalog API không công khai số dư supplier.",
                 },
                 capabilities: capabilitiesResult.value,
               }

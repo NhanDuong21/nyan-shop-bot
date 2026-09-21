@@ -33,7 +33,17 @@ def verify_python_quality() -> None:
 
 
 def verify_python_tests() -> None:
-    run([sys.executable, "-m", "pytest", "tests/unit", "-m", "not integration"])
+    run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/unit",
+            "tests/suppliers",
+            "-m",
+            "not integration",
+        ]
+    )
 
 
 def verify_database() -> None:

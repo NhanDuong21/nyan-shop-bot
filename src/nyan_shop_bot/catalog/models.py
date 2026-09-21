@@ -27,6 +27,8 @@ DisplayText = Annotated[StrictStr, Field(min_length=1, pattern=r".*\S.*")]
 CurrencyCode = Annotated[StrictStr, Field(pattern=r"^[A-Z]{3}$")]
 NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
 PositiveInt = Annotated[StrictInt, Field(gt=0)]
+CatalogSupplier = Literal["mock", "khommo"]
+CatalogMode = Literal["mock", "khommo-readonly"]
 
 
 class ContractModel(BaseModel):
@@ -122,8 +124,9 @@ class CatalogProduct(ContractModel):
     id: Identifier
     name: DisplayText
     description: DisplayText
-    supplier: Literal["mock"] = "mock"
-    mode: Literal["mock"] = "mock"
+    supplier: CatalogSupplier = "mock"
+    mode: CatalogMode = "mock"
+    read_only: Literal[True] = True
     price: Money
     available_quantity: NonNegativeInt
     variants: Annotated[tuple[CatalogVariant, ...], Field(min_length=1)]
@@ -209,14 +212,25 @@ class CatalogState(StrEnum):
 class CatalogResponse(ContractModel):
     """Catalog envelope with internally consistent freshness and error state."""
 
-    mode: Literal["mock"]
+    mode: CatalogMode
     state: CatalogState
     freshness: CatalogFreshness | None
     items: tuple[CatalogProduct, ...]
     error: CatalogError | None
+    supplier: CatalogSupplier = "mock"
+    read_only: Literal[True] = True
 
     @model_validator(mode="after")
     def state_is_consistent(self) -> CatalogResponse:
+        expected_mode = "mock" if self.supplier == "mock" else "khommo-readonly"
+        if self.mode != expected_mode:
+            raise ValueError("catalog supplier and mode must describe the same source")
+        if any(
+            item.supplier != self.supplier or item.mode != self.mode or not item.read_only
+            for item in self.items
+        ):
+            raise ValueError("catalog items must match the envelope source and read-only state")
+
         if self.state is CatalogState.FRESH:
             if not self.items or self.freshness is None:
                 raise ValueError("fresh catalog requires items and freshness evidence")

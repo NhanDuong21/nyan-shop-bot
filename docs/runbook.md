@@ -37,10 +37,60 @@ Activate `.venv` or call its Python, then run `python scripts/verify.py --scope 
 
 `python scripts/task.py smoke` creates a separate `nyan-shop-bot-smoke` Compose project, performs only GET health/readiness/catalog/admin checks plus absence checks for forbidden write routes, and removes its test volume in `finally`.
 
+## Owner-controlled KhoMMO live read
+
+This mode is local and read-only. It permits only `GET /me`, `GET /products`, and
+`GET /products/{id}` at the fixed KhoMMO Partner API host. The application currently uses the
+product endpoints for catalog and detail reads; it has no supplier order method or API route.
+
+Obtain the Partner API token yourself through the KhoMMO Telegram bot's **Kết nối API** flow.
+Do not paste it into an issue, PR, chat, command argument, screenshot, or log. In the repository
+root, copy `.env.example` to the ignored `.env` file and edit these values locally:
+
+```text
+APP_ENV=local
+SUPPLIER_MODE=khommo-readonly
+KHOMMO_API_TOKEN=<set the real value only in this local .env file>
+PAYMENT_MODE=disabled
+ALLOW_REAL_PURCHASES=false
+```
+
+The tracked `.env.example` must keep `KHOMMO_API_TOKEN` empty. Docker Compose deliberately stays
+in mock mode so a credential is not copied into a container environment. Use two local terminals:
+
+```powershell
+# Terminal 1, repository root
+$env:PYTHONPATH = (Join-Path (Get-Location) "src")
+.\.venv\Scripts\python.exe -m uvicorn nyan_shop_bot.main:app --host 127.0.0.1 --port 8000
+
+# Terminal 2
+Set-Location admin
+npm run dev
+```
+
+Starting FastAPI does not contact KhoMMO. First verify the safety state without making a supplier
+request:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/healthz
+```
+
+The result must show `supplier_mode=khommo-readonly`, `payment_mode=disabled`,
+`allow_real_purchases=false`, and `read_only=true`. Opening <http://127.0.0.1:5173> or requesting
+the following URL is the explicit owner action that triggers the first real read-only
+`GET /products` request:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/catalog
+```
+
+To return to the synthetic catalog, stop both processes, set `SUPPLIER_MODE=mock`, remove the
+token from `.env`, and restart. Never commit `.env`.
+
 ## Troubleshooting
 
 - Port conflict: stop the existing local service on 5432, 8000, or 5173; do not change the container to a public bind.
 - Docker Desktop overridden by `DOCKER_HOST`: set `NYAN_DOCKER_CONTEXT=desktop-linux` for task commands; this selects a context per command and does not change global Docker configuration.
 - Readiness 503: inspect `docker compose logs db migrate api`; health can be green while PostgreSQL is unavailable.
-- Unsafe configuration error: restore the three Phase 0 safety values in `.env`; live modes are intentionally unsupported.
+- Unsafe configuration error: keep payment disabled and real purchases false. KhoMMO live read additionally requires `APP_ENV=local`, `SUPPLIER_MODE=khommo-readonly`, and a non-empty local `KHOMMO_API_TOKEN`; generic live modes remain unsupported.
 - No Docker: Python/frontend unit checks can run individually, but database, container smoke, and Docker build must be reported NOT RUN rather than PASS.
