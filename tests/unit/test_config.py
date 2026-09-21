@@ -76,3 +76,30 @@ def test_khommo_readonly_cannot_start_outside_local_environment(
 
     with pytest.raises(ValidationError, match="allowed only with APP_ENV=local"):
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "api.local"])
+def test_khommo_readonly_rejects_every_non_loopback_bind(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("APP_HOST", host)
+    monkeypatch.setenv("SUPPLIER_MODE", "khommo-readonly")
+    monkeypatch.setenv("KHOMMO_API_TOKEN", "synthetic-secret")
+
+    with pytest.raises(ValidationError, match="APP_HOST to be loopback"):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "::1", "localhost"])
+def test_khommo_readonly_accepts_only_explicit_loopback_hosts(host: str) -> None:
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        app_env="local",
+        app_host=host,
+        supplier_mode="khommo-readonly",
+        khommo_api_token="synthetic-secret",
+    )
+
+    assert settings.app_host == host

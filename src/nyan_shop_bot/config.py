@@ -1,6 +1,7 @@
 """Typed, fail-closed application configuration."""
 
 from functools import lru_cache
+from ipaddress import ip_address
 from typing import Literal, Self
 
 from pydantic import SecretStr, model_validator
@@ -9,6 +10,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class UnsafeRuntimeConfiguration(ValueError):
     """Raised when runtime settings could escape the approved read-only boundary."""
+
+
+def is_loopback_host(value: str) -> bool:
+    """Accept only an explicit localhost name or loopback IP address."""
+    if value.lower() == "localhost":
+        return True
+    try:
+        return ip_address(value).is_loopback
+    except ValueError:
+        return False
 
 
 class Settings(BaseSettings):
@@ -45,6 +56,10 @@ class Settings(BaseSettings):
             if self.app_env != "local":
                 raise UnsafeRuntimeConfiguration(
                     "SUPPLIER_MODE=khommo-readonly is allowed only with APP_ENV=local"
+                )
+            if not is_loopback_host(self.app_host):
+                raise UnsafeRuntimeConfiguration(
+                    "SUPPLIER_MODE=khommo-readonly requires APP_HOST to be loopback"
                 )
             token = self.khommo_api_token
             if token is None or not token.get_secret_value():

@@ -155,8 +155,33 @@ async def test_http_transport_sends_only_redacted_get_and_does_not_follow_redire
     assert len(seen) == 1
     assert seen[0].method == "GET"
     assert seen[0].headers["Authorization"] == f"Bearer {secret}"
+    assert set(seen[0].extensions["timeout"].values()) == {2.0}
     assert secret not in repr(transport)
     assert secret not in repr(response)
+
+
+@pytest.mark.asyncio
+async def test_production_http_client_disables_ambient_proxies_and_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    closed = False
+
+    class StubClient:
+        async def aclose(self) -> None:
+            nonlocal closed
+            closed = True
+
+    def build_client(**kwargs: object) -> StubClient:
+        captured.update(kwargs)
+        return StubClient()
+
+    monkeypatch.setattr(httpx, "AsyncClient", build_client)
+    transport = KhoMmoHttpTransport()
+
+    assert captured == {"trust_env": False, "follow_redirects": False}
+    await transport.aclose()
+    assert closed is True
 
 
 @pytest.mark.parametrize(

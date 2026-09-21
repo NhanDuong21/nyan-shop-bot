@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Path, status
+from fastapi import Depends, FastAPI, HTTPException, Path, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from nyan_shop_bot.catalog.mock import MockCatalogReader
@@ -14,7 +14,7 @@ from nyan_shop_bot.catalog.models import (
     SupplierCapabilities,
 )
 from nyan_shop_bot.catalog.ports import CatalogReader
-from nyan_shop_bot.config import Settings, get_settings
+from nyan_shop_bot.config import Settings, get_settings, is_loopback_host
 from nyan_shop_bot.database import DatabaseProbe, PostgresDatabase
 from nyan_shop_bot.suppliers.khommo import (
     KhoMmoCatalogReader,
@@ -81,6 +81,17 @@ def create_app(
         allow_headers=["Content-Type"],
     )
 
+    async def require_local_live_read(request: Request) -> None:
+        """Reject remote triggers even if a live-read server is accidentally public-bound."""
+        if runtime_settings.supplier_mode != "khommo-readonly":
+            return
+        client = request.client
+        if client is None or not is_loopback_host(client.host):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="live-read catalog is available only from loopback",
+            )
+
     @application.get("/healthz", tags=["system"])
     async def health() -> dict[str, str | bool]:
         return {
@@ -107,7 +118,12 @@ def create_app(
             )
         return {"status": "ready"}
 
-    @application.get("/api/v1/catalog", response_model=CatalogResponse, tags=["catalog"])
+    @application.get(
+        "/api/v1/catalog",
+        response_model=CatalogResponse,
+        tags=["catalog"],
+        dependencies=[Depends(require_local_live_read)],
+    )
     async def list_catalog() -> CatalogResponse:
         return await catalog_reader.read_catalog()
 
@@ -115,6 +131,7 @@ def create_app(
         "/api/v1/catalog/{product_id}",
         response_model=CatalogDetailResponse,
         tags=["catalog"],
+        dependencies=[Depends(require_local_live_read)],
     )
     async def catalog_detail(
         product_id: Annotated[str, Path(min_length=1, pattern=r".*\S.*")],
@@ -131,6 +148,7 @@ def create_app(
         "/api/v1/capabilities",
         response_model=SupplierCapabilities,
         tags=["catalog"],
+        dependencies=[Depends(require_local_live_read)],
     )
     async def capabilities() -> SupplierCapabilities:
         return catalog_reader.capabilities

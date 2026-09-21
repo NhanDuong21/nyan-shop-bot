@@ -42,6 +42,8 @@ Activate `.venv` or call its Python, then run `python scripts/verify.py --scope 
 This mode is local and read-only. It permits only `GET /me`, `GET /products`, and
 `GET /products/{id}` at the fixed KhoMMO Partner API host. The application currently uses the
 product endpoints for catalog and detail reads; it has no supplier order method or API route.
+Startup rejects non-loopback `APP_HOST` values, and every live-read catalog route independently
+rejects a non-loopback client even if Uvicorn is accidentally given a public bind override.
 
 Obtain the Partner API token yourself through the KhoMMO Telegram bot's **Kết nối API** flow.
 Do not paste it into an issue, PR, chat, command argument, screenshot, or log. In the repository

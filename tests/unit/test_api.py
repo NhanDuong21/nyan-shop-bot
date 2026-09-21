@@ -56,6 +56,43 @@ async def test_live_read_factory_constructs_khommo_without_contacting_supplier()
         await close_catalog()
 
 
+async def test_live_read_catalog_routes_reject_non_loopback_clients() -> None:
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        app_env="local",
+        app_host="127.0.0.1",
+        supplier_mode="khommo-readonly",
+        khommo_api_token="synthetic-secret",
+        payment_mode="disabled",
+        allow_real_purchases=False,
+    )
+    application = create_app(
+        settings=settings,
+        catalog=FakeCatalogReader(),
+        database=ReadyDatabase(),
+    )
+    remote_transport = ASGITransport(app=application, client=("203.0.113.10", 42000))
+    loopback_transport = ASGITransport(app=application, client=("127.0.0.1", 42001))
+
+    async with AsyncClient(transport=remote_transport, base_url="http://test") as client:
+        health = await client.get("/healthz")
+        blocked = [
+            await client.get("/api/v1/catalog"),
+            await client.get("/api/v1/catalog/p-1"),
+            await client.get("/api/v1/capabilities"),
+        ]
+    async with AsyncClient(transport=loopback_transport, base_url="http://test") as client:
+        capabilities = await client.get("/api/v1/capabilities")
+
+    assert health.status_code == 200
+    assert [response.status_code for response in blocked] == [403, 403, 403]
+    assert all(
+        response.json()["detail"] == "live-read catalog is available only from loopback"
+        for response in blocked
+    )
+    assert capabilities.status_code == 200
+
+
 async def test_readiness_uses_database_probe() -> None:
     async with make_client() as client:
         response = await client.get("/readyz")
