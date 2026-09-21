@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -165,3 +166,41 @@ def test_task_snapshot_is_immutable_after_claim(tmp_path: Path) -> None:
     assert frozen.pr_base == "nyan/nsb-040-agent-runner"
     assert frozen.auto_merge_eligible is False
     assert service.store.get_run("run-one")["deadline_at"] is not None
+
+
+def test_existing_state_adds_usage_schema_without_rewriting_history(tmp_path: Path) -> None:
+    state_dir = tmp_path / "legacy-state"
+    state_dir.mkdir()
+    database = state_dir / "state.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE runs (
+                run_id TEXT PRIMARY KEY,
+                total_tokens INTEGER NOT NULL,
+                worker_cumulative_tokens INTEGER NOT NULL,
+                worker_accounted_events_sha256 TEXT,
+                reviewer_accounted_events_sha256 TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO runs (
+                run_id, total_tokens, worker_cumulative_tokens,
+                worker_accounted_events_sha256, reviewer_accounted_events_sha256
+            ) VALUES ('historical-run', 42424, 777, 'worker-old', 'reviewer-old')
+            """
+        )
+
+    store = StateStore(state_dir)
+    reopened = StateStore(state_dir)
+    run = reopened.get_run("historical-run")
+
+    assert run["total_tokens"] == 42_424
+    assert run["worker_cumulative_tokens"] == 777
+    assert run["worker_accounted_events_sha256"] == "worker-old"
+    assert run["reviewer_accounted_events_sha256"] == "reviewer-old"
+    assert run["worker_enforceable_tokens"] is None
+    assert run["reviewer_enforceable_tokens"] is None
+    assert store.invocation_usage("historical-run") == []

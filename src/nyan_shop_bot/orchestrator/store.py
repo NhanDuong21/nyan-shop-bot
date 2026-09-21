@@ -11,7 +11,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from nyan_shop_bot.orchestrator.models import DesiredState, RunPhase, TaskSpec
+from nyan_shop_bot.orchestrator.models import (
+    DesiredState,
+    RunPhase,
+    TaskSpec,
+    UsageAccounting,
+)
 
 RUN_FIELDS = {
     "phase",
@@ -28,6 +33,8 @@ RUN_FIELDS = {
     "worker_accounted_events_sha256",
     "reviewer_accounted_events_sha256",
     "worker_cumulative_tokens",
+    "worker_enforceable_tokens",
+    "reviewer_enforceable_tokens",
     "worker_session_id",
     "reviewer_session_id",
     "head_sha",
@@ -128,6 +135,8 @@ class StateStore:
                     worker_accounted_events_sha256 TEXT,
                     reviewer_accounted_events_sha256 TEXT,
                     worker_cumulative_tokens INTEGER NOT NULL DEFAULT 0,
+                    worker_enforceable_tokens INTEGER,
+                    reviewer_enforceable_tokens INTEGER,
                     last_error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -152,6 +161,29 @@ class StateStore:
                     kind TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     source_key TEXT
+                );
+                CREATE TABLE IF NOT EXISTS invocation_usage (
+                    run_id TEXT NOT NULL REFERENCES runs(run_id),
+                    invocation_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('worker', 'reviewer')),
+                    session_id TEXT NOT NULL,
+                    terminal_events_sha256 TEXT NOT NULL,
+                    raw_input_tokens INTEGER CHECK(raw_input_tokens >= 0),
+                    cached_input_tokens INTEGER CHECK(cached_input_tokens >= 0),
+                    fresh_input_tokens INTEGER CHECK(fresh_input_tokens >= 0),
+                    raw_output_tokens INTEGER CHECK(raw_output_tokens >= 0),
+                    reasoning_tokens INTEGER CHECK(reasoning_tokens >= 0),
+                    raw_provider_total INTEGER CHECK(raw_provider_total >= 0),
+                    normalization_state TEXT NOT NULL
+                        CHECK(normalization_state IN ('COMPLETE', 'PARTIAL', 'UNKNOWN')),
+                    enforceable_tokens INTEGER CHECK(enforceable_tokens >= 0),
+                    enforcement_basis TEXT NOT NULL CHECK(
+                        enforcement_basis IN (
+                            'CODEX_COMPONENTS', 'PROVIDER_CUMULATIVE', 'UNAVAILABLE'
+                        )
+                    ),
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, invocation_id)
                 );
                 """
             )
@@ -182,6 +214,8 @@ class StateStore:
             "worker_accounted_events_sha256": "TEXT",
             "reviewer_accounted_events_sha256": "TEXT",
             "worker_cumulative_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "worker_enforceable_tokens": "INTEGER",
+            "reviewer_enforceable_tokens": "INTEGER",
             "max_workers": "INTEGER NOT NULL DEFAULT 1",
         }
         for name, kind in additions.items():
@@ -238,8 +272,10 @@ class StateStore:
                     run_id, task_id, task_path, task_json, task_sha256,
                     issue_number, repository, branch,
                     base_ref, base_sha, worktree_path, worker_kind, phase,
-                    desired_state, max_workers, created_at, updated_at, deadline_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    desired_state, max_workers, created_at, updated_at, deadline_at,
+                    worker_cumulative_tokens, worker_enforceable_tokens,
+                    reviewer_enforceable_tokens
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -260,6 +296,9 @@ class StateStore:
                     now,
                     now,
                     deadline_at,
+                    0,
+                    0,
+                    0,
                 ),
             )
             connection.execute(
@@ -474,6 +513,232 @@ class StateStore:
             )
             if cursor.rowcount != 1:
                 raise KeyError(f"unknown run: {run_id}")
+
+    def record_invocation_usage(
+        self,
+        run_id: str,
+        *,
+        invocation_id: str,
+        role: str,
+        session_id: str,
+        terminal_events_sha256: str,
+        accounting: UsageAccounting,
+        cumulative_provider_total: bool = False,
+    ) -> dict[str, Any]:
+        """Atomically account one terminal stream, or return its prior ledger record."""
+
+        if role not in {"worker", "reviewer"}:
+            raise ValueError(f"unsupported invocation role: {role}")
+        if not invocation_id or len(invocation_id) > 200:
+            raise ValueError("invocation identity must be between 1 and 200 characters")
+        if len(terminal_events_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in terminal_events_sha256
+        ):
+            raise ValueError("terminal event evidence must be a lowercase SHA-256 digest")
+        if not session_id:
+            raise ValueError("usage accounting requires a session ID")
+
+        raw_values = {
+            "raw_input_tokens": accounting.raw_input_tokens,
+            "cached_input_tokens": accounting.cached_input_tokens,
+            "fresh_input_tokens": accounting.fresh_input_tokens,
+            "raw_output_tokens": accounting.raw_output_tokens,
+            "reasoning_tokens": accounting.reasoning_tokens,
+            "raw_provider_total": accounting.raw_provider_total,
+            "normalization_state": accounting.normalization_state.value,
+        }
+        basis = (
+            "PROVIDER_CUMULATIVE"
+            if cumulative_provider_total
+            else (
+                "CODEX_COMPONENTS" if accounting.enforceable_tokens is not None else "UNAVAILABLE"
+            )
+        )
+        now = utc_now()
+        role_total_field = f"{role}_enforceable_tokens"
+        cumulative_field = "worker_cumulative_tokens"
+        session_field = f"{role}_session_id"
+        legacy_digest_field = f"{role}_accounted_events_sha256"
+        if cumulative_provider_total and role != "worker":
+            raise ValueError("cumulative provider accounting is supported only for workers")
+
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT * FROM invocation_usage
+                WHERE run_id = ? AND invocation_id = ?
+                """,
+                (run_id, invocation_id),
+            ).fetchone()
+            if existing is not None:
+                expected = {
+                    "role": role,
+                    "session_id": session_id,
+                    "terminal_events_sha256": terminal_events_sha256,
+                    "enforcement_basis": basis,
+                    **raw_values,
+                }
+                if any(existing[key] != value for key, value in expected.items()):
+                    raise RuntimeError("persisted invocation usage does not match replay evidence")
+                if not cumulative_provider_total and (
+                    existing["enforceable_tokens"] != accounting.enforceable_tokens
+                ):
+                    raise RuntimeError("persisted invocation policy value changed during replay")
+                run = connection.execute(
+                    f"SELECT {role_total_field} FROM runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                if run is None:
+                    raise KeyError(f"unknown run: {run_id}")
+                return {
+                    **dict(existing),
+                    "role_enforceable_total": run[role_total_field],
+                    "replayed": True,
+                }
+
+            run = connection.execute(
+                f"""
+                SELECT total_tokens, {role_total_field}, {cumulative_field}, {session_field}
+                FROM runs WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"unknown run: {run_id}")
+            if run[role_total_field] is None:
+                raise RuntimeError(
+                    "run predates role-isolated usage accounting and cannot be resumed"
+                )
+            if (
+                role == "worker"
+                and run[session_field] is not None
+                and str(run[session_field]) != session_id
+            ):
+                raise RuntimeError("worker usage session changed during accounting")
+
+            enforceable_tokens = accounting.enforceable_tokens
+            next_cumulative: int | None = None
+            if cumulative_provider_total:
+                if accounting.raw_provider_total is None:
+                    raise RuntimeError("cumulative provider usage omitted its raw total")
+                if run[cumulative_field] is None:
+                    raise RuntimeError(
+                        "run predates cumulative provider accounting and cannot be resumed"
+                    )
+                prior_cumulative = int(run[cumulative_field])
+                if accounting.raw_provider_total < prior_cumulative:
+                    raise RuntimeError("provider cumulative usage moved backwards")
+                enforceable_tokens = accounting.raw_provider_total - prior_cumulative
+                next_cumulative = accounting.raw_provider_total
+
+            role_total = int(run[role_total_field])
+            legacy_total = int(run["total_tokens"])
+            if enforceable_tokens is not None:
+                role_total += enforceable_tokens
+                legacy_total += enforceable_tokens
+
+            connection.execute(
+                """
+                INSERT INTO invocation_usage (
+                    run_id, invocation_id, role, session_id, terminal_events_sha256,
+                    raw_input_tokens, cached_input_tokens, fresh_input_tokens,
+                    raw_output_tokens, reasoning_tokens, raw_provider_total,
+                    normalization_state, enforceable_tokens, enforcement_basis, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    invocation_id,
+                    role,
+                    session_id,
+                    terminal_events_sha256,
+                    accounting.raw_input_tokens,
+                    accounting.cached_input_tokens,
+                    accounting.fresh_input_tokens,
+                    accounting.raw_output_tokens,
+                    accounting.reasoning_tokens,
+                    accounting.raw_provider_total,
+                    accounting.normalization_state,
+                    enforceable_tokens,
+                    basis,
+                    now,
+                ),
+            )
+            cumulative_assignment = (
+                f", {cumulative_field} = ?" if next_cumulative is not None else ""
+            )
+            parameters: list[object] = [
+                role_total,
+                legacy_total,
+                session_id,
+                terminal_events_sha256,
+            ]
+            if next_cumulative is not None:
+                parameters.append(next_cumulative)
+            parameters.extend((now, run_id))
+            connection.execute(
+                f"""
+                UPDATE runs
+                SET {role_total_field} = ?, total_tokens = ?, {session_field} = ?,
+                    {legacy_digest_field} = ? {cumulative_assignment}, updated_at = ?
+                WHERE run_id = ?
+                """,
+                parameters,
+            )
+            self._append_event(
+                connection,
+                run_id,
+                "usage.accounted",
+                {
+                    "invocation_id": invocation_id,
+                    "role": role,
+                    "session_id": session_id,
+                    "terminal_events_sha256": terminal_events_sha256,
+                    **raw_values,
+                    "enforceable_tokens": enforceable_tokens,
+                    "enforcement_basis": basis,
+                    "role_enforceable_total": role_total,
+                },
+            )
+            return {
+                "run_id": run_id,
+                "invocation_id": invocation_id,
+                "role": role,
+                "session_id": session_id,
+                "terminal_events_sha256": terminal_events_sha256,
+                **raw_values,
+                "enforceable_tokens": enforceable_tokens,
+                "enforcement_basis": basis,
+                "created_at": now,
+                "role_enforceable_total": role_total,
+                "replayed": False,
+            }
+
+    def has_unenforceable_usage(self, run_id: str) -> bool:
+        """Return whether any completed invocation lacks a policy token value."""
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM invocation_usage
+                WHERE run_id = ? AND enforceable_tokens IS NULL LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+        return row is not None
+
+    def invocation_usage(self, run_id: str) -> list[dict[str, Any]]:
+        """Return the durable usage ledger in accounting order."""
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM invocation_usage
+                WHERE run_id = ? ORDER BY rowid
+                """,
+                (run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def transition(
         self,

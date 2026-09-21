@@ -148,6 +148,73 @@ def test_activity_projection_redacts_secrets_and_keeps_real_tool_data(tmp_path: 
     assert "must not be persisted" not in rendered
 
 
+def test_usage_projection_accepts_only_terminal_provider_events(tmp_path: Path) -> None:
+    codex_started = normalize_stream_line(
+        json.dumps(
+            {
+                "type": "turn.started",
+                "usage": {"input_tokens": 999, "output_tokens": 999},
+            }
+        ),
+        channel="stdout",
+        worker=WorkerKind.CODEX,
+        worktree=tmp_path,
+    )
+    codex_completed = normalize_stream_line(
+        json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 10,
+                    "cached_input_tokens": 4,
+                    "output_tokens": 3,
+                    "reasoning_output_tokens": 2,
+                },
+            }
+        ),
+        channel="stdout",
+        worker=WorkerKind.CODEX,
+        worktree=tmp_path,
+    )
+    antigravity_step = normalize_stream_line(
+        json.dumps(
+            {
+                "event": "step_update",
+                "step_update": {
+                    "step_type": "agent_response",
+                    "usage": {"total_tokens": 999},
+                },
+            }
+        ),
+        channel="stdout",
+        worker=WorkerKind.ANTIGRAVITY,
+        worktree=tmp_path,
+    )
+    antigravity_result = normalize_stream_line(
+        json.dumps(
+            {
+                "event": "result",
+                "result": {"status": "SUCCESS", "usage": {"total_tokens": 16}},
+            }
+        ),
+        channel="stdout",
+        worker=WorkerKind.ANTIGRAVITY,
+        worktree=tmp_path,
+    )
+
+    assert codex_started is not None and "usage" not in codex_started
+    assert codex_completed is not None
+    assert codex_completed["usage"] == {
+        "raw_input_tokens": 10,
+        "cached_input_tokens": 4,
+        "raw_output_tokens": 3,
+        "reasoning_tokens": 2,
+    }
+    assert antigravity_step is not None and "usage" not in antigravity_step
+    assert antigravity_result is not None
+    assert antigravity_result["usage"] == {"raw_provider_total": 16}
+
+
 def test_redaction_covers_headers_flags_dsns_cloud_keys_and_stderr(tmp_path: Path) -> None:
     values = [
         "Authorization: Bearer " + "synthetic-secret-value",

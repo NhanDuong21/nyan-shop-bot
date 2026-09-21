@@ -10,7 +10,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml  # type: ignore[import-untyped]
 
@@ -604,6 +604,7 @@ class RunnerService:
             self._account_invocation(
                 run_id,
                 task,
+                invocation_id=activity_invocation,
                 role="worker",
                 session_id=session_id,
                 usage=usage,
@@ -640,6 +641,7 @@ class RunnerService:
             self._account_invocation(
                 run_id,
                 task,
+                invocation_id=activity_invocation,
                 role="worker",
                 session_id=session_id,
                 usage=usage,
@@ -727,7 +729,7 @@ class RunnerService:
         phase: RunPhase,
     ) -> None:
         run = self.store.get_run(run_id)
-        self._check_budget(run, task)
+        self._check_budget(run, task, role="worker")
         expected_parent = head_sha(
             worktree,
             timeout_seconds=self._remaining_seconds(run_id, task, cap=60),
@@ -880,9 +882,10 @@ class RunnerService:
                     "catch_up": "complete",
                 },
             )
-        self._account_invocation(
+        accounting = self._account_invocation(
             run_id,
             task,
+            invocation_id=activity_invocation,
             role="worker",
             session_id=invocation.session_id,
             usage=invocation.usage,
@@ -894,7 +897,8 @@ class RunnerService:
             {
                 "session_id": invocation.session_id,
                 "status": result.status,
-                "tokens": invocation.usage.total,
+                "normalization_state": accounting["normalization_state"],
+                "enforceable_tokens": accounting["enforceable_tokens"],
                 "result_path": invocation.result_path,
             },
         )
@@ -973,6 +977,7 @@ class RunnerService:
             self._account_invocation(
                 run_id,
                 task,
+                invocation_id=activity_invocation,
                 role="reviewer",
                 session_id=session_id,
                 usage=usage,
@@ -994,7 +999,7 @@ class RunnerService:
         if run["review_started_head_sha"] == current_head:
             self.store.update_run(run_id, review_started_head_sha=None)
 
-        self._check_budget(self.store.get_run(run_id), task)
+        self._check_budget(self.store.get_run(run_id), task, role="reviewer")
         invocation_number = int(self.store.get_run(run_id)["agent_invocations"]) + 1
         activity_invocation = f"{name}-attempt-{invocation_number}"
         timeout_seconds = self._remaining_seconds(run_id, task, cap=1800)
@@ -1054,6 +1059,7 @@ class RunnerService:
         self._account_invocation(
             run_id,
             task,
+            invocation_id=activity_invocation,
             role="reviewer",
             session_id=invocation.session_id,
             usage=invocation.usage,
@@ -1406,11 +1412,24 @@ concrete concern. For documentation, inspect meaning directly instead of inventi
 string assertions whose quoting or Markdown punctuation can create false failures.
 """
 
-    def _check_budget(self, run: dict[str, Any], task: TaskSpec) -> None:
+    def _check_budget(
+        self,
+        run: dict[str, Any],
+        task: TaskSpec,
+        *,
+        role: Literal["worker", "reviewer"],
+    ) -> None:
+        if role not in {"worker", "reviewer"}:
+            raise ValueError(f"unsupported invocation role: {role}")
         if int(run["agent_invocations"]) >= task.budget.max_agent_invocations:
             raise RuntimeError("maximum agent invocations reached")
-        if int(run["total_tokens"]) >= task.budget.max_total_tokens:
-            raise RuntimeError("run token ceiling reached")
+        if self.store.has_unenforceable_usage(str(run["run_id"])):
+            raise RuntimeError("prior invocation usage cannot be normalized for enforcement")
+        role_total = run.get(f"{role}_enforceable_tokens")
+        if role_total is None:
+            raise RuntimeError("run predates role-isolated usage accounting and cannot be resumed")
+        if int(role_total) >= task.budget.token_ceiling(role):
+            raise RuntimeError(f"{role} token ceiling reached")
         self._remaining_seconds(str(run["run_id"]), task)
 
     def _account_invocation(
@@ -1418,55 +1437,40 @@ string assertions whose quoting or Markdown punctuation can create false failure
         run_id: str,
         task: TaskSpec,
         *,
-        role: str,
+        invocation_id: str,
+        role: Literal["worker", "reviewer"],
         session_id: str,
         usage: Usage,
         events_path: Path,
-    ) -> int:
+    ) -> dict[str, Any]:
         """Persist usage exactly once for one durable terminal event stream."""
 
         if role not in {"worker", "reviewer"}:
             raise ValueError(f"unsupported invocation role: {role}")
         digest = sha256(events_path.read_bytes()).hexdigest()
-        digest_field = f"{role}_accounted_events_sha256"
-        session_field = f"{role}_session_id"
-        run = self.store.get_run(run_id)
-        if run[digest_field] == digest:
-            return int(run["total_tokens"])
-        accounted_tokens = usage.total
-        updates: dict[str, object] = {
-            digest_field: digest,
-            session_field: session_id,
-        }
-        if role == "worker" and task.worker is WorkerKind.ANTIGRAVITY:
-            if usage.reported_total_tokens is None:
-                raise RuntimeError("Antigravity usage omitted reported total_tokens")
-            prior_cumulative = int(run["worker_cumulative_tokens"])
-            if usage.reported_total_tokens < prior_cumulative:
-                raise RuntimeError("Antigravity cumulative usage moved backwards")
-            accounted_tokens = usage.reported_total_tokens - prior_cumulative
-            updates["worker_cumulative_tokens"] = usage.reported_total_tokens
-        total_tokens = int(run["total_tokens"]) + accounted_tokens
-        updates["total_tokens"] = total_tokens
-        self.store.update_run(
-            run_id,
-            **updates,
+        cumulative_provider_total = (
+            role == "worker"
+            and task.worker is WorkerKind.ANTIGRAVITY
+            and usage.raw_provider_total is not None
         )
-        self.store.append_event(
-            run_id,
-            "usage.accounted",
-            {
-                "role": role,
-                "session_id": session_id,
-                "events_sha256": digest,
-                "tokens": accounted_tokens,
-                "reported_tokens": usage.total,
-                "total_tokens": total_tokens,
-            },
+        normalized = (
+            usage.normalize_cumulative_provider()
+            if role == "worker" and task.worker is WorkerKind.ANTIGRAVITY
+            else usage.normalize_codex()
         )
-        if total_tokens > task.budget.max_total_tokens:
-            raise RuntimeError(f"{role} exceeded the run token ceiling")
-        return total_tokens
+        record = self.store.record_invocation_usage(
+            run_id,
+            invocation_id=invocation_id,
+            role=role,
+            session_id=session_id,
+            terminal_events_sha256=digest,
+            accounting=normalized,
+            cumulative_provider_total=cumulative_provider_total,
+        )
+        role_total = record["role_enforceable_total"]
+        if role_total is not None and int(role_total) > task.budget.token_ceiling(role):
+            raise RuntimeError(f"{role} exceeded its token ceiling")
+        return record
 
     @staticmethod
     def _require_expected_worker_session(run: dict[str, Any], recovered_session: str) -> None:
@@ -2245,6 +2249,10 @@ string assertions whose quoting or Markdown punctuation can create false failure
         }
         return {
             **public,
+            "usage_totals": {
+                "worker_enforceable_tokens": run.get("worker_enforceable_tokens"),
+                "reviewer_enforceable_tokens": run.get("reviewer_enforceable_tokens"),
+            },
             "process_alive": (
                 pid is not None
                 and isinstance(process_identity_value, str)
