@@ -476,7 +476,12 @@ def test_service_progresses_fix_ci_and_rereview_on_distinct_heads(
                 result_path=str(result_path),
                 events_path=str(events_path),
                 stderr_path=str(stderr_path),
-                usage=Usage(input_tokens=10, output_tokens=2),
+                usage=Usage(
+                    raw_input_tokens=10,
+                    cached_input_tokens=0,
+                    raw_output_tokens=2,
+                    reasoning_tokens=0,
+                ),
             )
 
         def reviewer(self, **kwargs: object) -> tuple[ReviewResult, AgentInvocation]:
@@ -526,7 +531,12 @@ def test_service_progresses_fix_ci_and_rereview_on_distinct_heads(
                 result_path=str(result_path),
                 events_path=str(events_path),
                 stderr_path=str(stderr_path),
-                usage=Usage(input_tokens=8, output_tokens=2),
+                usage=Usage(
+                    raw_input_tokens=8,
+                    cached_input_tokens=0,
+                    raw_output_tokens=2,
+                    reasoning_tokens=0,
+                ),
             )
 
     class FakeGitHub:
@@ -664,9 +674,9 @@ def test_ui_findings_return_to_same_antigravity_conversation(
                 events_path=str(events_path),
                 stderr_path=str(stderr_path),
                 usage=Usage(
-                    input_tokens=10,
-                    output_tokens=2,
-                    reported_total_tokens=12,
+                    raw_input_tokens=10,
+                    raw_output_tokens=2,
+                    raw_provider_total=12,
                 ),
             )
 
@@ -2010,7 +2020,8 @@ def test_interrupted_worker_reconciles_existing_runner_commit(tmp_path: Path) ->
     assert run["head_sha"] == committed
     assert run["worker_parent_sha"] is None
     assert run["worker_session_id"] == "commit-session"
-    assert run["total_tokens"] == 25
+    assert run["total_tokens"] == 19
+    assert run["worker_enforceable_tokens"] == 19
     assert git(worktree, "rev-list", "--count", f"{parent}..HEAD") == "1"
 
 
@@ -2450,7 +2461,8 @@ def test_review_recovery_uses_durable_result_without_duplicate_invocation(
     assert run["agent_invocations"] == 1
     assert run["reviewer_session_id"] == "review-session"
     assert run["reviewed_head_sha"] == head
-    assert run["total_tokens"] == 15
+    assert run["total_tokens"] == 14
+    assert run["reviewer_enforceable_tokens"] == 14
     assert (run_dir / "review-0.result.json").is_file()
 
 
@@ -3069,7 +3081,40 @@ def test_codex_jsonl_exposes_session_and_usage(tmp_path: Path) -> None:
     session, usage = _parse_codex_events(path)
 
     assert session == "session-1"
-    assert usage.total == 15
+    normalized = usage.normalize_codex()
+    assert normalized.fresh_input_tokens == 6
+    assert normalized.enforceable_tokens == 9
+
+
+def test_codex_nonterminal_usage_cannot_fill_missing_terminal_usage(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        "\n".join(
+            (
+                json.dumps({"type": "thread.started", "thread_id": "session-1"}),
+                json.dumps(
+                    {
+                        "type": "turn.started",
+                        "usage": {
+                            "input_tokens": 10,
+                            "cached_input_tokens": 4,
+                            "output_tokens": 3,
+                            "reasoning_output_tokens": 2,
+                        },
+                    }
+                ),
+                json.dumps({"type": "turn.completed"}),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    _, usage = _parse_codex_events(path)
+
+    normalized = usage.normalize_codex()
+    assert normalized.normalization_state == "UNKNOWN"
+    assert normalized.raw_input_tokens is None
+    assert normalized.enforceable_tokens is None
 
 
 def test_codex_completion_parser_rejects_non_terminal_stream(tmp_path: Path) -> None:
@@ -3138,7 +3183,7 @@ def test_antigravity_stream_exposes_conversation_schema_and_usage(tmp_path: Path
     session, usage, output = _parse_antigravity_events(path)
 
     assert session == "conversation-1"
-    assert usage.total == 16
+    assert usage.raw_provider_total == 16
     assert output == {"status": "BLOCKED"}
 
 
@@ -3172,40 +3217,268 @@ def test_antigravity_cumulative_usage_accounts_only_same_session_delta(tmp_path:
     service._account_invocation(
         "agy-usage",
         task,
+        invocation_id="worker-attempt-1",
         role="worker",
         session_id="same-session",
-        usage=Usage(reported_total_tokens=100),
+        usage=Usage(raw_provider_total=100),
         events_path=first,
     )
     service._account_invocation(
         "agy-usage",
         task,
+        invocation_id="worker-attempt-2",
         role="worker",
         session_id="same-session",
-        usage=Usage(reported_total_tokens=140),
+        usage=Usage(raw_provider_total=140),
         events_path=second,
     )
     service._account_invocation(
         "agy-usage",
         task,
+        invocation_id="worker-attempt-2",
         role="worker",
         session_id="same-session",
-        usage=Usage(reported_total_tokens=140),
+        usage=Usage(raw_provider_total=140),
         events_path=second,
     )
 
     run = service.store.get_run("agy-usage")
     assert run["total_tokens"] == 140
+    assert run["worker_enforceable_tokens"] == 140
     assert run["worker_cumulative_tokens"] == 140
+    ledger = service.store.invocation_usage("agy-usage")
+    assert [record["enforceable_tokens"] for record in ledger] == [100, 40]
+    assert all(record["normalization_state"] == "PARTIAL" for record in ledger)
+    assert all(record["fresh_input_tokens"] is None for record in ledger)
     with pytest.raises(RuntimeError, match="moved backwards"):
         service._account_invocation(
             "agy-usage",
             task,
+            invocation_id="worker-attempt-3",
             role="worker",
             session_id="same-session",
-            usage=Usage(reported_total_tokens=130),
+            usage=Usage(raw_provider_total=130),
             events_path=decrease,
         )
+
+
+def test_role_ceilings_are_isolated_and_refuse_exact_or_over_limit_preflight(
+    tmp_path: Path,
+) -> None:
+    value = task_data()
+    budget = dict(value["budget"])
+    budget.update(
+        {
+            "max_total_tokens": 5_000,
+            "max_worker_tokens": 1_000,
+            "max_reviewer_tokens": 2_000,
+        }
+    )
+    value["budget"] = budget
+    task = TaskSpec.model_validate(value)
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="role-ceilings",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha="a" * 40,
+        worktree_path=tmp_path / "worktree",
+        max_workers=2,
+    )
+    worker_events = tmp_path / "worker.events.jsonl"
+    worker_events.write_text("worker terminal evidence\n", encoding="utf-8")
+    service._account_invocation(
+        "role-ceilings",
+        task,
+        invocation_id="worker-attempt-1",
+        role="worker",
+        session_id="worker-session",
+        usage=Usage(
+            raw_input_tokens=1_000,
+            cached_input_tokens=0,
+            raw_output_tokens=0,
+            reasoning_tokens=0,
+        ),
+        events_path=worker_events,
+    )
+
+    run = service.store.get_run("role-ceilings")
+    with pytest.raises(RuntimeError, match="worker token ceiling reached"):
+        service._check_budget(run, task, role="worker")
+    service._check_budget(run, task, role="reviewer")
+
+    service.store.update_run("role-ceilings", reviewer_enforceable_tokens=2_001)
+    with pytest.raises(RuntimeError, match="reviewer token ceiling reached"):
+        service._check_budget(service.store.get_run("role-ceilings"), task, role="reviewer")
+
+    status = service.status("role-ceilings")
+    assert status["usage_totals"] == {
+        "worker_enforceable_tokens": 1_000,
+        "reviewer_enforceable_tokens": 2_001,
+    }
+
+
+def test_partial_and_unknown_usage_are_durable_and_block_the_next_invocation(
+    tmp_path: Path,
+) -> None:
+    task = make_task()
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="incomplete-usage",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha="a" * 40,
+        worktree_path=tmp_path / "worktree",
+        max_workers=2,
+    )
+    partial_events = tmp_path / "partial.events.jsonl"
+    unknown_events = tmp_path / "unknown.events.jsonl"
+    partial_events.write_text("partial terminal evidence\n", encoding="utf-8")
+    unknown_events.write_text("unknown terminal evidence\n", encoding="utf-8")
+
+    service._account_invocation(
+        "incomplete-usage",
+        task,
+        invocation_id="worker-attempt-1",
+        role="worker",
+        session_id="worker-session",
+        usage=Usage(raw_input_tokens=10),
+        events_path=partial_events,
+    )
+    service._account_invocation(
+        "incomplete-usage",
+        task,
+        invocation_id="reviewer-attempt-2",
+        role="reviewer",
+        session_id="reviewer-session",
+        usage=Usage(),
+        events_path=unknown_events,
+    )
+
+    ledger = service.store.invocation_usage("incomplete-usage")
+    assert [record["normalization_state"] for record in ledger] == [
+        "PARTIAL",
+        "UNKNOWN",
+    ]
+    assert ledger[0]["raw_input_tokens"] == 10
+    assert ledger[0]["cached_input_tokens"] is None
+    assert ledger[0]["enforceable_tokens"] is None
+    assert ledger[1]["raw_input_tokens"] is None
+    assert ledger[1]["enforceable_tokens"] is None
+    run = service.store.get_run("incomplete-usage")
+    assert run["worker_enforceable_tokens"] == 0
+    assert run["reviewer_enforceable_tokens"] == 0
+    with pytest.raises(RuntimeError, match="cannot be normalized"):
+        service._check_budget(run, task, role="worker")
+    with pytest.raises(RuntimeError, match="cannot be normalized"):
+        service._check_budget(run, task, role="reviewer")
+
+
+def test_invocation_replay_is_idempotent_after_a_later_invocation(tmp_path: Path) -> None:
+    task = make_task()
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="out-of-order-replay",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha="a" * 40,
+        worktree_path=tmp_path / "worktree",
+        max_workers=2,
+    )
+    older = tmp_path / "older.events.jsonl"
+    newer = tmp_path / "newer.events.jsonl"
+    older.write_text("terminal evidence\n", encoding="utf-8")
+    newer.write_text("terminal evidence\n", encoding="utf-8")
+    first_usage = Usage(
+        raw_input_tokens=10,
+        cached_input_tokens=2,
+        raw_output_tokens=2,
+        reasoning_tokens=1,
+        raw_provider_total=999,
+    )
+    second_usage = Usage(
+        raw_input_tokens=10,
+        cached_input_tokens=2,
+        raw_output_tokens=2,
+        reasoning_tokens=1,
+        raw_provider_total=999,
+    )
+
+    first = service._account_invocation(
+        "out-of-order-replay",
+        task,
+        invocation_id="worker-attempt-1",
+        role="worker",
+        session_id="same-session",
+        usage=first_usage,
+        events_path=older,
+    )
+    service._account_invocation(
+        "out-of-order-replay",
+        task,
+        invocation_id="worker-attempt-2",
+        role="worker",
+        session_id="same-session",
+        usage=second_usage,
+        events_path=newer,
+    )
+    replay = service._account_invocation(
+        "out-of-order-replay",
+        task,
+        invocation_id="worker-attempt-1",
+        role="worker",
+        session_id="same-session",
+        usage=first_usage,
+        events_path=older,
+    )
+
+    assert first["enforceable_tokens"] == 10
+    assert first["raw_provider_total"] == 999
+    assert replay["replayed"] is True
+    assert replay["enforceable_tokens"] == 10
+    assert replay["role_enforceable_total"] == 20
+    assert len(service.store.invocation_usage("out-of-order-replay")) == 2
+    run = service.store.get_run("out-of-order-replay")
+    assert run["worker_enforceable_tokens"] == 20
+    assert run["worker_accounted_events_sha256"] == sha256(older.read_bytes()).hexdigest()
+    with pytest.raises(RuntimeError, match="does not match replay evidence"):
+        service._account_invocation(
+            "out-of-order-replay",
+            task,
+            invocation_id="worker-attempt-1",
+            role="worker",
+            session_id="different-session",
+            usage=first_usage,
+            events_path=older,
+        )
+
+
+def test_token_preflight_keeps_invocation_and_elapsed_guards_independent(
+    tmp_path: Path,
+) -> None:
+    task = make_task()
+    service = RunnerService(tmp_path, tmp_path / "state")
+    service.store.create_run(
+        run_id="independent-guards",
+        task=task,
+        task_path=tmp_path / "task.json",
+        base_sha="a" * 40,
+        worktree_path=tmp_path / "worktree",
+        max_workers=2,
+    )
+    service.store.update_run(
+        "independent-guards", agent_invocations=task.budget.max_agent_invocations
+    )
+    with pytest.raises(RuntimeError, match="maximum agent invocations"):
+        service._check_budget(service.store.get_run("independent-guards"), task, role="worker")
+
+    service.store.update_run(
+        "independent-guards",
+        agent_invocations=0,
+        deadline_at="2000-01-01T00:00:00+00:00",
+    )
+    with pytest.raises(RuntimeError, match="elapsed-time ceiling"):
+        service._check_budget(service.store.get_run("independent-guards"), task, role="reviewer")
 
 
 def test_antigravity_context_requires_isolated_permission_and_exact_workspace(

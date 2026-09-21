@@ -850,6 +850,19 @@ def _load_final[ResultModel: BaseModel](path: Path, model: type[ResultModel]) ->
     return model.model_validate_json(path.read_text(encoding="utf-8"))
 
 
+def _optional_token(raw: dict[str, Any], key: str) -> int | None:
+    """Read one provider count without coercing missing or malformed values to zero."""
+
+    if key not in raw:
+        return None
+    value = raw[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"provider usage field {key!r} is not an integer")
+    if value < 0:
+        raise RuntimeError(f"provider usage field {key!r} is negative")
+    return value
+
+
 def _parse_codex_events(path: Path) -> tuple[str, Usage]:
     session_id: str | None = None
     terminal = False
@@ -867,14 +880,17 @@ def _parse_codex_events(path: Path) -> tuple[str, Usage]:
             session_id = str(event["thread_id"])
         if event.get("type") == "turn.completed":
             terminal = True
-            if isinstance(event.get("usage"), dict):
-                raw = event["usage"]
+            raw = event.get("usage")
+            if isinstance(raw, dict):
                 usage = Usage(
-                    input_tokens=int(raw.get("input_tokens", 0)),
-                    cached_input_tokens=int(raw.get("cached_input_tokens", 0)),
-                    output_tokens=int(raw.get("output_tokens", 0)),
-                    reasoning_output_tokens=int(raw.get("reasoning_output_tokens", 0)),
+                    raw_input_tokens=_optional_token(raw, "input_tokens"),
+                    cached_input_tokens=_optional_token(raw, "cached_input_tokens"),
+                    raw_output_tokens=_optional_token(raw, "output_tokens"),
+                    reasoning_tokens=_optional_token(raw, "reasoning_output_tokens"),
+                    raw_provider_total=_optional_token(raw, "total_tokens"),
                 )
+            elif raw is not None:
+                raise RuntimeError("Codex terminal usage is not an object")
     if session_id is None:
         raise RuntimeError("Codex JSONL did not expose thread.started.thread_id")
     if not terminal:
@@ -1065,14 +1081,14 @@ def _parse_antigravity_events(path: Path) -> tuple[str, Usage, dict[str, Any]]:
             raw_usage = result.get("usage")
             if isinstance(raw_usage, dict):
                 usage = Usage(
-                    input_tokens=int(raw_usage.get("input_tokens", 0)),
-                    cached_input_tokens=int(raw_usage.get("cache_read_tokens", 0)),
-                    output_tokens=int(raw_usage.get("output_tokens", 0)),
-                    reasoning_output_tokens=int(raw_usage.get("thinking_tokens", 0)),
-                    reported_total_tokens=(
-                        int(raw_usage["total_tokens"]) if "total_tokens" in raw_usage else None
-                    ),
+                    raw_input_tokens=_optional_token(raw_usage, "input_tokens"),
+                    cached_input_tokens=_optional_token(raw_usage, "cache_read_tokens"),
+                    raw_output_tokens=_optional_token(raw_usage, "output_tokens"),
+                    reasoning_tokens=_optional_token(raw_usage, "thinking_tokens"),
+                    raw_provider_total=_optional_token(raw_usage, "total_tokens"),
                 )
+            elif raw_usage is not None:
+                raise RuntimeError("Antigravity terminal usage is not an object")
             raw_output = result.get("structured_output")
             if isinstance(raw_output, dict):
                 structured_output = raw_output
@@ -1152,9 +1168,6 @@ def _validate_antigravity_context(
         raise RuntimeError("Antigravity result conversation did not match init")
     if result.get("json_schema") != expected_schema:
         raise RuntimeError("Antigravity did not bind the exact requested JSON schema")
-    raw_usage = result.get("usage")
-    if not isinstance(raw_usage, dict) or int(raw_usage.get("total_tokens", 0)) <= 0:
-        raise RuntimeError("Antigravity generation did not report positive token usage")
 
 
 def _build_antigravity_command(

@@ -106,18 +106,18 @@ def _usage_payload(raw: object) -> dict[str, int]:
     if not isinstance(raw, dict):
         return {}
     keys = {
-        "input_tokens": "input_tokens",
+        "input_tokens": "raw_input_tokens",
         "cached_input_tokens": "cached_input_tokens",
         "cache_read_tokens": "cached_input_tokens",
-        "output_tokens": "output_tokens",
-        "reasoning_output_tokens": "reasoning_output_tokens",
-        "thinking_tokens": "reasoning_output_tokens",
-        "total_tokens": "total_tokens",
+        "output_tokens": "raw_output_tokens",
+        "reasoning_output_tokens": "reasoning_tokens",
+        "thinking_tokens": "reasoning_tokens",
+        "total_tokens": "raw_provider_total",
     }
     result: dict[str, int] = {}
     for source, target in keys.items():
         value = raw.get(source)
-        if isinstance(value, int) and value >= 0:
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             result[target] = value
     return result
 
@@ -131,9 +131,10 @@ def _codex_event(event: dict[str, Any], worktree: Path) -> dict[str, object]:
         return payload
     if event_type in {"turn.started", "turn.completed"}:
         payload["summary"] = f"Codex {str(event_type).replace('.', ' ')}"
-        usage = _usage_payload(event.get("usage"))
-        if usage:
-            payload["usage"] = usage
+        if event_type == "turn.completed":
+            usage = _usage_payload(event.get("usage"))
+            if usage:
+                payload["usage"] = usage
         return payload
     item = event.get("item")
     if not isinstance(item, dict):
@@ -230,9 +231,6 @@ def _antigravity_event(event: dict[str, Any], worktree: Path) -> dict[str, objec
             payload["summary"] = "Antigravity produced an agent response update"
         else:
             payload["summary"] = f"Antigravity {step_type} {payload.get('status', 'updated')}"
-        usage = _usage_payload(step.get("usage"))
-        if usage:
-            payload["usage"] = usage
         return payload
     if event_type == "result":
         result = event.get("result")

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from nyan_shop_bot.orchestrator.models import (
+    Budget,
     ReviewResult,
     TaskSpec,
+    Usage,
+    UsageNormalization,
     WorkerResult,
 )
 
@@ -191,3 +197,83 @@ def test_generated_schemas_forbid_unknown_fields() -> None:
         "message",
         "evidence",
     }
+
+
+def test_nsb_011_fixture_preserves_raw_values_and_derives_policy_tokens() -> None:
+    fixture = Path("tests/fixtures/orchestrator/nsb_011_usage.json")
+    raw = json.loads(fixture.read_text(encoding="utf-8"))
+    usage = Usage(
+        raw_input_tokens=raw["input_tokens"],
+        cached_input_tokens=raw["cached_input_tokens"],
+        raw_output_tokens=raw["output_tokens"],
+        reasoning_tokens=raw["reasoning_output_tokens"],
+    )
+
+    normalized = usage.normalize_codex()
+
+    assert raw == {
+        "input_tokens": 2_589_292,
+        "cached_input_tokens": 2_407_168,
+        "output_tokens": 9_451,
+        "reasoning_output_tokens": 4_843,
+    }
+    assert normalized.raw_input_tokens == 2_589_292
+    assert normalized.cached_input_tokens == 2_407_168
+    assert normalized.raw_output_tokens == 9_451
+    assert normalized.reasoning_tokens == 4_843
+    assert normalized.fresh_input_tokens == 182_124
+    assert normalized.enforceable_tokens == 191_575
+    assert normalized.normalization_state is UsageNormalization.COMPLETE
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        (
+            {"raw_input_tokens": 3, "cached_input_tokens": 4},
+            "cached input tokens cannot exceed input tokens",
+        ),
+        (
+            {"raw_output_tokens": 3, "reasoning_tokens": 4},
+            "reasoning tokens cannot exceed output tokens",
+        ),
+    ],
+)
+def test_usage_rejects_invalid_subset_relationships(values: dict[str, int], message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        Usage.model_validate(values)
+
+
+def test_codex_raw_total_is_audit_only_and_missing_fields_stay_nullable() -> None:
+    complete = Usage(
+        raw_input_tokens=10,
+        cached_input_tokens=4,
+        raw_output_tokens=3,
+        reasoning_tokens=2,
+        raw_provider_total=999,
+    ).normalize_codex()
+    partial = Usage(raw_input_tokens=10, raw_provider_total=10).normalize_codex()
+    unknown = Usage().normalize_codex()
+
+    assert complete.raw_provider_total == 999
+    assert complete.enforceable_tokens == 9
+    assert partial.normalization_state is UsageNormalization.PARTIAL
+    assert partial.cached_input_tokens is None
+    assert partial.enforceable_tokens is None
+    assert unknown.normalization_state is UsageNormalization.UNKNOWN
+    assert unknown.raw_input_tokens is None
+    assert unknown.enforceable_tokens is None
+
+
+def test_role_token_ceilings_override_or_fall_back_to_legacy_total() -> None:
+    legacy = Budget(max_total_tokens=123_000)
+    split = Budget(
+        max_total_tokens=123_000,
+        max_worker_tokens=200_000,
+        max_reviewer_tokens=50_000,
+    )
+
+    assert legacy.token_ceiling("worker") == 123_000
+    assert legacy.token_ceiling("reviewer") == 123_000
+    assert split.token_ceiling("worker") == 200_000
+    assert split.token_ceiling("reviewer") == 50_000
