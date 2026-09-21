@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "task_id": "NSB-015",
+  "issue_number": 7,
+  "issue_url": "https://github.com/NhanDuong21/nyan-shop-bot/issues/7",
+  "repository": "NhanDuong21/nyan-shop-bot",
+  "title": "Telegram bot catalog browsing and simulated quote",
+  "base_ref": "main",
+  "pr_base": "main",
+  "branch": "nyan/nsb-015-bot-catalog",
+  "worker": "codex",
+  "worker_model": "gpt-5.6-sol",
+  "reviewer_model": "codex-auto-review",
+  "role": "backend",
+  "risk": "medium",
+  "queue_phase": "M1",
+  "queue_eligible": true,
+  "trusted_prompt": "Implement Issue #7 only inside the granted bot paths. Build an offline-testable aiogram catalog experience on the existing normalized CatalogReader boundary. Do not browse, add dependencies, edit catalog/supplier/config/workflow/runner files, open a live Telegram transport, read a Telegram token, make any network request, persist an order, or create a purchase/payment/top-up/refund/delivery path. Keep SUPPLIER_MODE=mock, PAYMENT_MODE=disabled, and ALLOW_REAL_PURCHASES=false. Preserve the existing build_router/build_dispatcher entry points and dependency-inject a CatalogReader (using FakeCatalogReader only as an explicit local/test default if a default is needed); constructing a dispatcher must never start polling or a webhook. Provide honest Vietnamese flows for /start, /catalog, /orders, and /support plus product-detail and simulated-quote callbacks. Start must identify MOCK/read-only mode. Catalog must render the existing CatalogResponse states honestly: fresh items; stale cached items with a visible stale/refresh warning; empty; and safe error without exposing an upstream body, secret, traceback, supplier identity, or internal mapping. Product detail must call CatalogReader.get_product with a validated normalized product id and handle found, not_found, and unsupported without guessing. Orders must explicitly state that checkout and real orders are unavailable. Support must be static/offline and must not invent contact details. A simulated quote is informational only: it must say simulated/MOCK/read-only, not create or reserve anything, not promise availability, and use only the current server-side product/variant returned by CatalogReader. Display money as the existing integer amount_minor plus its explicit currency and unit without float, conversion, aggregation, or an assumed currency exponent. Never expose SupplierMapping or supplier-side identifiers. Define a compact, versioned ASCII callback codec whose encoded callback_data is at most Telegram's 64-byte limit. Callback data may carry only an action plus a bounded opaque normalized product or variant identifier; it must never carry title, description, price, currency, quantity, supplier identity, or serialized product data. Treat every callback payload as untrusted: reject malformed, unknown-version/action, empty, non-ASCII/control-character, separator-smuggling, and overlong values; resolve the referenced product again through CatalogReader; for a quote, select the referenced variant only from that returned product and take identity, price, currency, unit, and availability from the server-side object. A forged, stale, or unknown product/variant callback must fail closed with a safe refresh message and must cause no write or external side effect. Answer callback queries where appropriate so the Telegram loading state is cleared, while keeping tests independent of Telegram transport. Bound message/button sizes and avoid retry/sleep/background loops. Keep every purchase, payment, top-up, refund, delivery, order submission, Telegram Stars, polling, webhook, HTTP client, and live supplier capability absent. Add synthetic tests under tests/bot/** using fakes/mocks only: start/menu honesty; fresh/stale/empty/error catalog states; found/not-found/unsupported detail; callback codec round-trip and the full malformed/forged/unknown/overlong boundary; exact proof that client-supplied price/currency/title cannot affect a quote; server-side variant lookup and out-of-stock messaging; orders/support behavior; dispatcher/router construction without token or transport; capabilities remaining write-disabled; and an outbound-network guard that fails if socket/DNS/HTTP/Telegram transport is attempted. Preserve the existing Phase 0 tests. Run focused bot tests, backend verification, security verification, and full repository verify when prerequisites are available, and report PASS/FAIL/NOT RUN exactly.",
+  "acceptance_criteria": [
+    "Offline aiogram handlers provide honest MOCK/read-only start, catalog, product detail, orders placeholder, support, and simulated quote flows without a Telegram token or live transport.",
+    "Fresh, stale, empty, error, found, not-found, and unsupported catalog outcomes are rendered safely without supplier mappings, credentials, upstream bodies, or invented data.",
+    "A bounded versioned callback codec stays within 64 bytes, carries no client-controlled price or supplier data, rejects malformed or forged values, and resolves product and variant identity against CatalogReader on every callback.",
+    "Simulated quotes use only server-side integer amount_minor, explicit currency/unit, and current availability; they create no order, reservation, payment, purchase, top-up, refund, or delivery obligation.",
+    "Orders clearly states checkout is unavailable, support is static/offline, and all write/money/delivery capabilities remain disabled.",
+    "Synthetic bot tests cover aiogram dispatch, catalog/error states, callback forgery and client-price tampering, server-side quote resolution, and a hard outbound-network guard.",
+    "Focused bot tests, backend and security checks, and full repository verification pass without credentials or outbound traffic."
+  ],
+  "allowed_paths": [
+    "src/nyan_shop_bot/bot/**",
+    "tests/bot/**"
+  ],
+  "required_checks": [
+    "ci-gate"
+  ],
+  "dependencies": [
+    2
+  ],
+  "auto_merge_eligible": false,
+  "budget": {
+    "max_agent_invocations": 5,
+    "max_total_tokens": 500000,
+    "max_worker_tokens": 500000,
+    "max_reviewer_tokens": 200000,
+    "max_elapsed_seconds": 10800,
+    "max_fix_rounds": 3,
+    "ci_timeout_seconds": 3600,
+    "poll_initial_seconds": 10,
+    "poll_max_seconds": 60
+  }
+}
