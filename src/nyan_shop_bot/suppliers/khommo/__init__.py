@@ -35,6 +35,7 @@ from nyan_shop_bot.suppliers.khommo.models import (
     Wallet,
     parse_account,
     parse_product,
+    parse_product_detail,
     parse_products,
 )
 
@@ -67,5 +68,6 @@ __all__ = [
     "Wallet",
     "parse_account",
     "parse_product",
+    "parse_product_detail",
     "parse_products",
 ]

@@ -188,6 +188,7 @@ _PRODUCT_FIELDS = {
     "stock",
     "inStock",
 }
+_PRODUCT_DETAIL_ENVELOPE_FIELDS = {"ok", "data"}
 _PRODUCTS_ENVELOPE_FIELDS = {"ok", "data", "pagination"}
 _PAGINATION_FIELDS = {"page", "limit", "total", "totalPages"}
 
@@ -262,6 +263,14 @@ def parse_product(value: object) -> Product:
         stock=_optional_non_negative_int(data["stock"], "stock"),
         in_stock=in_stock,
     )
+
+
+def parse_product_detail(value: object) -> Product:
+    """Parse the exact owner-observed detail envelope without weakening list parsing."""
+    envelope = _exact_object(value, _PRODUCT_DETAIL_ENVELOPE_FIELDS, "product_detail")
+    if envelope["ok"] is not True:
+        raise UnsupportedSchemaError("product_detail.ok", "expected true")
+    return parse_product(envelope["data"])
 
 
 def parse_products(value: object) -> ProductsPage:

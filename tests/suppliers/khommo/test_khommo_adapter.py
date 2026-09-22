@@ -61,6 +61,10 @@ def products_page(
     }
 
 
+def product_detail(item: dict[str, object] | None = None) -> dict[str, object]:
+    return {"ok": True, "data": product() if item is None else item}
+
+
 class FakeTransport:
     def __init__(self, outcomes: Iterable[KhoMmoResponse | Exception]) -> None:
         self.outcomes = iter(outcomes)
@@ -139,7 +143,7 @@ async def test_exact_ordered_query_defaults_search_and_detail_target() -> None:
                     products_page(product(), page=2, limit=500, total=501, total_pages=2)
                 ).encode(),
             ),
-            KhoMmoResponse(200, json.dumps(product()).encode()),
+            KhoMmoResponse(200, json.dumps(product_detail()).encode()),
         ]
     )
     client = adapter(transport)
@@ -153,6 +157,28 @@ async def test_exact_ordered_query_defaults_search_and_detail_target() -> None:
     assert transport.requests[1].url == PRODUCTION_BASE_URL + "/products/id%201"
     assert isinstance(detail, ReadSuccess)
     assert all(request.method == "GET" for request in transport.requests)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        product(),
+        {"ok": False, "data": product()},
+        {"ok": True, "data": product(), "extra": "unsupported"},
+        {"ok": True, "data": None},
+        {"ok": True, "data": product(extra="unsupported")},
+    ],
+)
+@pytest.mark.asyncio
+async def test_product_detail_accepts_only_the_exact_observed_envelope(
+    payload: object,
+) -> None:
+    transport = FakeTransport([KhoMmoResponse(200, json.dumps(payload).encode())])
+
+    outcome = await adapter(transport).get_product("p-1")
+
+    assert outcome == ReadFailure(OutcomeCode.UNSUPPORTED_SCHEMA)
+    assert len(transport.requests) == 1
 
 
 @pytest.mark.parametrize("product_id", [".", ".."])

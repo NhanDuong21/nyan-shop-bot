@@ -6,12 +6,17 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
+from nyan_shop_bot.bot.callbacks import encode_detail_callback
+from nyan_shop_bot.bot.handlers import callback_handler
 from nyan_shop_bot.catalog.models import (
     CapabilityStatus,
     CatalogDetailFound,
     CatalogDetailNotFound,
+    CatalogDetailUnsupported,
     CatalogState,
 )
+from nyan_shop_bot.config import Settings
+from nyan_shop_bot.main import create_app
 from nyan_shop_bot.suppliers.khommo import (
     KhoMmoCatalogReader,
     KhoMmoHttpTransport,
@@ -59,6 +64,10 @@ def products_page(
             "totalPages": resolved_pages,
         },
     }
+
+
+def product_detail(item: dict[str, object] | None = None) -> dict[str, object]:
+    return {"ok": True, "data": product() if item is None else item}
 
 
 class FakeTransport:
@@ -186,7 +195,7 @@ async def test_catalog_and_detail_failures_are_safe_and_never_enable_writes() ->
 
 @pytest.mark.asyncio
 async def test_product_detail_uses_same_normalized_live_read_projection() -> None:
-    catalog, transport = reader(KhoMmoResponse(200, json.dumps(product()).encode("utf-8")))
+    catalog, transport = reader(KhoMmoResponse(200, json.dumps(product_detail()).encode("utf-8")))
 
     detail = await catalog.get_product("p-1")
 
@@ -194,6 +203,88 @@ async def test_product_detail_uses_same_normalized_live_read_projection() -> Non
     assert detail.item.id == "p-1"
     assert detail.item.read_only is True
     assert transport.requests[0].url.endswith("/products/p-1")
+
+
+@pytest.mark.asyncio
+async def test_product_detail_rejects_a_mismatched_supplier_identity() -> None:
+    catalog, _ = reader(
+        KhoMmoResponse(
+            200,
+            json.dumps(product_detail(product(id="different-id"))).encode("utf-8"),
+        )
+    )
+
+    detail = await catalog.get_product("p-1")
+
+    assert isinstance(detail, CatalogDetailUnsupported)
+    assert detail.product_id == "p-1"
+
+
+@pytest.mark.asyncio
+async def test_observed_detail_envelope_reaches_fastapi_and_telegram_consistently() -> None:
+    response = KhoMmoResponse(200, json.dumps(product_detail()).encode("utf-8"))
+    catalog, transport = reader(response, response)
+
+    class ReadyDatabase:
+        async def ping(self) -> bool:
+            return True
+
+        async def close(self) -> None:
+            return None
+
+    class RecordingMessage:
+        def __init__(self) -> None:
+            self.answers: list[str] = []
+
+        async def answer(self, text: str, **kwargs: object) -> object:
+            del kwargs
+            self.answers.append(text)
+            return object()
+
+    class RecordingCallback:
+        data = encode_detail_callback("p-1")
+
+        def __init__(self, message: RecordingMessage) -> None:
+            self.message = message
+            self.answered = False
+
+        async def answer(self) -> object:
+            self.answered = True
+            return object()
+
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        app_env="local",
+        app_host="127.0.0.1",
+        supplier_mode="khommo-readonly",
+        khommo_api_token="synthetic-secret",
+        payment_mode="disabled",
+        allow_real_purchases=False,
+    )
+    application = create_app(settings=settings, catalog=catalog, database=ReadyDatabase())
+    api_transport = httpx.ASGITransport(app=application, client=("127.0.0.1", 42001))
+    async with httpx.AsyncClient(transport=api_transport, base_url="http://test") as client:
+        api_response = await client.get("/api/v1/catalog/p-1")
+
+    message = RecordingMessage()
+    callback = RecordingCallback(message)
+    await callback_handler(callback, catalog)
+
+    assert api_response.status_code == 200
+    api_detail = api_response.json()
+    assert api_detail["state"] == "found"
+    assert api_detail["item"]["id"] == "p-1"
+    assert api_detail["item"]["supplier"] == "khommo"
+    assert api_detail["item"]["mode"] == "khommo-readonly"
+    assert api_detail["item"]["read_only"] is True
+    assert callback.answered is True
+    assert len(message.answers) == 1
+    assert "CHI TIẾT SẢN PHẨM — KHOMMO / CHỈ ĐỌC" in message.answers[0]
+    assert f"Tên: {api_detail['item']['name']}" in message.answers[0]
+    assert "amount_minor=25000; currency=VND; unit=minor" in message.answers[0]
+    assert "available_quantity=4" in message.answers[0]
+    assert len(transport.requests) == 2
+    assert all(request.url.endswith("/products/p-1") for request in transport.requests)
 
 
 @pytest.mark.asyncio
