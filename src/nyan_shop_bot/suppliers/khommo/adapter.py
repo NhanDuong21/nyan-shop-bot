@@ -20,7 +20,7 @@ from nyan_shop_bot.suppliers.khommo.models import (
     UnsupportedSchemaError,
     decode_json,
     parse_account,
-    parse_product,
+    parse_product_detail,
     parse_products,
 )
 
@@ -136,5 +136,5 @@ class KhoMmoReadAdapter:
         ):
             raise KhoMmoConfigurationError("Product ID must be non-empty path-safe text")
         return await self._send(
-            self._request("/products/" + quote(product_id, safe="")), parse_product
+            self._request("/products/" + quote(product_id, safe="")), parse_product_detail
         )

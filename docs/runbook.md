@@ -93,6 +93,12 @@ being guessed; the API returns `partial=true` and an exact `omitted_count`, and 
 show that warning. Every other schema, identity, currency, stock-consistency, or pagination
 problem still fails the whole catalog closed.
 
+One owner-authorized detail probe observed HTTP 200 with the exact top-level keys `ok` (boolean)
+and `data` (product object). Detail parsing accepts only that envelope, requires `ok=true`, and
+then applies the same strict product projection and requested-ID match as the listing boundary.
+Direct product objects, extra keys, or mismatched identities fail closed. No raw live response or
+product value is stored in the repository.
+
 ### Owner-started local Telegram read
 
 The Telegram dispatcher uses the same configured `CatalogReader` as FastAPI. The runtime never
