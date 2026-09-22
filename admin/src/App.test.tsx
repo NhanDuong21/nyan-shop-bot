@@ -25,6 +25,7 @@ const catalogItem = {
   description: "Dữ liệu tổng hợp từ backend",
   supplier: "mock",
   mode: "mock",
+  read_only: true,
   price: { amount_minor: 42000, currency: "VND", unit: "minor" },
   available_quantity: 2,
   variants: [
@@ -49,7 +50,11 @@ const capabilities = {
 
 function freshCatalog(items: unknown[]) {
   return {
+    supplier: "mock",
     mode: "mock",
+    read_only: true,
+    partial: false,
+    omitted_count: 0,
     state: items.length === 0 ? "empty" : "fresh",
     freshness,
     items,
@@ -82,9 +87,9 @@ test("shows explicit loading states while both API requests are pending", () => 
 
   render(<App />);
 
-  expect(screen.getByText(/Đang tải catalog mock/i)).toBeInTheDocument();
+  expect(screen.getByText(/Đang tải catalog qua FastAPI/i)).toBeInTheDocument();
   expect(screen.getByText(/Đang đọc trạng thái supplier/i)).toBeInTheDocument();
-  expect(screen.getByLabelText(/Môi trường mock/i)).toBeInTheDocument();
+  expect(screen.getByLabelText(/Môi trường loading/i)).toBeInTheDocument();
 });
 
 test("renders generated-contract catalog and supplier truth without replacing API data", async () => {
@@ -95,7 +100,7 @@ test("renders generated-contract catalog and supplier truth without replacing AP
   expect(await screen.findByText("Sản phẩm kiểm thử")).toBeInTheDocument();
   expect(screen.getByText("Dữ liệu tổng hợp từ backend")).toBeInTheDocument();
   expect(screen.getByText("42.000 VND · minor")).toBeInTheDocument();
-  expect(screen.getByText(/Backend mock không cung cấp số dư supplier/i)).toBeInTheDocument();
+  expect(screen.getByText(/Catalog API không công khai số dư supplier/i)).toBeInTheDocument();
   expect(screen.getAllByText(/MOCK/).length).toBeGreaterThanOrEqual(1);
   expect(screen.getByText(/chỉ chạy trên localhost/i)).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith(
@@ -106,6 +111,36 @@ test("renders generated-contract catalog and supplier truth without replacing AP
     "/api/v1/capabilities",
     expect.objectContaining({ method: "GET" }),
   );
+});
+
+test("renders KhoMMO live-read source while keeping every write boundary visibly locked", async () => {
+  const liveItem = {
+    ...catalogItem,
+    id: "khommo-item",
+    supplier: "khommo",
+    mode: "khommo-readonly",
+    read_only: true,
+  };
+  stubApi({
+    supplier: "khommo",
+    mode: "khommo-readonly",
+    read_only: true,
+    partial: true,
+    omitted_count: 2,
+    state: "fresh",
+    freshness,
+    items: [liveItem],
+    error: null,
+  });
+
+  render(<App />);
+
+  expect((await screen.findAllByText(/^khommo$/i)).length).toBeGreaterThanOrEqual(1);
+  expect(screen.getByLabelText(/Môi trường KHOMMO-READONLY/i)).toBeInTheDocument();
+  expect(screen.getByText(/KhoMMO chỉ cho phép đọc catalog/i)).toBeInTheDocument();
+  expect(screen.getByText(/Catalog đang hiển thị một phần/i)).toBeInTheDocument();
+  expect(screen.getByText(/2 sản phẩm bị loại/i)).toBeInTheDocument();
+  expect(screen.getAllByText("Đã khóa").length).toBeGreaterThanOrEqual(2);
 });
 
 test("filters injected catalog data without replacing the backend source", async () => {
@@ -134,7 +169,7 @@ test("shows an explicit empty state from the catalog envelope", async () => {
 
   render(<App />);
 
-  expect(await screen.findByText(/Catalog mock đang trống/i)).toBeInTheDocument();
+  expect(await screen.findByText(/Catalog đang trống/i)).toBeInTheDocument();
   expect(screen.getByText(/Chưa có dữ liệu/i)).toBeInTheDocument();
 });
 
@@ -156,7 +191,7 @@ test("shows a safe transport error and retries both read-only resources", async 
   render(<App />);
 
   expect(await screen.findByText(/Catalog không khả dụng/i)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: /Thử lại/i }));
+  fireEvent.click(screen.getAllByRole("button", { name: /Thử lại/i })[0]);
 
   expect(await screen.findByText("Sản phẩm kiểm thử")).toBeInTheDocument();
   expect(catalogRequests).toBe(2);

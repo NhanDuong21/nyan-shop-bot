@@ -10,7 +10,11 @@
       },
       "items": [],
       "mode": "mock",
-      "state": "empty"
+      "omitted_count": 0,
+      "partial": false,
+      "read_only": true,
+      "state": "empty",
+      "supplier": "mock"
     },
     "error": {
       "error": {
@@ -21,7 +25,11 @@
       "freshness": null,
       "items": [],
       "mode": "mock",
-      "state": "error"
+      "omitted_count": 0,
+      "partial": false,
+      "read_only": true,
+      "state": "error",
+      "supplier": "mock"
     },
     "fresh": {
       "error": null,
@@ -43,6 +51,7 @@
             "currency": "VND",
             "unit": "minor"
           },
+          "read_only": true,
           "supplier": "mock",
           "variants": [
             {
@@ -83,6 +92,7 @@
             "currency": "VND",
             "unit": "minor"
           },
+          "read_only": true,
           "supplier": "mock",
           "variants": [
             {
@@ -123,6 +133,7 @@
             "currency": "VND",
             "unit": "minor"
           },
+          "read_only": true,
           "supplier": "mock",
           "variants": [
             {
@@ -154,7 +165,11 @@
         }
       ],
       "mode": "mock",
-      "state": "fresh"
+      "omitted_count": 0,
+      "partial": false,
+      "read_only": true,
+      "state": "fresh",
+      "supplier": "mock"
     },
     "stale": {
       "error": {
@@ -180,6 +195,7 @@
             "currency": "VND",
             "unit": "minor"
           },
+          "read_only": true,
           "supplier": "mock",
           "variants": [
             {
@@ -220,6 +236,7 @@
             "currency": "VND",
             "unit": "minor"
           },
+          "read_only": true,
           "supplier": "mock",
           "variants": [
             {
@@ -260,6 +277,7 @@
             "currency": "VND",
             "unit": "minor"
           },
+          "read_only": true,
           "supplier": "mock",
           "variants": [
             {
@@ -291,7 +309,11 @@
         }
       ],
       "mode": "mock",
-      "state": "stale"
+      "omitted_count": 0,
+      "partial": false,
+      "read_only": true,
+      "state": "stale",
+      "supplier": "mock"
     }
   },
   "schema_version": 1,

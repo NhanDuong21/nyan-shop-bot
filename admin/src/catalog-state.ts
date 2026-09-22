@@ -4,7 +4,9 @@ import {
   type CatalogError,
   type CatalogFreshness,
   type CatalogItem,
+  type CatalogMode,
   type CatalogResponse,
+  type CatalogSupplier,
   fetchCapabilities,
   fetchCatalog,
   type SupplierCapabilities,
@@ -19,6 +21,8 @@ export type CatalogPanelState =
       items: CatalogItem[];
       freshness: CatalogFreshness;
       warning: CatalogError | null;
+      partial: boolean;
+      omittedCount: number;
     };
 
 export type SupplierPanelState =
@@ -26,8 +30,9 @@ export type SupplierPanelState =
   | { kind: "error"; message: string }
   | {
       kind: "ready";
-      supplier: "mock";
-      mode: "mock";
+      supplier: CatalogSupplier;
+      mode: CatalogMode;
+      readOnly: true;
       currencies: string[];
       balance: {
         kind: "unsupported";
@@ -66,6 +71,8 @@ function mapCatalogState(response: CatalogResponse): CatalogPanelState {
         items: response.items,
         freshness: response.freshness,
         warning: null,
+        partial: response.partial,
+        omittedCount: response.omitted_count,
       };
     case "stale":
       return {
@@ -73,6 +80,8 @@ function mapCatalogState(response: CatalogResponse): CatalogPanelState {
         items: response.items,
         freshness: response.freshness,
         warning: response.error,
+        partial: response.partial,
+        omittedCount: response.omitted_count,
       };
     case "empty":
       return { kind: "empty", freshness: response.freshness };
@@ -140,15 +149,16 @@ export function useCatalogState(): CatalogStateController {
               }
             : mapCatalogState(catalogResponse),
         supplier:
-          capabilitiesResult.status === "fulfilled"
+          capabilitiesResult.status === "fulfilled" && catalogResponse !== null
             ? {
                 kind: "ready",
-                supplier: "mock",
-                mode: "mock",
+                supplier: catalogResponse.supplier,
+                mode: catalogResponse.mode,
+                readOnly: catalogResponse.read_only,
                 currencies: catalogCurrencies(catalogResponse),
                 balance: {
                   kind: "unsupported",
-                  reason: "Backend mock không cung cấp số dư supplier.",
+                  reason: "Catalog API không công khai số dư supplier.",
                 },
                 capabilities: capabilitiesResult.value,
               }

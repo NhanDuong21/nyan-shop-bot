@@ -19,6 +19,7 @@ const item = {
   description: "Chỉ dùng cho kiểm thử",
   supplier: "mock" as const,
   mode: "mock" as const,
+  read_only: true as const,
   price: { amount_minor: 1250, currency: "USD", unit: "minor" as const },
   available_quantity: 4,
   variants: [
@@ -46,10 +47,11 @@ function supplierReady(): AdminDashboardState["supplier"] {
     kind: "ready",
     supplier: "mock",
     mode: "mock",
+    readOnly: true,
     currencies: ["USD"],
     balance: {
       kind: "unsupported",
-      reason: "Backend mock không cung cấp số dư supplier.",
+      reason: "Catalog API không công khai số dư supplier.",
     },
     capabilities,
   };
@@ -63,7 +65,7 @@ test("announces independent catalog and supplier loading states", () => {
     />,
   );
 
-  expect(screen.getByText(/Đang tải catalog mock/i)).toBeInTheDocument();
+  expect(screen.getByText(/Đang tải catalog qua FastAPI/i)).toBeInTheDocument();
   expect(screen.getByText(/Đang đọc trạng thái supplier/i)).toBeInTheDocument();
 });
 
@@ -92,7 +94,14 @@ test("keeps supplier failures distinct from a usable catalog", () => {
   render(
     <AdminDashboard
       state={{
-        catalog: { kind: "success", items: [item], freshness, warning: null },
+        catalog: {
+          kind: "success",
+          items: [item],
+          freshness,
+          warning: null,
+          partial: false,
+          omittedCount: 0,
+        },
         supplier: { kind: "error", message: "Trạng thái supplier không khả dụng." },
       }}
       onRetry={vi.fn()}
@@ -116,6 +125,8 @@ test("renders stale cached data, explicit minor money, and unsupported balance h
             message: "Làm mới thất bại; đang dùng cache.",
             retryable: true,
           },
+          partial: false,
+          omittedCount: 0,
         },
         supplier: supplierReady(),
       }}
@@ -126,7 +137,7 @@ test("renders stale cached data, explicit minor money, and unsupported balance h
   expect(screen.getByText(/dữ liệu cache đã cũ/i)).toBeInTheDocument();
   expect(screen.getByText("1.250 USD · minor")).toBeInTheDocument();
   expect(screen.getByText("USD")).toBeInTheDocument();
-  expect(screen.getByText(/không cung cấp số dư supplier/i)).toBeInTheDocument();
+  expect(screen.getByText(/không công khai số dư supplier/i)).toBeInTheDocument();
   expect(screen.getByText("MOCK · READ-ONLY")).toBeInTheDocument();
   expect(screen.getAllByText("Đã khóa").length).toBeGreaterThanOrEqual(2);
 });
@@ -139,12 +150,19 @@ test("renders empty and filtered-empty states without inventing catalog data", (
     />,
   );
 
-  expect(screen.getByText(/Catalog mock đang trống/i)).toBeInTheDocument();
+  expect(screen.getByText(/Catalog đang trống/i)).toBeInTheDocument();
 
   rerender(
     <AdminDashboard
       state={{
-        catalog: { kind: "success", items: [item], freshness, warning: null },
+        catalog: {
+          kind: "success",
+          items: [item],
+          freshness,
+          warning: null,
+          partial: false,
+          omittedCount: 0,
+        },
         supplier: supplierReady(),
       }}
       onRetry={vi.fn()}

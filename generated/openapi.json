@@ -248,8 +248,11 @@
             "type": "string"
           },
           "mode": {
-            "const": "mock",
             "default": "mock",
+            "enum": [
+              "mock",
+              "khommo-readonly"
+            ],
             "title": "Mode",
             "type": "string"
           },
@@ -262,9 +265,18 @@
           "price": {
             "$ref": "#/components/schemas/Money"
           },
+          "read_only": {
+            "const": true,
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
           "supplier": {
-            "const": "mock",
             "default": "mock",
+            "enum": [
+              "mock",
+              "khommo"
+            ],
             "title": "Supplier",
             "type": "string"
           },
@@ -320,12 +332,41 @@
             "type": "array"
           },
           "mode": {
-            "const": "mock",
+            "enum": [
+              "mock",
+              "khommo-readonly"
+            ],
             "title": "Mode",
             "type": "string"
           },
+          "omitted_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Omitted Count",
+            "type": "integer"
+          },
+          "partial": {
+            "default": false,
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "read_only": {
+            "const": true,
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
           "state": {
             "$ref": "#/components/schemas/CatalogState"
+          },
+          "supplier": {
+            "default": "mock",
+            "enum": [
+              "mock",
+              "khommo"
+            ],
+            "title": "Supplier",
+            "type": "string"
           }
         },
         "required": [

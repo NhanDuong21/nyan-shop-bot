@@ -53,6 +53,7 @@ def main() -> int:
         "supplier_mode": "mock",
         "payment_mode": "disabled",
         "allow_real_purchases": False,
+        "read_only": True,
     }
 
     _, catalog_bytes, _ = get(f"{API_URL}/api/v1/catalog")

@@ -4,6 +4,9 @@ export interface Money {
   unit: "minor";
 }
 
+export type CatalogSupplier = "mock" | "khommo";
+export type CatalogMode = "mock" | "khommo-readonly";
+
 export interface CatalogVariant {
   id: string;
   name: string;
@@ -15,8 +18,9 @@ export interface CatalogItem {
   id: string;
   name: string;
   description: string;
-  supplier: "mock";
-  mode: "mock";
+  supplier: CatalogSupplier;
+  mode: CatalogMode;
+  read_only: true;
   price: Money;
   available_quantity: number;
   variants: CatalogVariant[];
@@ -36,7 +40,11 @@ export interface CatalogError {
 }
 
 interface CatalogEnvelopeBase {
-  mode: "mock";
+  supplier: CatalogSupplier;
+  mode: CatalogMode;
+  read_only: true;
+  partial: boolean;
+  omitted_count: number;
 }
 
 export type CatalogResponse =

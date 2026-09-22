@@ -44,6 +44,7 @@ class RuntimeMutatingCatalog(StubCatalogReader):
     "runtime",
     (
         FakeRuntimeSettings(supplier_mode="live"),
+        FakeRuntimeSettings(supplier_mode="khommo-readonly"),
         FakeRuntimeSettings(payment_mode="mock"),
         FakeRuntimeSettings(payment_mode="live"),
         FakeRuntimeSettings(allow_real_purchases=True),

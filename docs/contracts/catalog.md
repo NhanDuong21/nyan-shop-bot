@@ -44,6 +44,10 @@ Catalog responses are internally validated:
 - `empty` is a successful fresh read with no items.
 - `error` has no items or claimed freshness and carries a client-safe error.
 
+`partial=true` is valid only for a populated `fresh` or `stale` response and requires a positive
+`omitted_count`. It records supplier rows deliberately excluded because required read-only fields
+were absent; it never permits guessed values or weakens write capability guards.
+
 ## Capability boundary
 
 Catalog list and verified detail reads are read-only. A supplier without a verified detail schema

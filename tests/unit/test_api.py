@@ -5,7 +5,8 @@ from httpx import ASGITransport, AsyncClient
 from nyan_shop_bot.catalog.mock import FakeCatalogReader, FakeCatalogScenario
 from nyan_shop_bot.catalog.ports import CatalogReader
 from nyan_shop_bot.config import Settings
-from nyan_shop_bot.main import create_app
+from nyan_shop_bot.main import build_catalog_reader, create_app
+from nyan_shop_bot.suppliers.khommo import KhoMmoCatalogReader
 
 
 class ReadyDatabase:
@@ -32,7 +33,64 @@ async def test_health_exposes_safety_state() -> None:
         "supplier_mode": "mock",
         "payment_mode": "disabled",
         "allow_real_purchases": False,
+        "read_only": True,
     }
+
+
+async def test_live_read_factory_constructs_khommo_without_contacting_supplier() -> None:
+    secret = "local-secret-marker"
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        supplier_mode="khommo-readonly",
+        khommo_api_token=secret,
+        payment_mode="disabled",
+        allow_real_purchases=False,
+    )
+
+    catalog, close_catalog = build_catalog_reader(settings)
+    try:
+        assert isinstance(catalog, KhoMmoCatalogReader)
+        assert secret not in repr(catalog)
+    finally:
+        assert close_catalog is not None
+        await close_catalog()
+
+
+async def test_live_read_catalog_routes_reject_non_loopback_clients() -> None:
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        app_env="local",
+        app_host="127.0.0.1",
+        supplier_mode="khommo-readonly",
+        khommo_api_token="synthetic-secret",
+        payment_mode="disabled",
+        allow_real_purchases=False,
+    )
+    application = create_app(
+        settings=settings,
+        catalog=FakeCatalogReader(),
+        database=ReadyDatabase(),
+    )
+    remote_transport = ASGITransport(app=application, client=("203.0.113.10", 42000))
+    loopback_transport = ASGITransport(app=application, client=("127.0.0.1", 42001))
+
+    async with AsyncClient(transport=remote_transport, base_url="http://test") as client:
+        health = await client.get("/healthz")
+        blocked = [
+            await client.get("/api/v1/catalog"),
+            await client.get("/api/v1/catalog/p-1"),
+            await client.get("/api/v1/capabilities"),
+        ]
+    async with AsyncClient(transport=loopback_transport, base_url="http://test") as client:
+        capabilities = await client.get("/api/v1/capabilities")
+
+    assert health.status_code == 200
+    assert [response.status_code for response in blocked] == [403, 403, 403]
+    assert all(
+        response.json()["detail"] == "live-read catalog is available only from loopback"
+        for response in blocked
+    )
+    assert capabilities.status_code == 200
 
 
 async def test_readiness_uses_database_probe() -> None:
@@ -52,6 +110,8 @@ async def test_catalog_exposes_normalized_identifiers_money_and_freshness() -> N
     assert body["mode"] == "mock"
     assert body["state"] == "fresh"
     assert body["freshness"]["status"] == "fresh"
+    assert body["partial"] is False
+    assert body["omitted_count"] == 0
     assert len(body["items"]) == 3
 
     variants = [variant for item in body["items"] for variant in item["variants"]]
@@ -109,6 +169,10 @@ async def test_catalog_error_is_a_typed_client_state() -> None:
             "message": "The deterministic mock catalog is unavailable.",
             "retryable": True,
         },
+        "supplier": "mock",
+        "read_only": True,
+        "partial": False,
+        "omitted_count": 0,
     }
 
 

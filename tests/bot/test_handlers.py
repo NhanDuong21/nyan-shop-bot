@@ -157,7 +157,7 @@ async def test_start_is_honest_and_contains_the_static_menu() -> None:
 
     await start_handler(message)
 
-    assert "MOCK / CHỈ ĐỌC" in message.text
+    assert "LOCAL / CHỈ ĐỌC" in message.text
     assert "vô hiệu hóa" in message.text
     assert all(command in message.text for command in ("/catalog", "/orders", "/support"))
 
@@ -168,7 +168,7 @@ async def test_start_is_honest_and_contains_the_static_menu() -> None:
         (FakeCatalogScenario.FRESH, "trạng thái mới", True),
         (FakeCatalogScenario.STALE, "dữ liệu bộ nhớ đệm đã cũ", True),
         (FakeCatalogScenario.EMPTY, "Danh mục hiện trống", False),
-        (FakeCatalogScenario.ERROR, "Không thể tải danh mục MOCK", False),
+        (FakeCatalogScenario.ERROR, "Không thể tải danh mục chỉ đọc", False),
     ],
 )
 async def test_catalog_renders_all_envelope_states_honestly(
@@ -189,6 +189,33 @@ async def test_catalog_renders_all_envelope_states_honestly(
         assert "làm mới" in message.text
 
 
+async def test_live_partial_catalog_shows_source_and_exact_omission_count() -> None:
+    fresh = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+    live_product = _product().model_copy(update={"supplier": "khommo", "mode": "khommo-readonly"})
+    response = CatalogResponse(
+        supplier="khommo",
+        mode="khommo-readonly",
+        state=CatalogState.FRESH,
+        freshness=fresh.freshness,
+        items=(live_product,),
+        error=None,
+        partial=True,
+        omitted_count=3,
+    )
+    message = FakeMessage()
+
+    await catalog_handler(message, StubCatalogReader(catalog_response=response))
+
+    assert "DANH MỤC — KHOMMO / CHỈ ĐỌC" in message.text
+    assert "CATALOG PARTIAL" in message.text
+    assert "3 sản phẩm bị loại" in message.text
+    assert "Sản phẩm do máy chủ trả về" in message.text
+    assert "currency=VND" in message.text
+    assert "không cấp quyền mua" in message.text
+    for forbidden in ("secret-supplier-identity", "secret-product", "secret-variant"):
+        assert forbidden not in message.text
+
+
 async def test_catalog_error_never_echoes_upstream_details() -> None:
     secret_error = CatalogError(
         code=CatalogErrorCode.SOURCE_UNAVAILABLE,
@@ -206,7 +233,7 @@ async def test_catalog_error_never_echoes_upstream_details() -> None:
 
     await catalog_handler(message, StubCatalogReader(catalog_response=response))
 
-    assert "Không thể tải danh mục MOCK" in message.text
+    assert "Không thể tải danh mục chỉ đọc" in message.text
     for forbidden in ("upstream body", "NEVER-PRINT", "traceback", "supplier-name"):
         assert forbidden not in message.text
 
@@ -240,7 +267,7 @@ async def test_catalog_reader_exception_is_rendered_as_a_safe_error() -> None:
 
     await catalog_handler(message, reader)
 
-    assert "Không thể tải danh mục MOCK" in message.text
+    assert "Không thể tải danh mục chỉ đọc" in message.text
     assert "token and upstream body" not in message.text
 
 

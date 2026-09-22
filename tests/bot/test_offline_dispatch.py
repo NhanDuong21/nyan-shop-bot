@@ -95,7 +95,7 @@ def _message(text: str, update_id: int) -> Message:
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
-        ("/start", "MOCK / CHỈ ĐỌC"),
+        ("/start", "LOCAL / CHỈ ĐỌC"),
         ("/catalog", "DANH MỤC — MOCK / CHỈ ĐỌC"),
         ("/orders", "Checkout và đơn hàng thật hiện không khả dụng"),
         ("/support", "HỖ TRỢ TĨNH / NGOẠI TUYẾN"),
@@ -177,7 +177,7 @@ async def test_hard_network_guard_covers_all_offline_flows(
         reader,
     )
 
-    assert "MOCK" in start_message.text
+    assert "LOCAL / CHỈ ĐỌC" in start_message.text
     assert "DANH MỤC" in catalog_message.text
     assert "ĐƠN HÀNG" in orders_message.text
     assert "HỖ TRỢ" in support_message.text
