@@ -128,10 +128,52 @@ delivery operation exists in this runtime.
 To return to the synthetic catalog, stop both processes, set `SUPPLIER_MODE=mock`, remove the
 supplier and Telegram tokens from `.env`, and restart. Never commit `.env`.
 
+### VietShare local read-only source
+
+VietShare uses the same FastAPI, admin, and Telegram `CatalogReader` path without combining its
+products with KhoMMO. In the ignored local `.env`, select the source and keep both independent
+write guards closed:
+
+```text
+APP_ENV=local
+APP_HOST=127.0.0.1
+SUPPLIER_MODE=vietshare-readonly
+VIETSHARE_API_ID=<set only in this ignored local file>
+VIETSHARE_API_SECRET=<set only in this ignored local file>
+PAYMENT_MODE=disabled
+ALLOW_REAL_PURCHASES=false
+```
+
+Never put either credential in a command argument, frontend variable, issue, PR, screenshot,
+fixture, log, container image, or GitHub Actions secret. The production transport pins
+`token.vietshare.site` over TLS, disables ambient proxies and redirects, limits response size,
+and accepts only empty-body `GET /v1/account`, `GET /v1/products`, and
+`GET /v1/products/{positive_integer}`. The catalog runtime uses only the latter two routes;
+account data is not needed or exposed.
+
+Sanitized pre-parser schema verification on 2026-09-22 made two catalog GETs and one detail GET.
+All returned HTTP 200. Catalog retained the documented `count`/`products` envelope. Each observed
+product had
+exactly `id` (integer), `name` and `description` (string), `price` (integer), `flash_sale_id`
+(null in the sample; documentation also permits integer), `stock` and `max_quantity` (integer),
+`allow_quantity` (boolean), plus the observed production fields `currency` (array of strings) and
+`price_usd` (string). Detail returned that product object directly and its ID matched the requested
+ID. No raw response, product value, identifier, balance, credential, or delivery data was stored.
+
+The normalized catalog intentionally uses the documented integer `price` as VND and does not use
+or convert `price_usd`. Any missing, extra, mistyped, duplicate, or mismatched field fails closed.
+Every retry creates a new timestamp, nonce, and signature while preserving the exact
+`timestamp|nonce|METHOD|PATH_WITH_QUERY|sha256(raw_body)` rule; GET hashes empty bytes.
+
+Run FastAPI and the admin with the same commands above, then verify `/healthz` before explicitly
+opening `/api/v1/catalog`. Telegram polling uses the same owner-confirmed command after
+`TELEGRAM_BOT_TOKEN` is present locally. `/orders` stays informational and no supplier order,
+payment, top-up, refund, or delivery operation is implemented.
+
 ## Troubleshooting
 
 - Port conflict: stop the existing local service on 5432, 8000, or 5173; do not change the container to a public bind.
 - Docker Desktop overridden by `DOCKER_HOST`: set `NYAN_DOCKER_CONTEXT=desktop-linux` for task commands; this selects a context per command and does not change global Docker configuration.
 - Readiness 503: inspect `docker compose logs db migrate api`; health can be green while PostgreSQL is unavailable.
-- Unsafe configuration error: keep payment disabled and real purchases false. KhoMMO live read additionally requires `APP_ENV=local`, `SUPPLIER_MODE=khommo-readonly`, and a non-empty local `KHOMMO_API_TOKEN`; generic live modes remain unsupported.
+- Unsafe configuration error: keep payment disabled and real purchases false. A live read requires `APP_ENV=local`, a loopback `APP_HOST`, one explicit `*-readonly` mode, and only that source's non-empty local credentials; generic live modes remain unsupported.
 - No Docker: Python/frontend unit checks can run individually, but database, container smoke, and Docker build must be reported NOT RUN rather than PASS.

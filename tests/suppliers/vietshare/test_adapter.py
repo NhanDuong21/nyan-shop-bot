@@ -14,6 +14,7 @@ import pytest
 from nyan_shop_bot.catalog.models import CapabilityStatus
 from nyan_shop_bot.suppliers.vietshare import (
     PRODUCTION_BASE_URL,
+    ProductDetailSuccess,
     ProductListError,
     ProductListErrorCode,
     ProductListRateLimited,
@@ -43,11 +44,19 @@ def product_body(*, name: str = "Synthetic offline item") -> bytes:
                     "stock": 4,
                     "allow_quantity": True,
                     "max_quantity": 2,
+                    "currency": ["VND", "USD"],
+                    "price_usd": "1.0",
                 }
             ],
         },
         separators=(",", ":"),
     ).encode()
+
+
+def detail_body(*, product_id: int = 11) -> bytes:
+    product = json.loads(product_body())["products"][0]
+    product["id"] = product_id
+    return json.dumps(product, separators=(",", ":")).encode()
 
 
 class FakeTransport:
@@ -381,31 +390,84 @@ async def test_reused_nonce_fails_closed_before_a_second_transport_call() -> Non
 
 
 @pytest.mark.asyncio
-async def test_unsupported_account_detail_and_pagination_never_call_transport() -> None:
+async def test_verified_detail_uses_direct_product_schema_and_matches_requested_id() -> None:
+    transport = FakeTransport([VietShareResponse(status_code=200, body=detail_body())])
+    adapter, _, _, _ = make_adapter(transport)
+
+    detail = await adapter.get_product(11)
+
+    assert isinstance(detail, ProductDetailSuccess)
+    assert detail.value.id == 11
+    assert transport.requests[0].path_with_query == "/v1/products/11"
+    assert transport.requests[0].body == b""
+
+
+@pytest.mark.asyncio
+async def test_mismatched_detail_id_fails_closed() -> None:
+    transport = FakeTransport([VietShareResponse(status_code=200, body=detail_body(product_id=12))])
+    adapter, _, _, _ = make_adapter(transport)
+
+    detail = await adapter.get_product(11)
+
+    assert detail == ProductListError(
+        code=ProductListErrorCode.INVALID_RESPONSE,
+        attempts=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_detail_retry_refreshes_timestamp_nonce_and_signature_without_real_sleep() -> None:
+    transport = FakeTransport(
+        [
+            TimeoutError("synthetic detail timeout"),
+            VietShareResponse(status_code=200, body=detail_body()),
+        ]
+    )
+    adapter, clock, nonce_source, sleeper = make_adapter(
+        transport,
+        clock_values=(1_760_000_020, 1_760_000_021),
+        nonces=("detail-nonce-000001", "detail-nonce-000002"),
+        max_retries=1,
+    )
+
+    outcome = await adapter.get_product(11)
+
+    assert isinstance(outcome, ProductDetailSuccess)
+    assert outcome.attempts == 2
+    assert clock.calls == 2
+    assert nonce_source.calls == 2
+    assert sleeper.delays == [0.25]
+    first, second = transport.requests
+    assert first.path_with_query == second.path_with_query == "/v1/products/11"
+    assert first.headers["X-Timestamp"] != second.headers["X-Timestamp"]
+    assert first.headers["X-Nonce"] != second.headers["X-Nonce"]
+    assert first.headers["X-Signature"] != second.headers["X-Signature"]
+
+
+@pytest.mark.asyncio
+async def test_unsupported_account_stock_and_pagination_never_call_transport() -> None:
     transport = FakeTransport([])
     adapter, _, _, _ = make_adapter(transport)
 
     account = await adapter.get_account()
-    detail = await adapter.get_product(123)
     stock = await adapter.get_stock(123)
     pagination = adapter.pagination
 
     assert account.operation is UnsupportedReadOperation.ACCOUNT
-    assert detail.operation is UnsupportedReadOperation.PRODUCT_DETAIL
     assert stock.operation is UnsupportedReadOperation.STOCK_DETAIL
     assert pagination.operation is UnsupportedReadOperation.PRODUCTS_PAGINATION
-    assert all(result.status == "unsupported" for result in (account, detail, stock, pagination))
-    assert all(not result.retryable for result in (account, detail, stock, pagination))
+    assert all(result.status == "unsupported" for result in (account, stock, pagination))
+    assert all(not result.retryable for result in (account, stock, pagination))
     assert transport.requests == []
 
 
-def test_capabilities_enable_only_supported_catalog_list_reads() -> None:
+def test_capabilities_enable_only_verified_catalog_reads() -> None:
     transport = FakeTransport([])
     adapter, _, _, _ = make_adapter(transport)
     capabilities = adapter.capabilities
 
     assert capabilities.catalog_read.status is CapabilityStatus.ENABLED
-    assert capabilities.catalog_detail.status is CapabilityStatus.UNSUPPORTED
+    assert capabilities.catalog_detail.status is CapabilityStatus.ENABLED
     assert {
         capabilities.purchase.status,
         capabilities.payment.status,

@@ -7,6 +7,7 @@ from nyan_shop_bot.catalog.ports import CatalogReader
 from nyan_shop_bot.config import Settings
 from nyan_shop_bot.main import build_catalog_reader, create_app
 from nyan_shop_bot.suppliers.khommo import KhoMmoCatalogReader
+from nyan_shop_bot.suppliers.vietshare import VietShareCatalogReader
 
 
 class ReadyDatabase:
@@ -51,6 +52,28 @@ async def test_live_read_factory_constructs_khommo_without_contacting_supplier()
     try:
         assert isinstance(catalog, KhoMmoCatalogReader)
         assert secret not in repr(catalog)
+    finally:
+        assert close_catalog is not None
+        await close_catalog()
+
+
+async def test_live_read_factory_constructs_vietshare_without_contacting_supplier() -> None:
+    api_id = "synthetic-private-id"
+    api_secret = "synthetic-private-secret"
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        supplier_mode="vietshare-readonly",
+        vietshare_api_id=api_id,
+        vietshare_api_secret=api_secret,
+        payment_mode="disabled",
+        allow_real_purchases=False,
+    )
+
+    catalog, close_catalog = build_catalog_reader(settings)
+    try:
+        assert isinstance(catalog, VietShareCatalogReader)
+        assert api_id not in repr(catalog)
+        assert api_secret not in repr(catalog)
     finally:
         assert close_catalog is not None
         await close_catalog()

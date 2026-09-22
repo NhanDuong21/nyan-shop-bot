@@ -4,8 +4,8 @@ export interface Money {
   unit: "minor";
 }
 
-export type CatalogSupplier = "mock" | "khommo";
-export type CatalogMode = "mock" | "khommo-readonly";
+export type CatalogSupplier = "mock" | "khommo" | "vietshare";
+export type CatalogMode = "mock" | "khommo-readonly" | "vietshare-readonly";
 
 export interface CatalogVariant {
   id: string;

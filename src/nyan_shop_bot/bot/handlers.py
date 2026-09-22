@@ -92,7 +92,15 @@ def _format_money(money: Money) -> str:
 
 def _source_label(supplier: str) -> str:
     """Render only the public source identity, never supplier mapping details."""
-    return "MOCK / CHỈ ĐỌC" if supplier == "mock" else "KHOMMO / CHỈ ĐỌC"
+    return {
+        "mock": "MOCK / CHỈ ĐỌC",
+        "khommo": "KHOMMO / CHỈ ĐỌC",
+        "vietshare": "VIETSHARE / CHỈ ĐỌC",
+    }.get(supplier, "NGUỒN KHÔNG XÁC ĐỊNH / CHỈ ĐỌC")
+
+
+def _source_name(supplier: str) -> str:
+    return {"khommo": "KhoMMO", "vietshare": "VietShare"}.get(supplier, "supplier")
 
 
 def _button_text(prefix: str, value: str) -> str:
@@ -169,7 +177,8 @@ def _catalog_lines(response: CatalogResponse) -> list[str]:
         lines.append("Giá và tồn kho chỉ là thông tin MOCK hiện tại, không phải cam kết bán hàng.")
     else:
         lines.append(
-            "Giá và tồn kho là snapshot chỉ đọc từ KhoMMO; không phải cam kết bán hàng "
+            f"Giá và tồn kho là snapshot chỉ đọc từ {_source_name(response.supplier)}; "
+            "không phải cam kết bán hàng "
             "và không cấp quyền mua."
         )
     return lines
@@ -293,7 +302,7 @@ def _quote_lines(product: CatalogProduct, variant: CatalogVariant) -> list[str]:
     title = (
         "BÁO GIÁ MÔ PHỎNG — MOCK / CHỈ ĐỌC"
         if product.supplier == "mock"
-        else "THÔNG TIN GIÁ — KHOMMO / CHỈ ĐỌC"
+        else f"THÔNG TIN GIÁ — {_source_label(product.supplier)}"
     )
     lines = [
         title,

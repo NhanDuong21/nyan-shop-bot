@@ -31,9 +31,9 @@ async def run_local_polling(
         raise TelegramRuntimeConfigurationError(
             "Telegram polling is allowed only with a loopback local application runtime"
         )
-    if settings.supplier_mode != "khommo-readonly":
+    if settings.supplier_mode not in {"khommo-readonly", "vietshare-readonly"}:
         raise TelegramRuntimeConfigurationError(
-            "This product slice requires SUPPLIER_MODE=khommo-readonly"
+            "Telegram live read requires an explicit read-only supplier mode"
         )
 
     token = settings.telegram_bot_token

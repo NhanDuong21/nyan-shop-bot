@@ -143,6 +143,34 @@ test("renders KhoMMO live-read source while keeping every write boundary visibly
   expect(screen.getAllByText("Đã khóa").length).toBeGreaterThanOrEqual(2);
 });
 
+test("renders VietShare through the same API boundary with writes visibly locked", async () => {
+  const liveItem = {
+    ...catalogItem,
+    id: "17",
+    supplier: "vietshare",
+    mode: "vietshare-readonly",
+    read_only: true,
+  };
+  stubApi({
+    supplier: "vietshare",
+    mode: "vietshare-readonly",
+    read_only: true,
+    partial: false,
+    omitted_count: 0,
+    state: "fresh",
+    freshness,
+    items: [liveItem],
+    error: null,
+  });
+
+  render(<App />);
+
+  expect((await screen.findAllByText(/^vietshare$/i)).length).toBeGreaterThanOrEqual(1);
+  expect(screen.getByLabelText(/Môi trường VIETSHARE-READONLY/i)).toBeInTheDocument();
+  expect(screen.getByText(/VietShare chỉ cho phép đọc catalog/i)).toBeInTheDocument();
+  expect(screen.getAllByText("Đã khóa").length).toBeGreaterThanOrEqual(2);
+});
+
 test("filters injected catalog data without replacing the backend source", async () => {
   const secondItem = {
     ...catalogItem,

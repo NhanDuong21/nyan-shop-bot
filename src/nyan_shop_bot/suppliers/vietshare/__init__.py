@@ -9,7 +9,18 @@ from nyan_shop_bot.suppliers.vietshare.adapter import (
     VietShareTransport,
     parse_retry_after,
 )
+from nyan_shop_bot.suppliers.vietshare.catalog_reader import (
+    VietShareCatalogReader,
+    VietShareCatalogSourceUnavailable,
+)
+from nyan_shop_bot.suppliers.vietshare.http_transport import (
+    VietShareHttpTransport,
+    VietShareTransportSafetyError,
+)
 from nyan_shop_bot.suppliers.vietshare.models import (
+    ProductDetailNotFound,
+    ProductDetailOutcome,
+    ProductDetailSuccess,
     ProductListError,
     ProductListErrorCode,
     ProductListOutcome,
@@ -27,6 +38,7 @@ from nyan_shop_bot.suppliers.vietshare.models import (
     VietShareRequest,
     VietShareResponse,
     VndMoney,
+    parse_product_detail,
     parse_product_list,
 )
 from nyan_shop_bot.suppliers.vietshare.signing import (
@@ -44,6 +56,9 @@ __all__ = [
     "VIETSHARE_CAPABILITIES",
     "Clock",
     "NonceSource",
+    "ProductDetailNotFound",
+    "ProductDetailOutcome",
+    "ProductDetailSuccess",
     "ProductListError",
     "ProductListErrorCode",
     "ProductListOutcome",
@@ -58,17 +73,22 @@ __all__ = [
     "UnsupportedReadOperation",
     "VietShareConfigurationError",
     "VietShareCredentials",
+    "VietShareCatalogReader",
+    "VietShareCatalogSourceUnavailable",
+    "VietShareHttpTransport",
     "VietShareProduct",
     "VietShareProductList",
     "VietShareReadAdapter",
     "VietShareRequest",
     "VietShareResponse",
     "VietShareTransport",
+    "VietShareTransportSafetyError",
     "VndMoney",
     "body_sha256",
     "build_request_target",
     "build_signed_read_request",
     "canonical_string",
+    "parse_product_detail",
     "parse_product_list",
     "parse_retry_after",
     "sign_request",

@@ -168,6 +168,8 @@ class VietShareProduct:
     stock: int
     allow_quantity: bool
     max_quantity: int
+    currencies: tuple[str, ...] = field(repr=False)
+    price_usd: str = field(repr=False)
 
     def __post_init__(self) -> None:
         if type(self.id) is not int:
@@ -186,6 +188,12 @@ class VietShareProduct:
             raise ResponseValidationError("allow_quantity", "expected a boolean")
         if type(self.max_quantity) is not int or self.max_quantity <= 0:
             raise ResponseValidationError("max_quantity", "expected a positive integer")
+        if type(self.currencies) is not tuple or not all(
+            type(currency) is str for currency in self.currencies
+        ):
+            raise ResponseValidationError("currency", "expected an array of strings")
+        if type(self.price_usd) is not str:
+            raise ResponseValidationError("price_usd", "expected a string")
 
     @property
     def price_vnd(self) -> int:
@@ -277,6 +285,36 @@ type ProductListOutcome = (
 )
 
 
+@dataclass(frozen=True, repr=False)
+class ProductDetailSuccess:
+    """A parsed product-detail response."""
+
+    value: VietShareProduct = field(repr=False)
+    attempts: int
+    status: Literal["success"] = field(default="success", init=False)
+
+    def __repr__(self) -> str:
+        return f"ProductDetailSuccess(status='success', attempts={self.attempts}, value=<redacted>)"
+
+
+@dataclass(frozen=True)
+class ProductDetailNotFound:
+    """The requested product does not exist at the read-only supplier boundary."""
+
+    attempts: int
+    status: Literal["not_found"] = field(default="not_found", init=False)
+    retryable: Literal[False] = field(default=False, init=False)
+
+
+type ProductDetailOutcome = (
+    ProductDetailSuccess
+    | ProductDetailNotFound
+    | ProductListTimeout
+    | ProductListRateLimited
+    | ProductListError
+)
+
+
 class UnsupportedReadOperation(StrEnum):
     """Known endpoints whose returned projection is absent from the snapshot."""
 
@@ -307,6 +345,8 @@ _PRODUCT_FIELDS = frozenset(
         "stock",
         "allow_quantity",
         "max_quantity",
+        "currency",
+        "price_usd",
     }
 )
 
@@ -337,8 +377,7 @@ def _strict_string(value: object, *, location: str) -> str:
     return value
 
 
-def _parse_product(value: object, *, index: int) -> VietShareProduct:
-    location = f"products[{index}]"
+def _parse_product(value: object, *, location: str) -> VietShareProduct:
     if type(value) is not dict:
         raise ResponseValidationError(location, "expected an object")
     if set(value) != _PRODUCT_FIELDS:
@@ -350,6 +389,11 @@ def _parse_product(value: object, *, index: int) -> VietShareProduct:
     allow_quantity = value["allow_quantity"]
     if type(allow_quantity) is not bool:
         raise ResponseValidationError(f"{location}.allow_quantity", "expected a boolean")
+    raw_currencies = value["currency"]
+    if type(raw_currencies) is not list or not all(
+        type(currency) is str for currency in raw_currencies
+    ):
+        raise ResponseValidationError(f"{location}.currency", "expected an array of strings")
 
     price = _strict_int(value["price"], location=f"{location}.price", minimum=0)
     return VietShareProduct(
@@ -363,6 +407,8 @@ def _parse_product(value: object, *, index: int) -> VietShareProduct:
         max_quantity=_strict_int(
             value["max_quantity"], location=f"{location}.max_quantity", minimum=1
         ),
+        currencies=tuple(raw_currencies),
+        price_usd=_strict_string(value["price_usd"], location=f"{location}.price_usd"),
     )
 
 
@@ -384,7 +430,19 @@ def parse_product_list(raw_body: bytes) -> VietShareProductList:
     if type(raw_products) is not list:
         raise ResponseValidationError("products", "expected a list")
     products = tuple(
-        _parse_product(product, index=index) for index, product in enumerate(raw_products)
+        _parse_product(product, location=f"products[{index}]")
+        for index, product in enumerate(raw_products)
     )
     count = _strict_int(decoded["count"], location="count", minimum=0)
     return VietShareProductList(count=count, products=products)
+
+
+def parse_product_detail(raw_body: bytes) -> VietShareProduct:
+    """Parse the observed direct product object without accepting an invented envelope."""
+    if type(raw_body) is not bytes:
+        raise ResponseValidationError("body", "expected exact response bytes")
+    try:
+        decoded: Any = json.loads(raw_body, object_pairs_hook=_object_without_duplicates)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        raise ResponseValidationError("body", "expected unique-field UTF-8 JSON") from None
+    return _parse_product(decoded, location="product")
