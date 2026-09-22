@@ -18,7 +18,7 @@ async def test_start_handler_is_offline_and_honest() -> None:
     await start_handler(message)
 
     assert len(message.answers) == 1
-    assert "MOCK" in message.answers[0]
+    assert "LOCAL / CHỈ ĐỌC" in message.answers[0]
     assert "vô hiệu hóa" in message.answers[0]
 
 

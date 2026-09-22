@@ -1,13 +1,13 @@
 """FastAPI application factory for mock or explicit local live-read catalog mode."""
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from nyan_shop_bot.catalog.mock import MockCatalogReader
+from nyan_shop_bot.catalog.factory import build_catalog_reader
 from nyan_shop_bot.catalog.models import (
     CatalogDetailResponse,
     CatalogResponse,
@@ -16,31 +16,7 @@ from nyan_shop_bot.catalog.models import (
 from nyan_shop_bot.catalog.ports import CatalogReader
 from nyan_shop_bot.config import Settings, get_settings, is_loopback_host
 from nyan_shop_bot.database import DatabaseProbe, PostgresDatabase
-from nyan_shop_bot.suppliers.khommo import (
-    KhoMmoCatalogReader,
-    KhoMmoCatalogSourceUnavailable,
-    KhoMmoHttpTransport,
-    KhoMmoReadAdapter,
-    KhoMmoToken,
-)
-
-AsyncCloser = Callable[[], Awaitable[None]]
-
-
-def build_catalog_reader(settings: Settings) -> tuple[CatalogReader, AsyncCloser | None]:
-    """Build only the catalog source selected by validated runtime settings."""
-    if settings.supplier_mode == "mock":
-        return MockCatalogReader(), None
-
-    token = settings.khommo_api_token
-    if token is None:
-        raise RuntimeError("Validated KhoMMO read-only settings are missing a token")
-    transport = KhoMmoHttpTransport()
-    adapter = KhoMmoReadAdapter(
-        token=KhoMmoToken(token.get_secret_value()),
-        transport=transport,
-    )
-    return KhoMmoCatalogReader(adapter), transport.aclose
+from nyan_shop_bot.suppliers.khommo import KhoMmoCatalogSourceUnavailable
 
 
 def create_app(

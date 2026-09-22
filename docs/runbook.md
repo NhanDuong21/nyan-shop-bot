@@ -93,8 +93,34 @@ being guessed; the API returns `partial=true` and an exact `omitted_count`, and 
 show that warning. Every other schema, identity, currency, stock-consistency, or pagination
 problem still fails the whole catalog closed.
 
+### Owner-started local Telegram read
+
+The Telegram dispatcher uses the same configured `CatalogReader` as FastAPI. The runtime never
+starts at application import, during tests, or without an explicit command-line confirmation.
+Create your own bot through [@BotFather](https://t.me/BotFather); the project cannot create or
+invent this credential. Put the returned value only in the ignored local `.env` file:
+
+```text
+TELEGRAM_BOT_TOKEN=<set the BotFather value only in this local .env file>
+```
+
+Do not paste the token into chat, a command argument, issue, PR, screenshot, or log. Keep the
+same `APP_ENV=local`, loopback `APP_HOST`, `SUPPLIER_MODE=khommo-readonly`, disabled payment,
+and false purchase guard shown above. After checking those values, this command is the explicit
+owner action that starts Telegram polling and allows `/catalog` to issue read-only KhoMMO GETs:
+
+```powershell
+$env:PYTHONPATH = (Join-Path (Get-Location) "src")
+.\.venv\Scripts\python.exe -m nyan_shop_bot.bot.runtime --start-local-polling
+```
+
+Stop it with `Ctrl+C`. This runtime is for local owner verification only; do not start it in CI or
+production. `/catalog` identifies KhoMMO as the source, marks stale/partial state, and reports the
+exact omitted count. `/orders` remains unavailable, and no purchase, payment, top-up, refund, or
+delivery operation exists in this runtime.
+
 To return to the synthetic catalog, stop both processes, set `SUPPLIER_MODE=mock`, remove the
-token from `.env`, and restart. Never commit `.env`.
+supplier and Telegram tokens from `.env`, and restart. Never commit `.env`.
 
 ## Troubleshooting
 

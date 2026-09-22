@@ -32,9 +32,10 @@ or OpenAI production secrets. See the runbook before configuring `KHOMMO_API_TOK
 
 ## Repository map
 
-- `src/nyan_shop_bot/`: FastAPI, read-only catalog boundary, and offline bot skeleton.
+- `src/nyan_shop_bot/`: FastAPI, shared read-only catalog boundary, offline-testable bot handlers,
+  and an explicit owner-started local Telegram runtime.
 - `alembic/`: initial PostgreSQL migration.
-- `admin/`: localhost-only mock catalog UI.
+- `admin/`: localhost-only catalog UI for mock or owner-approved KhoMMO read-only data.
 - `tests/`: unit, network-policy, bot, and PostgreSQL integration tests.
 - `scripts/`: cross-platform task, verification, policy, smoke, and GitHub seed tools.
 - `src/nyan_shop_bot/orchestrator/`: durable local runner, CLI adapters, policy, and state machine.

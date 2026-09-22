@@ -41,7 +41,7 @@ SAFE_REFRESH_MESSAGE: Final = (
     "Vui lòng dùng /catalog để làm mới; không có thao tác nào được tạo."
 )
 SAFE_CATALOG_ERROR_MESSAGE: Final = (
-    "Không thể tải danh mục MOCK lúc này. Vui lòng thử lại bằng /catalog sau. "
+    "Không thể tải danh mục chỉ đọc lúc này. Vui lòng thử lại bằng /catalog sau. "
     "Không có đơn hàng hoặc giao dịch nào được tạo."
 )
 
@@ -90,6 +90,11 @@ def _format_money(money: Money) -> str:
     return f"amount_minor={money.amount_minor}; currency={money.currency}; unit={money.unit}"
 
 
+def _source_label(supplier: str) -> str:
+    """Render only the public source identity, never supplier mapping details."""
+    return "MOCK / CHỈ ĐỌC" if supplier == "mock" else "KHOMMO / CHỈ ĐỌC"
+
+
 def _button_text(prefix: str, value: str) -> str:
     return _bounded_display(f"{prefix}{value}", MAX_BUTTON_TEXT_CHARS, fallback=prefix.rstrip())
 
@@ -112,35 +117,42 @@ async def _send(
 
 
 async def start_handler(message: AnswerableMessage) -> None:
-    """Explain the honest MOCK/read-only state and static command menu."""
+    """Explain the local read-only state without assuming the configured source."""
     await _send(
         message,
         (
-            "Nyan Shop Bot — MOCK / CHỈ ĐỌC.",
-            "Bot chỉ cho phép xem dữ liệu mô phỏng; thanh toán và mua hàng thật "
-            "hiện bị vô hiệu hóa.",
+            "Nyan Shop Bot — LOCAL / CHỈ ĐỌC.",
+            "Bot chỉ cho phép xem danh mục; thanh toán và mua hàng thật hiện bị vô hiệu hóa.",
             "Menu: /catalog xem danh mục · /orders xem trạng thái đơn · /support xem trợ giúp.",
         ),
     )
 
 
 def _catalog_lines(response: CatalogResponse) -> list[str]:
+    source_label = _source_label(response.supplier)
     if response.state is CatalogState.EMPTY:
         return [
-            "DANH MỤC — MOCK / CHỈ ĐỌC",
-            "Danh mục hiện trống; không có sản phẩm mô phỏng nào để hiển thị.",
+            f"DANH MỤC — {source_label}",
+            "Danh mục hiện trống; không có sản phẩm nào để hiển thị.",
             "Không có đơn hàng hoặc giao dịch nào được tạo.",
         ]
     if response.state is CatalogState.ERROR:
         return [SAFE_CATALOG_ERROR_MESSAGE]
 
-    lines = ["DANH MỤC — MOCK / CHỈ ĐỌC"]
+    lines = [f"DANH MỤC — {source_label}"]
     if response.state is CatalogState.STALE:
         lines.append(
             "⚠ CẢNH BÁO: đang hiển thị dữ liệu bộ nhớ đệm đã cũ; lần làm mới gần nhất thất bại."
         )
     else:
         lines.append("Dữ liệu danh mục hiện đang ở trạng thái mới.")
+
+    if response.partial:
+        lines.append(
+            "⚠ CATALOG PARTIAL: "
+            f"{response.omitted_count} sản phẩm bị loại vì supplier thiếu mô tả hoặc tồn kho; "
+            "bot không suy đoán giá trị."
+        )
 
     visible_items = response.items[:MAX_CATALOG_ITEMS]
     for index, product in enumerate(visible_items, start=1):
@@ -153,7 +165,13 @@ def _catalog_lines(response: CatalogResponse) -> list[str]:
         lines.append(
             f"Chỉ hiển thị {len(visible_items)} sản phẩm đầu tiên để giữ tin nhắn an toàn."
         )
-    lines.append("Giá và tồn kho chỉ là thông tin MOCK hiện tại, không phải cam kết bán hàng.")
+    if response.supplier == "mock":
+        lines.append("Giá và tồn kho chỉ là thông tin MOCK hiện tại, không phải cam kết bán hàng.")
+    else:
+        lines.append(
+            "Giá và tồn kho là snapshot chỉ đọc từ KhoMMO; không phải cam kết bán hàng "
+            "và không cấp quyền mua."
+        )
     return lines
 
 
@@ -198,7 +216,7 @@ async def orders_handler(message: AnswerableMessage) -> None:
     await _send(
         message,
         (
-            "ĐƠN HÀNG — MOCK / CHỈ ĐỌC",
+            "ĐƠN HÀNG — KHÔNG KHẢ DỤNG / CHỈ ĐỌC",
             "Checkout và đơn hàng thật hiện không khả dụng.",
             "Bot không tạo, lưu, gửi hoặc thanh toán bất kỳ đơn hàng nào.",
         ),
@@ -210,7 +228,7 @@ async def support_handler(message: AnswerableMessage) -> None:
     await _send(
         message,
         (
-            "HỖ TRỢ TĨNH / NGOẠI TUYẾN — MOCK",
+            "HỖ TRỢ TĨNH / NGOẠI TUYẾN",
             "Dùng /catalog để tải lại danh mục, /orders để xem giới hạn đơn hàng, "
             "hoặc /start để xem menu.",
             "Chưa có thông tin liên hệ hỗ trợ nào được cấu hình trong bot này.",
@@ -220,7 +238,7 @@ async def support_handler(message: AnswerableMessage) -> None:
 
 def _detail_lines(product: CatalogProduct) -> list[str]:
     lines = [
-        "CHI TIẾT SẢN PHẨM — MOCK / CHỈ ĐỌC",
+        f"CHI TIẾT SẢN PHẨM — {_source_label(product.supplier)}",
         f"Tên: {_bounded_display(product.name, 120, fallback='Sản phẩm không có tên hiển thị')}",
         f"Mô tả: {_bounded_display(product.description, 500, fallback='Không có mô tả hiển thị')}",
         "Các biến thể hiện tại:",
@@ -250,7 +268,10 @@ def _detail_keyboard(product: CatalogProduct) -> InlineKeyboardMarkup | None:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=_button_text("Báo giá mô phỏng: ", variant.name),
+                    text=_button_text(
+                        "Báo giá mô phỏng: " if product.supplier == "mock" else "Xem giá: ",
+                        variant.name,
+                    ),
                     callback_data=callback_data,
                 )
             ]
@@ -269,8 +290,13 @@ def _quote_lines(product: CatalogProduct, variant: CatalogVariant) -> list[str]:
         96,
         fallback="Biến thể không có tên hiển thị",
     )
+    title = (
+        "BÁO GIÁ MÔ PHỎNG — MOCK / CHỈ ĐỌC"
+        if product.supplier == "mock"
+        else "THÔNG TIN GIÁ — KHOMMO / CHỈ ĐỌC"
+    )
     lines = [
-        "BÁO GIÁ MÔ PHỎNG — MOCK / CHỈ ĐỌC",
+        title,
         f"Sản phẩm: {product_name}",
         f"Biến thể: {variant_name}",
         f"Giá hiện tại: {_format_money(variant.price)}",
@@ -284,7 +310,8 @@ def _quote_lines(product: CatalogProduct, variant: CatalogVariant) -> list[str]:
         )
     lines.extend(
         (
-            "Đây chỉ là thông tin mô phỏng, không phải lời hứa về giá hoặc khả dụng.",
+            "Đây chỉ là thông tin đọc tại thời điểm hiện tại, không phải lời hứa "
+            "về giá hoặc khả dụng.",
             "Không tạo hay giữ chỗ, đơn hàng, thanh toán, mua hàng, nạp tiền, "
             "hoàn tiền hoặc giao hàng.",
         )
@@ -322,7 +349,7 @@ async def _handle_detail_callback(
         await _send(
             message,
             (
-                "Không tìm thấy sản phẩm này trong danh mục MOCK hiện tại. "
+                "Không tìm thấy sản phẩm này trong danh mục chỉ đọc hiện tại. "
                 "Vui lòng dùng /catalog để làm mới; không có dữ liệu nào được suy đoán.",
             ),
         )
@@ -331,7 +358,7 @@ async def _handle_detail_callback(
         await _send(
             message,
             (
-                "Chi tiết sản phẩm này hiện không được hỗ trợ trong chế độ MOCK / CHỈ ĐỌC. "
+                "Chi tiết sản phẩm này hiện không được hỗ trợ trong chế độ chỉ đọc. "
                 "Bot không suy đoán dữ liệu; vui lòng quay lại /catalog.",
             ),
         )
