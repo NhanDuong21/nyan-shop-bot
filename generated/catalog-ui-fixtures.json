@@ -10,6 +10,8 @@
       },
       "items": [],
       "mode": "mock",
+      "omitted_count": 0,
+      "partial": false,
       "read_only": true,
       "state": "empty",
       "supplier": "mock"
@@ -23,6 +25,8 @@
       "freshness": null,
       "items": [],
       "mode": "mock",
+      "omitted_count": 0,
+      "partial": false,
       "read_only": true,
       "state": "error",
       "supplier": "mock"
@@ -161,6 +165,8 @@
         }
       ],
       "mode": "mock",
+      "omitted_count": 0,
+      "partial": false,
       "read_only": true,
       "state": "fresh",
       "supplier": "mock"
@@ -303,6 +309,8 @@
         }
       ],
       "mode": "mock",
+      "omitted_count": 0,
+      "partial": false,
       "read_only": true,
       "state": "stale",
       "supplier": "mock"

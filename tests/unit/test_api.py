@@ -110,6 +110,8 @@ async def test_catalog_exposes_normalized_identifiers_money_and_freshness() -> N
     assert body["mode"] == "mock"
     assert body["state"] == "fresh"
     assert body["freshness"]["status"] == "fresh"
+    assert body["partial"] is False
+    assert body["omitted_count"] == 0
     assert len(body["items"]) == 3
 
     variants = [variant for item in body["items"] for variant in item["variants"]]
@@ -169,6 +171,8 @@ async def test_catalog_error_is_a_typed_client_state() -> None:
         },
         "supplier": "mock",
         "read_only": True,
+        "partial": False,
+        "omitted_count": 0,
     }
 
 

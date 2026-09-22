@@ -94,7 +94,14 @@ test("keeps supplier failures distinct from a usable catalog", () => {
   render(
     <AdminDashboard
       state={{
-        catalog: { kind: "success", items: [item], freshness, warning: null },
+        catalog: {
+          kind: "success",
+          items: [item],
+          freshness,
+          warning: null,
+          partial: false,
+          omittedCount: 0,
+        },
         supplier: { kind: "error", message: "Trạng thái supplier không khả dụng." },
       }}
       onRetry={vi.fn()}
@@ -118,6 +125,8 @@ test("renders stale cached data, explicit minor money, and unsupported balance h
             message: "Làm mới thất bại; đang dùng cache.",
             retryable: true,
           },
+          partial: false,
+          omittedCount: 0,
         },
         supplier: supplierReady(),
       }}
@@ -146,7 +155,14 @@ test("renders empty and filtered-empty states without inventing catalog data", (
   rerender(
     <AdminDashboard
       state={{
-        catalog: { kind: "success", items: [item], freshness, warning: null },
+        catalog: {
+          kind: "success",
+          items: [item],
+          freshness,
+          warning: null,
+          partial: false,
+          omittedCount: 0,
+        },
         supplier: supplierReady(),
       }}
       onRetry={vi.fn()}

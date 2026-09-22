@@ -339,6 +339,17 @@
             "title": "Mode",
             "type": "string"
           },
+          "omitted_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Omitted Count",
+            "type": "integer"
+          },
+          "partial": {
+            "default": false,
+            "title": "Partial",
+            "type": "boolean"
+          },
           "read_only": {
             "const": true,
             "default": true,

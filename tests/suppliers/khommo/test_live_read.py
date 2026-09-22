@@ -31,13 +31,34 @@ def product(**changes: object) -> dict[str, object]:
         "description": "Synthetic response fixture",
         "priceCredit": 100,
         "priceVnd": 25_000,
-        "paymentMode": "VND",
+        "paymentMode": "VND_ONLY",
         "deliveryType": "fixture-only",
         "stock": 4,
         "inStock": True,
     }
     value.update(changes)
     return value
+
+
+def products_page(
+    *items: dict[str, object],
+    page: int = 1,
+    limit: int = 500,
+    total: int | None = None,
+    total_pages: int | None = None,
+) -> dict[str, object]:
+    resolved_total = len(items) if total is None else total
+    resolved_pages = (resolved_total + limit - 1) // limit if total_pages is None else total_pages
+    return {
+        "ok": True,
+        "data": list(items),
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total": resolved_total,
+            "totalPages": resolved_pages,
+        },
+    }
 
 
 class FakeTransport:
@@ -59,7 +80,9 @@ def reader(*responses: KhoMmoResponse) -> tuple[KhoMmoCatalogReader, FakeTranspo
 
 @pytest.mark.asyncio
 async def test_live_catalog_projects_vnd_product_with_explicit_source_and_pending_mapping() -> None:
-    catalog, transport = reader(KhoMmoResponse(200, json.dumps([product()]).encode("utf-8")))
+    catalog, transport = reader(
+        KhoMmoResponse(200, json.dumps(products_page(product())).encode("utf-8"))
+    )
 
     response = await catalog.read_catalog()
 
@@ -67,6 +90,8 @@ async def test_live_catalog_projects_vnd_product_with_explicit_source_and_pendin
     assert response.supplier == "khommo"
     assert response.mode == "khommo-readonly"
     assert response.read_only is True
+    assert response.partial is False
+    assert response.omitted_count == 0
     assert response.freshness is not None
     assert response.freshness.observed_at == response.freshness.evaluated_at
     assert transport.requests[0].url.endswith("/products?page=1&limit=500")
@@ -86,12 +111,54 @@ async def test_credit_and_inconsistent_stock_fail_closed_instead_of_guessing_pri
         product(paymentMode="CREDIT"),
         product(stock=4, inStock=False),
     ):
-        catalog, _ = reader(KhoMmoResponse(200, json.dumps([fixture]).encode("utf-8")))
+        catalog, _ = reader(KhoMmoResponse(200, json.dumps(products_page(fixture)).encode("utf-8")))
         response = await catalog.read_catalog()
         assert response.state is CatalogState.ERROR
         assert response.error is not None
         assert response.error.code == "unsupported"
         assert response.items == ()
+
+
+@pytest.mark.asyncio
+async def test_owner_approved_partial_catalog_omits_only_missing_description_or_stock() -> None:
+    catalog, _ = reader(
+        KhoMmoResponse(
+            200,
+            json.dumps(
+                products_page(
+                    product(id="kept", sku="KEPT"),
+                    product(id="no-description", sku="NO-DESCRIPTION", description=None),
+                    product(id="no-stock", sku="NO-STOCK", stock=None),
+                )
+            ).encode("utf-8"),
+        )
+    )
+
+    response = await catalog.read_catalog()
+
+    assert response.state is CatalogState.FRESH
+    assert response.partial is True
+    assert response.omitted_count == 2
+    assert [item.id for item in response.items] == ["kept"]
+    assert response.items[0].price.currency == "VND"
+
+
+@pytest.mark.asyncio
+async def test_catalog_rejects_more_than_one_bounded_page_without_truncating() -> None:
+    fixtures = tuple(product(id=f"p-{index}", sku=f"SKU-{index}") for index in range(500))
+    catalog, _ = reader(
+        KhoMmoResponse(
+            200,
+            json.dumps(products_page(*fixtures, total=501, total_pages=2)).encode("utf-8"),
+        )
+    )
+
+    response = await catalog.read_catalog()
+
+    assert response.state is CatalogState.ERROR
+    assert response.error is not None
+    assert response.error.code == "unsupported"
+    assert response.items == ()
 
 
 @pytest.mark.asyncio

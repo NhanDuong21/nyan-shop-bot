@@ -86,6 +86,13 @@ the following URL is the explicit owner action that triggers the first real read
 Invoke-RestMethod http://127.0.0.1:8000/api/v1/catalog
 ```
 
+The live catalog accepts the owner-observed `VND_ONLY` value only for read-only display using
+the documented integer `priceVnd` field and explicit `VND` currency. It does not authorize a
+purchase payment mode. Products whose `description` or `stock` is null are omitted instead of
+being guessed; the API returns `partial=true` and an exact `omitted_count`, and the admin must
+show that warning. Every other schema, identity, currency, stock-consistency, or pagination
+problem still fails the whole catalog closed.
+
 To return to the synthetic catalog, stop both processes, set `SUPPLIER_MODE=mock`, remove the
 token from `.env`, and restart. Never commit `.env`.
 

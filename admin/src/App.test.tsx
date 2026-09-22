@@ -53,6 +53,8 @@ function freshCatalog(items: unknown[]) {
     supplier: "mock",
     mode: "mock",
     read_only: true,
+    partial: false,
+    omitted_count: 0,
     state: items.length === 0 ? "empty" : "fresh",
     freshness,
     items,
@@ -123,6 +125,8 @@ test("renders KhoMMO live-read source while keeping every write boundary visibly
     supplier: "khommo",
     mode: "khommo-readonly",
     read_only: true,
+    partial: true,
+    omitted_count: 2,
     state: "fresh",
     freshness,
     items: [liveItem],
@@ -134,6 +138,8 @@ test("renders KhoMMO live-read source while keeping every write boundary visibly
   expect((await screen.findAllByText(/^khommo$/i)).length).toBeGreaterThanOrEqual(1);
   expect(screen.getByLabelText(/Môi trường KHOMMO-READONLY/i)).toBeInTheDocument();
   expect(screen.getByText(/KhoMMO chỉ cho phép đọc catalog/i)).toBeInTheDocument();
+  expect(screen.getByText(/Catalog đang hiển thị một phần/i)).toBeInTheDocument();
+  expect(screen.getByText(/2 sản phẩm bị loại/i)).toBeInTheDocument();
   expect(screen.getAllByText("Đã khóa").length).toBeGreaterThanOrEqual(2);
 });
 

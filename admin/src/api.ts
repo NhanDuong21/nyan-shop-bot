@@ -43,6 +43,8 @@ interface CatalogEnvelopeBase {
   supplier: CatalogSupplier;
   mode: CatalogMode;
   read_only: true;
+  partial: boolean;
+  omitted_count: number;
 }
 
 export type CatalogResponse =

@@ -219,6 +219,8 @@ class CatalogResponse(ContractModel):
     error: CatalogError | None
     supplier: CatalogSupplier = "mock"
     read_only: Literal[True] = True
+    partial: StrictBool = False
+    omitted_count: NonNegativeInt = 0
 
     @model_validator(mode="after")
     def state_is_consistent(self) -> CatalogResponse:
@@ -230,6 +232,10 @@ class CatalogResponse(ContractModel):
             for item in self.items
         ):
             raise ValueError("catalog items must match the envelope source and read-only state")
+        if self.partial != (self.omitted_count > 0):
+            raise ValueError("partial catalog state must match omitted item evidence")
+        if self.partial and self.state not in {CatalogState.FRESH, CatalogState.STALE}:
+            raise ValueError("only a populated catalog can be partial")
 
         if self.state is CatalogState.FRESH:
             if not self.items or self.freshness is None:

@@ -108,6 +108,7 @@ class VndUnits:
 class PaymentMode(StrEnum):
     CREDIT = "CREDIT"
     VND = "VND"
+    VND_ONLY = "VND_ONLY"
 
 
 @dataclass(frozen=True)
@@ -128,13 +129,22 @@ class Product:
     id: str
     sku: str
     name: str
-    description: str
+    description: str | None
     price_credit: CreditUnits
     price_vnd: VndUnits
     payment_mode: PaymentMode
     delivery_type: str
-    stock: int
+    stock: int | None
     in_stock: bool
+
+
+@dataclass(frozen=True)
+class ProductsPage:
+    items: tuple[Product, ...]
+    page: int
+    limit: int
+    total: int
+    total_pages: int
 
 
 class OutcomeCode(StrEnum):
@@ -150,7 +160,7 @@ class OutcomeCode(StrEnum):
 
 @dataclass(frozen=True)
 class ReadSuccess:
-    value: Account | Product | tuple[Product, ...]
+    value: Account | Product | ProductsPage
     status: Literal["success"] = field(default="success", init=False)
 
 
@@ -178,6 +188,8 @@ _PRODUCT_FIELDS = {
     "stock",
     "inStock",
 }
+_PRODUCTS_ENVELOPE_FIELDS = {"ok", "data", "pagination"}
+_PAGINATION_FIELDS = {"page", "limit", "total", "totalPages"}
 
 
 def decode_json(body: bytes) -> Any:
@@ -205,6 +217,18 @@ def _non_negative_int(value: object, location: str) -> int:
     return value
 
 
+def _optional_text(value: object, location: str) -> str | None:
+    if value is None:
+        return None
+    return _text(value, location)
+
+
+def _optional_non_negative_int(value: object, location: str) -> int | None:
+    if value is None:
+        return None
+    return _non_negative_int(value, location)
+
+
 def parse_account(value: object) -> Account:
     data = _exact_object(value, _ACCOUNT_FIELDS, "account")
     wallet = _exact_object(data["wallet"], _WALLET_FIELDS, "wallet")
@@ -222,7 +246,7 @@ def parse_product(value: object) -> Product:
     data = _exact_object(value, _PRODUCT_FIELDS, "product")
     mode = data["paymentMode"]
     if type(mode) is not str or mode not in PaymentMode:
-        raise UnsupportedSchemaError("paymentMode", "expected CREDIT or VND")
+        raise UnsupportedSchemaError("paymentMode", "expected a supported read-only mode")
     in_stock = data["inStock"]
     if type(in_stock) is not bool:
         raise UnsupportedSchemaError("inStock", "expected a boolean")
@@ -230,17 +254,54 @@ def parse_product(value: object) -> Product:
         id=_text(data["id"], "id"),
         sku=_text(data["sku"], "sku"),
         name=_text(data["name"], "name"),
-        description=_text(data["description"], "description"),
+        description=_optional_text(data["description"], "description"),
         price_credit=CreditUnits(_non_negative_int(data["priceCredit"], "priceCredit")),
         price_vnd=VndUnits(_non_negative_int(data["priceVnd"], "priceVnd")),
         payment_mode=PaymentMode(mode),
         delivery_type=_text(data["deliveryType"], "deliveryType"),
-        stock=_non_negative_int(data["stock"], "stock"),
+        stock=_optional_non_negative_int(data["stock"], "stock"),
         in_stock=in_stock,
     )
 
 
-def parse_products(value: object) -> tuple[Product, ...]:
-    if type(value) is not list:
-        raise UnsupportedSchemaError("products", "unknown or ambiguous response envelope")
-    return tuple(parse_product(item) for item in value)
+def parse_products(value: object) -> ProductsPage:
+    envelope = _exact_object(value, _PRODUCTS_ENVELOPE_FIELDS, "products")
+    if envelope["ok"] is not True:
+        raise UnsupportedSchemaError("products.ok", "expected true")
+    if type(envelope["data"]) is not list:
+        raise UnsupportedSchemaError("products.data", "expected an array")
+
+    pagination = _exact_object(envelope["pagination"], _PAGINATION_FIELDS, "products.pagination")
+    page = _non_negative_int(pagination["page"], "products.pagination.page")
+    limit = _non_negative_int(pagination["limit"], "products.pagination.limit")
+    total = _non_negative_int(pagination["total"], "products.pagination.total")
+    total_pages = _non_negative_int(pagination["totalPages"], "products.pagination.totalPages")
+    if page < 1 or not 1 <= limit <= 500:
+        raise UnsupportedSchemaError("products.pagination", "page or limit is out of range")
+
+    items = tuple(parse_product(item) for item in envelope["data"])
+    expected_pages = (total + limit - 1) // limit
+    if total == 0:
+        if items or page != 1 or total_pages not in {0, 1}:
+            raise UnsupportedSchemaError(
+                "products.pagination", "empty pagination metadata is inconsistent"
+            )
+    else:
+        expected_items = min(limit, total - ((page - 1) * limit))
+        if (
+            total_pages != expected_pages
+            or not 1 <= page <= total_pages
+            or expected_items < 0
+            or len(items) != expected_items
+        ):
+            raise UnsupportedSchemaError(
+                "products.pagination", "pagination metadata is inconsistent"
+            )
+
+    return ProductsPage(
+        items=items,
+        page=page,
+        limit=limit,
+        total=total,
+        total_pages=total_pages,
+    )

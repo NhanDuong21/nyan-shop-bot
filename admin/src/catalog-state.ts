@@ -21,6 +21,8 @@ export type CatalogPanelState =
       items: CatalogItem[];
       freshness: CatalogFreshness;
       warning: CatalogError | null;
+      partial: boolean;
+      omittedCount: number;
     };
 
 export type SupplierPanelState =
@@ -69,6 +71,8 @@ function mapCatalogState(response: CatalogResponse): CatalogPanelState {
         items: response.items,
         freshness: response.freshness,
         warning: null,
+        partial: response.partial,
+        omittedCount: response.omitted_count,
       };
     case "stale":
       return {
@@ -76,6 +80,8 @@ function mapCatalogState(response: CatalogResponse): CatalogPanelState {
         items: response.items,
         freshness: response.freshness,
         warning: response.error,
+        partial: response.partial,
+        omittedCount: response.omitted_count,
       };
     case "empty":
       return { kind: "empty", freshness: response.freshness };

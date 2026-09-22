@@ -32,6 +32,7 @@ from nyan_shop_bot.suppliers.khommo.models import (
     OutcomeCode,
     PaymentMode,
     Product,
+    ProductsPage,
     ReadFailure,
     ReadSuccess,
 )
@@ -100,8 +101,10 @@ class KhoMmoCatalogReader:
 
     @staticmethod
     def _project_product(product: Product) -> CatalogProduct:
-        if product.payment_mode is not PaymentMode.VND:
+        if product.payment_mode not in {PaymentMode.VND, PaymentMode.VND_ONLY}:
             raise ValueError("CREDIT catalog prices require a separate normalized unit contract")
+        if product.description is None or product.stock is None:
+            raise ValueError("required read-only catalog field is absent")
         if (
             not product.id.strip()
             or len(product.id) > 128
@@ -169,7 +172,7 @@ class KhoMmoCatalogReader:
                 items=(),
                 error=self._error_for(outcome),
             )
-        if not isinstance(outcome, ReadSuccess) or type(outcome.value) is not tuple:
+        if not isinstance(outcome, ReadSuccess) or not isinstance(outcome.value, ProductsPage):
             return CatalogResponse(
                 mode="khommo-readonly",
                 supplier="khommo",
@@ -184,8 +187,8 @@ class KhoMmoCatalogReader:
                 ),
             )
 
-        products = outcome.value
-        if len(products) == 500:
+        page = outcome.value
+        if page.total_pages > 1 or page.total != len(page.items):
             return CatalogResponse(
                 mode="khommo-readonly",
                 supplier="khommo",
@@ -195,15 +198,24 @@ class KhoMmoCatalogReader:
                 items=(),
                 error=CatalogError(
                     code=CatalogErrorCode.UNSUPPORTED,
-                    message="KhoMMO pagination is ambiguous at the safe page limit.",
+                    message="KhoMMO pagination exceeds the bounded live-read slice.",
                     retryable=False,
                 ),
             )
 
         try:
-            items = tuple(self._project_product(product) for product in products)
-            if len({item.id for item in items}) != len(items):
+            if len({product.id for product in page.items}) != len(page.items):
                 raise ValueError("supplier product identities are not unique")
+            omitted_count = sum(
+                product.description is None or product.stock is None for product in page.items
+            )
+            items = tuple(
+                self._project_product(product)
+                for product in page.items
+                if product.description is not None and product.stock is not None
+            )
+            if page.total > 0 and not items:
+                raise ValueError("every supplier product is missing a required field")
             observed_at = self._clock()
             freshness = self._freshness(observed_at)
         except (ValidationError, ValueError):
@@ -229,6 +241,8 @@ class KhoMmoCatalogReader:
             freshness=freshness,
             items=items,
             error=None,
+            partial=omitted_count > 0,
+            omitted_count=omitted_count,
         )
 
     async def get_product(self, product_id: str) -> CatalogDetailResponse:

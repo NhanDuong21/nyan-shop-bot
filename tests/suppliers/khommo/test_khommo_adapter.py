@@ -40,6 +40,27 @@ def product(**changes: object) -> dict[str, object]:
     return value
 
 
+def products_page(
+    *items: dict[str, object],
+    page: int = 1,
+    limit: int = 20,
+    total: int | None = None,
+    total_pages: int | None = None,
+) -> dict[str, object]:
+    resolved_total = len(items) if total is None else total
+    resolved_pages = (resolved_total + limit - 1) // limit if total_pages is None else total_pages
+    return {
+        "ok": True,
+        "data": list(items),
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total": resolved_total,
+            "totalPages": resolved_pages,
+        },
+    }
+
+
 class FakeTransport:
     def __init__(self, outcomes: Iterable[KhoMmoResponse | Exception]) -> None:
         self.outcomes = iter(outcomes)
@@ -72,7 +93,10 @@ async def test_account_and_products_preserve_separate_units_and_supplier_prices(
         }
     ).encode()
     transport = FakeTransport(
-        [KhoMmoResponse(200, account_body), KhoMmoResponse(200, json.dumps([product()]).encode())]
+        [
+            KhoMmoResponse(200, account_body),
+            KhoMmoResponse(200, json.dumps(products_page(product())).encode()),
+        ]
     )
     client = adapter(transport)
 
@@ -83,7 +107,7 @@ async def test_account_and_products_preserve_separate_units_and_supplier_prices(
     assert account_outcome.value.wallet.credit == CreditUnits(123)  # type: ignore[union-attr]
     assert account_outcome.value.wallet.vnd == VndUnits(456000)  # type: ignore[union-attr]
     assert isinstance(products_outcome, ReadSuccess)
-    item = products_outcome.value[0]  # type: ignore[index]
+    item = products_outcome.value.items[0]  # type: ignore[union-attr]
     assert item.price_credit == CreditUnits(100)
     assert item.price_vnd == VndUnits(25000)  # no second five-percent discount
     assert item.stock == 4 and item.in_stock is True
@@ -91,9 +115,32 @@ async def test_account_and_products_preserve_separate_units_and_supplier_prices(
 
 
 @pytest.mark.asyncio
+async def test_observed_read_only_values_preserve_vnd_only_and_nullable_fields() -> None:
+    fixture = product(paymentMode="VND_ONLY", description=None, stock=None, inStock=True)
+    transport = FakeTransport([KhoMmoResponse(200, json.dumps(products_page(fixture)).encode())])
+
+    outcome = await adapter(transport).list_products()
+
+    assert isinstance(outcome, ReadSuccess)
+    item = outcome.value.items[0]  # type: ignore[union-attr]
+    assert item.payment_mode is PaymentMode.VND_ONLY
+    assert item.description is None
+    assert item.stock is None
+    assert item.in_stock is True
+
+
+@pytest.mark.asyncio
 async def test_exact_ordered_query_defaults_search_and_detail_target() -> None:
     transport = FakeTransport(
-        [KhoMmoResponse(200, b"[]"), KhoMmoResponse(200, json.dumps(product()).encode())]
+        [
+            KhoMmoResponse(
+                200,
+                json.dumps(
+                    products_page(product(), page=2, limit=500, total=501, total_pages=2)
+                ).encode(),
+            ),
+            KhoMmoResponse(200, json.dumps(product()).encode()),
+        ]
     )
     client = adapter(transport)
 
@@ -158,15 +205,21 @@ async def test_timeout_malformed_json_and_unsupported_schema_are_typed_no_retry(
             OutcomeCode.UNSUPPORTED_SCHEMA,
         ),
         (
-            KhoMmoResponse(200, json.dumps([product(extra="undocumented")]).encode()),
+            KhoMmoResponse(200, json.dumps(products_page(product(extra="undocumented"))).encode()),
             OutcomeCode.UNSUPPORTED_SCHEMA,
         ),
         (
-            KhoMmoResponse(200, json.dumps([product(stock=1.5)]).encode()),
+            KhoMmoResponse(200, json.dumps(products_page(product(stock=1.5))).encode()),
             OutcomeCode.UNSUPPORTED_SCHEMA,
         ),
         (
-            KhoMmoResponse(200, json.dumps([product(paymentMode="POSTPAID")]).encode()),
+            KhoMmoResponse(
+                200, json.dumps(products_page(product(paymentMode="POSTPAID"))).encode()
+            ),
+            OutcomeCode.UNSUPPORTED_SCHEMA,
+        ),
+        (
+            KhoMmoResponse(200, json.dumps(products_page(product(stock="unknown"))).encode()),
             OutcomeCode.UNSUPPORTED_SCHEMA,
         ),
     ]
@@ -179,7 +232,7 @@ async def test_timeout_malformed_json_and_unsupported_schema_are_typed_no_retry(
 @pytest.mark.asyncio
 async def test_token_only_in_authorization_and_all_representations_are_redacted() -> None:
     secret = "very-private-bearer-token"
-    transport = FakeTransport([KhoMmoResponse(200, b"[]")])
+    transport = FakeTransport([KhoMmoResponse(200, json.dumps(products_page()).encode())])
     client = adapter(transport, secret)
     await client.list_products(search="safe")
     request = transport.requests[0]
@@ -226,6 +279,6 @@ async def test_injected_transport_never_opens_a_supplier_socket(
 
     monkeypatch.setattr(socket.socket, "connect", denied)
     monkeypatch.setattr(socket, "create_connection", denied)
-    transport = FakeTransport([KhoMmoResponse(200, b"[]")])
+    transport = FakeTransport([KhoMmoResponse(200, json.dumps(products_page()).encode())])
     assert isinstance(await adapter(transport).list_products(), ReadSuccess)
     assert len(transport.requests) == 1

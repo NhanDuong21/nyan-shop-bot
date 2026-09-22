@@ -13,6 +13,7 @@ from nyan_shop_bot.suppliers.khommo.models import (
     KhoMmoResponse,
     KhoMmoToken,
     OutcomeCode,
+    ProductsPage,
     ReadFailure,
     ReadOutcome,
     ReadSuccess,
@@ -120,7 +121,11 @@ class KhoMmoReadAdapter:
             if type(search) is not str:
                 raise KhoMmoConfigurationError("Search must be text")
             query.append(("search", search))
-        return await self._send(self._request("/products", tuple(query)), parse_products)
+        outcome = await self._send(self._request("/products", tuple(query)), parse_products)
+        if isinstance(outcome, ReadSuccess) and isinstance(outcome.value, ProductsPage):
+            if outcome.value.page != page or outcome.value.limit != limit:
+                return ReadFailure(OutcomeCode.UNSUPPORTED_SCHEMA)
+        return outcome
 
     async def get_product(self, product_id: str) -> ReadOutcome:
         if (

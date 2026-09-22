@@ -93,6 +93,15 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
           )}
           {state.catalog.kind === "success" && (
             <div className="dashboard-catalog-success">
+              {state.catalog.partial && (
+                <div className="dashboard-state-panel dashboard-state-panel-warning" role="status">
+                  <strong>Catalog đang hiển thị một phần</strong>
+                  <span>
+                    {state.catalog.omittedCount} sản phẩm bị loại vì supplier thiếu mô tả hoặc
+                    số lượng tồn kho. Không có giá trị thay thế nào được tự suy đoán.
+                  </span>
+                </div>
+              )}
               {state.catalog.warning !== null && (
                 <div className="dashboard-state-panel dashboard-state-panel-warning" role="status">
                   <strong>Đang hiển thị dữ liệu cache đã cũ</strong>
