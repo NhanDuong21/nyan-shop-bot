@@ -103,3 +103,32 @@ def test_khommo_readonly_accepts_only_explicit_loopback_hosts(host: str) -> None
     )
 
     assert settings.app_host == host
+
+
+@pytest.mark.parametrize(
+    "invalid_settings",
+    [
+        {"app_env": "test", "supplier_mode": "khommo-readonly"},
+        {"app_host": "0.0.0.0", "supplier_mode": "khommo-readonly"},
+        {"payment_mode": "live", "supplier_mode": "khommo-readonly"},
+        {"allow_real_purchases": True, "supplier_mode": "khommo-readonly"},
+        {"supplier_mode": "live"},
+    ],
+)
+def test_rejected_configuration_hides_every_secret_input(
+    invalid_settings: dict[str, object],
+) -> None:
+    supplier_secret = "SYNTHETIC_KHOMMO_SECRET_MUST_NOT_RENDER"
+    telegram_secret = "SYNTHETIC_TELEGRAM_SECRET_MUST_NOT_RENDER"
+    values: dict[str, object] = {
+        "khommo_api_token": supplier_secret,
+        "telegram_bot_token": telegram_secret,
+        **invalid_settings,
+    }
+
+    with pytest.raises(ValidationError) as captured:
+        Settings(_env_file=None, **values)  # type: ignore[call-arg]
+
+    rendered = f"{captured.value!s}\n{captured.value!r}"
+    assert supplier_secret not in rendered
+    assert telegram_secret not in rendered

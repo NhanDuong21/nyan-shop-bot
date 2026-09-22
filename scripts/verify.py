@@ -40,6 +40,7 @@ def verify_python_tests() -> None:
             "pytest",
             "tests/unit",
             "tests/suppliers",
+            "tests/bot",
             "-m",
             "not integration",
         ]
