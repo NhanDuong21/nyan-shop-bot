@@ -165,7 +165,7 @@ async def test_start_is_honest_and_contains_the_static_menu() -> None:
 @pytest.mark.parametrize(
     ("scenario", "expected", "has_keyboard"),
     [
-        (FakeCatalogScenario.FRESH, "trạng thái mới", True),
+        (FakeCatalogScenario.FRESH, "Dữ liệu mới", True),
         (FakeCatalogScenario.STALE, "dữ liệu bộ nhớ đệm đã cũ", True),
         (FakeCatalogScenario.EMPTY, "Danh mục hiện trống", False),
         (FakeCatalogScenario.ERROR, "Không thể tải danh mục chỉ đọc", False),
@@ -209,11 +209,38 @@ async def test_live_partial_catalog_shows_source_and_exact_omission_count() -> N
     assert "DANH MỤC — KHOMMO / CHỈ ĐỌC" in message.text
     assert "CATALOG PARTIAL" in message.text
     assert "3 sản phẩm bị loại" in message.text
-    assert "Sản phẩm do máy chủ trả về" in message.text
-    assert "currency=VND" in message.text
     assert "không cấp quyền mua" in message.text
+    assert "Sản phẩm do máy chủ trả về" not in message.text
+    assert "amount_minor" not in message.text
+    assert "currency=" not in message.text
+    assert message.markup is not None
+    assert message.markup.inline_keyboard[0][0].text == "Sản phẩm do máy chủ trả về · 111đ · Còn 8"
     for forbidden in ("secret-supplier-identity", "secret-product", "secret-variant"):
         assert forbidden not in message.text
+
+
+async def test_catalog_uses_compact_vnd_stock_buttons_without_repeating_products() -> None:
+    message = FakeMessage()
+
+    await catalog_handler(message, FakeCatalogReader(FakeCatalogScenario.FRESH))
+
+    assert message.markup is not None
+    button_texts = [row[0].text for row in message.markup.inline_keyboard]
+    assert button_texts == [
+        "Synthetic learning pass · 49.000đ · Còn 12",
+        "Synthetic design seat · 25.000đ · Còn 5",
+        "Synthetic toolkit · 79.000đ · Hết hàng",
+    ]
+    assert all(
+        product_name not in message.text
+        for product_name in (
+            "Synthetic learning pass",
+            "Synthetic design seat",
+            "Synthetic toolkit",
+        )
+    )
+    assert "amount_minor" not in message.text
+    assert "available_quantity" not in message.text
 
 
 async def test_catalog_error_never_echoes_upstream_details() -> None:

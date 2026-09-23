@@ -90,6 +90,13 @@ def _format_money(money: Money) -> str:
     return f"amount_minor={money.amount_minor}; currency={money.currency}; unit={money.unit}"
 
 
+def _format_catalog_button_price(money: Money) -> str:
+    """Render a compact price without converting or hiding its source currency."""
+    if money.currency == "VND":
+        return f"{money.amount_minor:,}".replace(",", ".") + "đ"
+    return f"{money.amount_minor:,} {money.currency}"
+
+
 def _source_label(supplier: str) -> str:
     """Render only the public source identity, never supplier mapping details."""
     return {
@@ -105,6 +112,26 @@ def _source_name(supplier: str) -> str:
 
 def _button_text(prefix: str, value: str) -> str:
     return _bounded_display(f"{prefix}{value}", MAX_BUTTON_TEXT_CHARS, fallback=prefix.rstrip())
+
+
+def _catalog_button_text(product: CatalogProduct) -> str:
+    price = _format_catalog_button_price(product.price)
+    availability = (
+        "Hết hàng" if product.available_quantity == 0 else f"Còn {product.available_quantity}"
+    )
+    suffix = f" · {price} · {availability}"
+    if len(suffix) >= MAX_BUTTON_TEXT_CHARS:
+        return _bounded_display(
+            f"{price} · {availability}",
+            MAX_BUTTON_TEXT_CHARS,
+            fallback="Xem chi tiết",
+        )
+    name = _bounded_display(
+        product.name,
+        MAX_BUTTON_TEXT_CHARS - len(suffix),
+        fallback="Sản phẩm",
+    )
+    return f"{name}{suffix}"
 
 
 def _keyboard(rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup | None:
@@ -153,7 +180,7 @@ def _catalog_lines(response: CatalogResponse) -> list[str]:
             "⚠ CẢNH BÁO: đang hiển thị dữ liệu bộ nhớ đệm đã cũ; lần làm mới gần nhất thất bại."
         )
     else:
-        lines.append("Dữ liệu danh mục hiện đang ở trạng thái mới.")
+        lines.append("Dữ liệu mới · Chọn một sản phẩm để xem chi tiết.")
 
     if response.partial:
         lines.append(
@@ -163,16 +190,8 @@ def _catalog_lines(response: CatalogResponse) -> list[str]:
         )
 
     visible_items = response.items[:MAX_CATALOG_ITEMS]
-    for index, product in enumerate(visible_items, start=1):
-        name = _bounded_display(product.name, 96, fallback="Sản phẩm không có tên hiển thị")
-        lines.append(
-            f"{index}. {name} — {_format_money(product.price)}; "
-            f"available_quantity={product.available_quantity}"
-        )
     if len(response.items) > len(visible_items):
-        lines.append(
-            f"Chỉ hiển thị {len(visible_items)} sản phẩm đầu tiên để giữ tin nhắn an toàn."
-        )
+        lines.append(f"Chỉ hiển thị {len(visible_items)} sản phẩm đầu tiên trong menu này.")
     if response.supplier == "mock":
         lines.append("Giá và tồn kho chỉ là thông tin MOCK hiện tại, không phải cam kết bán hàng.")
     else:
@@ -197,7 +216,7 @@ def _catalog_keyboard(response: CatalogResponse) -> InlineKeyboardMarkup | None:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=_button_text("Chi tiết: ", product.name),
+                    text=_catalog_button_text(product),
                     callback_data=callback_data,
                 )
             ]
