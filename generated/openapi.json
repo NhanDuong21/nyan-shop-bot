@@ -383,6 +383,66 @@
         "title": "CatalogResponse",
         "type": "object"
       },
+      "CatalogSourceOption": {
+        "additionalProperties": false,
+        "description": "One explicitly selectable normalized catalog source.",
+        "properties": {
+          "mode": {
+            "enum": [
+              "mock",
+              "khommo-readonly",
+              "vietshare-readonly"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "read_only": {
+            "const": true,
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "supplier": {
+            "enum": [
+              "mock",
+              "khommo",
+              "vietshare"
+            ],
+            "title": "Supplier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "supplier",
+          "mode"
+        ],
+        "title": "CatalogSourceOption",
+        "type": "object"
+      },
+      "CatalogSourcesResponse": {
+        "additionalProperties": false,
+        "description": "Available sources plus whether clients must choose one explicitly.",
+        "properties": {
+          "selection_required": {
+            "title": "Selection Required",
+            "type": "boolean"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogSourceOption"
+            },
+            "minItems": 1,
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sources",
+          "selection_required"
+        ],
+        "title": "CatalogSourcesResponse",
+        "type": "object"
+      },
       "CatalogState": {
         "description": "Complete UI states represented by the catalog envelope.",
         "enum": [
@@ -674,6 +734,29 @@
     "/api/v1/capabilities": {
       "get": {
         "operationId": "capabilities_api_v1_capabilities_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "mock",
+                    "khommo",
+                    "vietshare"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -684,6 +767,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Capabilities",
@@ -695,6 +788,29 @@
     "/api/v1/catalog": {
       "get": {
         "operationId": "list_catalog_api_v1_catalog_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "mock",
+                    "khommo",
+                    "vietshare"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -705,9 +821,40 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Catalog",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/api/v1/catalog/sources": {
+      "get": {
+        "operationId": "catalog_sources_api_v1_catalog_sources_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogSourcesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Catalog Sources",
         "tags": [
           "catalog"
         ]
@@ -726,6 +873,27 @@
               "pattern": ".*\\S.*",
               "title": "Product Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "mock",
+                    "khommo",
+                    "vietshare"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
             }
           }
         ],

@@ -23,7 +23,7 @@ def is_loopback_host(value: str) -> bool:
 
 
 class Settings(BaseSettings):
-    """Runtime settings with mock defaults and one explicit local live-read mode."""
+    """Runtime settings with mock defaults and explicit local live-read modes."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -39,7 +39,12 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot"
     )
-    supplier_mode: Literal["mock", "khommo-readonly", "vietshare-readonly"] = "mock"
+    supplier_mode: Literal[
+        "mock",
+        "khommo-readonly",
+        "vietshare-readonly",
+        "multi-readonly",
+    ] = "mock"
     payment_mode: Literal["disabled", "mock", "live"] = "disabled"
     allow_real_purchases: bool = False
     khommo_api_token: SecretStr | None = None
@@ -55,38 +60,32 @@ class Settings(BaseSettings):
                 "Read-only runtime requires PAYMENT_MODE=disabled and ALLOW_REAL_PURCHASES=false"
             )
 
-        if self.supplier_mode == "khommo-readonly":
+        if self.supplier_mode != "mock":
             if self.app_env != "local":
                 raise UnsafeRuntimeConfiguration(
-                    "SUPPLIER_MODE=khommo-readonly is allowed only with APP_ENV=local"
+                    f"SUPPLIER_MODE={self.supplier_mode} is allowed only with APP_ENV=local"
                 )
             if not is_loopback_host(self.app_host):
                 raise UnsafeRuntimeConfiguration(
-                    "SUPPLIER_MODE=khommo-readonly requires APP_HOST to be loopback"
+                    f"SUPPLIER_MODE={self.supplier_mode} requires APP_HOST to be loopback"
                 )
+
+        if self.supplier_mode in {"khommo-readonly", "multi-readonly"}:
             token = self.khommo_api_token
             if token is None or not token.get_secret_value():
                 raise UnsafeRuntimeConfiguration(
-                    "SUPPLIER_MODE=khommo-readonly requires local KHOMMO_API_TOKEN"
+                    f"SUPPLIER_MODE={self.supplier_mode} requires local KHOMMO_API_TOKEN"
                 )
-        if self.supplier_mode == "vietshare-readonly":
-            if self.app_env != "local":
-                raise UnsafeRuntimeConfiguration(
-                    "SUPPLIER_MODE=vietshare-readonly is allowed only with APP_ENV=local"
-                )
-            if not is_loopback_host(self.app_host):
-                raise UnsafeRuntimeConfiguration(
-                    "SUPPLIER_MODE=vietshare-readonly requires APP_HOST to be loopback"
-                )
+        if self.supplier_mode in {"vietshare-readonly", "multi-readonly"}:
             api_id = self.vietshare_api_id
             api_secret = self.vietshare_api_secret
             if api_id is None or not api_id.get_secret_value():
                 raise UnsafeRuntimeConfiguration(
-                    "SUPPLIER_MODE=vietshare-readonly requires local VIETSHARE_API_ID"
+                    f"SUPPLIER_MODE={self.supplier_mode} requires local VIETSHARE_API_ID"
                 )
             if api_secret is None or not api_secret.get_secret_value():
                 raise UnsafeRuntimeConfiguration(
-                    "SUPPLIER_MODE=vietshare-readonly requires local VIETSHARE_API_SECRET"
+                    f"SUPPLIER_MODE={self.supplier_mode} requires local VIETSHARE_API_SECRET"
                 )
         return self
 

@@ -69,14 +69,31 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-function stubApi(catalog: unknown, supplierCapabilities: unknown = capabilities) {
+function sourceResponseFor(catalog: unknown) {
+  const envelope = catalog as { supplier?: string; mode?: string };
+  const supplier = envelope.supplier ?? "mock";
+  const mode = envelope.mode ?? "mock";
+  return {
+    sources: [{ supplier, mode, read_only: true }],
+    selection_required: false,
+  };
+}
+
+function stubApi(
+  catalog: unknown,
+  supplierCapabilities: unknown = capabilities,
+  sources: unknown = sourceResponseFor(catalog),
+) {
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
-    return Promise.resolve(
-      url.endsWith("/v1/capabilities")
-        ? jsonResponse(supplierCapabilities)
-        : jsonResponse(catalog),
-    );
+    const pathname = new URL(url, "http://localhost").pathname;
+    if (pathname.endsWith("/v1/catalog/sources")) {
+      return Promise.resolve(jsonResponse(sources));
+    }
+    if (pathname.endsWith("/v1/capabilities")) {
+      return Promise.resolve(jsonResponse(supplierCapabilities));
+    }
+    return Promise.resolve(jsonResponse(catalog));
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
@@ -104,11 +121,11 @@ test("renders generated-contract catalog and supplier truth without replacing AP
   expect(screen.getAllByText(/MOCK/).length).toBeGreaterThanOrEqual(1);
   expect(screen.getByText(/chỉ chạy trên localhost/i)).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith(
-    "/api/v1/catalog",
+    "/api/v1/catalog?source=mock",
     expect.objectContaining({ method: "GET" }),
   );
   expect(fetchMock).toHaveBeenCalledWith(
-    "/api/v1/capabilities",
+    "/api/v1/capabilities?source=mock",
     expect.objectContaining({ method: "GET" }),
   );
 });
@@ -192,6 +209,65 @@ test("filters injected catalog data without replacing the backend source", async
   expect(screen.getByText("1/2 sản phẩm")).toBeInTheDocument();
 });
 
+test("switches explicitly between KhoMMO and VietShare through FastAPI", async () => {
+  const sources = {
+    sources: [
+      { supplier: "khommo", mode: "khommo-readonly", read_only: true },
+      { supplier: "vietshare", mode: "vietshare-readonly", read_only: true },
+    ],
+    selection_required: true,
+  };
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname.endsWith("/v1/catalog/sources")) {
+      return Promise.resolve(jsonResponse(sources));
+    }
+    if (url.pathname.endsWith("/v1/capabilities")) {
+      return Promise.resolve(jsonResponse(capabilities));
+    }
+    const source = url.searchParams.get("source");
+    const item = {
+      ...catalogItem,
+      id: `${source}-item`,
+      name: source === "khommo" ? "Sản phẩm KhoMMO" : "Sản phẩm VietShare",
+      supplier: source,
+      mode: `${source}-readonly`,
+    };
+    return Promise.resolve(
+      jsonResponse({
+        supplier: source,
+        mode: `${source}-readonly`,
+        read_only: true,
+        partial: false,
+        omitted_count: 0,
+        state: "fresh",
+        freshness,
+        items: [item],
+        error: null,
+      }),
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<App />);
+
+  expect(await screen.findByText("Sản phẩm KhoMMO")).toBeInTheDocument();
+  fireEvent.change(screen.getByRole("combobox", { name: /Chọn nguồn catalog/i }), {
+    target: { value: "vietshare" },
+  });
+
+  expect(await screen.findByText("Sản phẩm VietShare")).toBeInTheDocument();
+  expect(screen.queryByText("Sản phẩm KhoMMO")).not.toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/v1/catalog?source=khommo",
+    expect.objectContaining({ method: "GET" }),
+  );
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/v1/catalog?source=vietshare",
+    expect.objectContaining({ method: "GET" }),
+  );
+});
+
 test("shows an explicit empty state from the catalog envelope", async () => {
   stubApi(freshCatalog([]));
 
@@ -205,7 +281,11 @@ test("shows a safe transport error and retries both read-only resources", async 
   let catalogRequests = 0;
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.endsWith("/v1/capabilities")) {
+    const pathname = new URL(url, "http://localhost").pathname;
+    if (pathname.endsWith("/v1/catalog/sources")) {
+      return Promise.resolve(jsonResponse(sourceResponseFor(freshCatalog([catalogItem]))));
+    }
+    if (pathname.endsWith("/v1/capabilities")) {
       return Promise.resolve(jsonResponse(capabilities));
     }
 
@@ -223,5 +303,5 @@ test("shows a safe transport error and retries both read-only resources", async 
 
   expect(await screen.findByText("Sản phẩm kiểm thử")).toBeInTheDocument();
   expect(catalogRequests).toBe(2);
-  expect(fetchMock).toHaveBeenCalledTimes(4);
+  expect(fetchMock).toHaveBeenCalledTimes(6);
 });

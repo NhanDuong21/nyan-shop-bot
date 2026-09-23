@@ -106,6 +106,50 @@ def test_vietshare_readonly_requires_both_local_credentials_without_echoing_them
     assert api_secret not in repr(settings)
 
 
+def test_multi_readonly_requires_both_sources_and_keeps_money_guards_disabled() -> None:
+    base = {
+        "_env_file": None,
+        "supplier_mode": "multi-readonly",
+        "payment_mode": "disabled",
+        "allow_real_purchases": False,
+    }
+
+    with pytest.raises(ValidationError, match="requires local KHOMMO_API_TOKEN"):
+        Settings(**base)  # type: ignore[arg-type]
+    with pytest.raises(ValidationError, match="requires local VIETSHARE_API_ID"):
+        Settings(**base, khommo_api_token="synthetic-khommo")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError, match="requires local VIETSHARE_API_SECRET"):
+        Settings(  # type: ignore[arg-type]
+            **base,
+            khommo_api_token="synthetic-khommo",
+            vietshare_api_id="synthetic-vietshare-id",
+        )
+
+    settings = Settings(  # type: ignore[arg-type]
+        **base,
+        khommo_api_token="synthetic-khommo",
+        vietshare_api_id="synthetic-vietshare-id",
+        vietshare_api_secret="synthetic-vietshare-secret",
+    )
+
+    assert settings.supplier_mode == "multi-readonly"
+    assert settings.payment_mode == "disabled"
+    assert settings.allow_real_purchases is False
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "api.local"])
+def test_multi_readonly_rejects_non_loopback_bind(host: str) -> None:
+    with pytest.raises(ValidationError, match="APP_HOST to be loopback"):
+        Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            app_host=host,
+            supplier_mode="multi-readonly",
+            khommo_api_token="synthetic-khommo",
+            vietshare_api_id="synthetic-vietshare-id",
+            vietshare_api_secret="synthetic-vietshare-secret",
+        )
+
+
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "api.local"])
 def test_vietshare_readonly_rejects_non_loopback_or_nonlocal_runtime(host: str) -> None:
     with pytest.raises(ValidationError, match="APP_HOST to be loopback"):

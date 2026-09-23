@@ -6,9 +6,11 @@ import {
   type CatalogItem,
   type CatalogMode,
   type CatalogResponse,
+  type CatalogSourceOption,
   type CatalogSupplier,
   fetchCapabilities,
   fetchCatalog,
+  fetchCatalogSources,
   type SupplierCapabilities,
 } from "./api";
 
@@ -60,6 +62,9 @@ export interface AdminDashboardProps {
 
 export interface CatalogStateController {
   state: AdminDashboardState;
+  sources: CatalogSourceOption[];
+  selectedSource: CatalogSupplier | null;
+  selectSource: (source: CatalogSupplier) => void;
   retry: () => void;
 }
 
@@ -112,6 +117,8 @@ function requestFailure(resource: string): string {
 
 export function useCatalogState(): CatalogStateController {
   const [requestVersion, setRequestVersion] = useState(0);
+  const [sources, setSources] = useState<CatalogSourceOption[]>([]);
+  const [selectedSource, setSelectedSource] = useState<CatalogSupplier | null>(null);
   const [state, setState] = useState<AdminDashboardState>({
     catalog: { kind: "loading" },
     supplier: { kind: "loading" },
@@ -125,12 +132,67 @@ export function useCatalogState(): CatalogStateController {
     setRequestVersion((version) => version + 1);
   }, []);
 
+  const selectSource = useCallback(
+    (source: CatalogSupplier) => {
+      if (!sources.some((option) => option.supplier === source)) {
+        return;
+      }
+      setState({
+        catalog: { kind: "loading" },
+        supplier: { kind: "loading" },
+      });
+      setSelectedSource(source);
+    },
+    [sources],
+  );
+
   useEffect(() => {
     const controller = new AbortController();
 
+    void fetchCatalogSources(controller.signal)
+      .then((response) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setSources(response.sources);
+        setSelectedSource((current) => {
+          if (current !== null && response.sources.some((item) => item.supplier === current)) {
+            return current;
+          }
+          return response.sources[0]?.supplier ?? null;
+        });
+      })
+      .catch(() => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setSources([]);
+        setSelectedSource(null);
+        setState({
+          catalog: {
+            kind: "error",
+            message: requestFailure("Danh sách nguồn catalog"),
+            retryable: true,
+          },
+          supplier: {
+            kind: "error",
+            message: requestFailure("Danh sách nguồn catalog"),
+          },
+        });
+      });
+
+    return () => controller.abort();
+  }, [requestVersion]);
+
+  useEffect(() => {
+    if (selectedSource === null) {
+      return;
+    }
+    const controller = new AbortController();
+
     void Promise.allSettled([
-      fetchCatalog(controller.signal),
-      fetchCapabilities(controller.signal),
+      fetchCatalog(controller.signal, selectedSource),
+      fetchCapabilities(controller.signal, selectedSource),
     ]).then(([catalogResult, capabilitiesResult]) => {
       if (controller.signal.aborted) {
         return;
@@ -170,7 +232,7 @@ export function useCatalogState(): CatalogStateController {
     });
 
     return () => controller.abort();
-  }, [requestVersion]);
+  }, [requestVersion, selectedSource]);
 
-  return { state, retry };
+  return { state, sources, selectedSource, selectSource, retry };
 }
