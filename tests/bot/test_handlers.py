@@ -5,7 +5,12 @@ from datetime import UTC, datetime
 import pytest
 from aiogram.types import InlineKeyboardMarkup
 
-from nyan_shop_bot.bot.callbacks import encode_detail_callback, encode_quote_callback
+from nyan_shop_bot.bot.callbacks import (
+    decode_callback,
+    encode_detail_callback,
+    encode_quote_callback,
+    encode_source_callback,
+)
 from nyan_shop_bot.bot.handlers import (
     MAX_BUTTON_TEXT_CHARS,
     MAX_MESSAGE_CHARS,
@@ -14,6 +19,7 @@ from nyan_shop_bot.bot.handlers import (
     build_router,
     callback_handler,
     catalog_handler,
+    catalog_source_menu_handler,
     orders_handler,
     start_handler,
     support_handler,
@@ -41,6 +47,7 @@ from nyan_shop_bot.catalog.models import (
     SupplierProductIdentity,
     SupplierVariantIdentity,
 )
+from nyan_shop_bot.catalog.registry import CatalogRegistry
 
 
 class FakeMessage:
@@ -243,6 +250,136 @@ async def test_catalog_uses_compact_vnd_stock_buttons_without_repeating_products
     )
     assert "amount_minor" not in message.text
     assert "available_quantity" not in message.text
+
+
+async def test_multi_source_menu_is_explicit_and_does_not_contact_suppliers() -> None:
+    khommo = StubCatalogReader(catalog_response=fake_catalog_scenarios()[FakeCatalogScenario.FRESH])
+    vietshare = StubCatalogReader(
+        catalog_response=fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+    )
+    catalogs = CatalogRegistry({"khommo": khommo, "vietshare": vietshare})
+    message = FakeMessage()
+
+    await catalog_source_menu_handler(message, catalogs)
+
+    assert "CHỌN NGUỒN DANH MỤC — CHỈ ĐỌC" in message.text
+    assert "catalog chưa được gộp" in message.text
+    assert message.markup is not None
+    assert [row[0].text for row in message.markup.inline_keyboard] == [
+        "KhoMMO · CHỈ ĐỌC",
+        "VietShare · CHỈ ĐỌC",
+    ]
+    assert [row[0].callback_data for row in message.markup.inline_keyboard] == [
+        encode_source_callback("khommo"),
+        encode_source_callback("vietshare"),
+    ]
+    assert all(row[0].style == "primary" for row in message.markup.inline_keyboard)
+    assert khommo.catalog_reads == 0
+    assert vietshare.catalog_reads == 0
+
+
+async def test_multi_source_callbacks_stay_bound_to_the_selected_reader() -> None:
+    fresh = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+    khommo_product = _product().model_copy(update={"supplier": "khommo", "mode": "khommo-readonly"})
+    vietshare_product = _product().model_copy(
+        update={"supplier": "vietshare", "mode": "vietshare-readonly"}
+    )
+    khommo_response = CatalogResponse(
+        supplier="khommo",
+        mode="khommo-readonly",
+        state=CatalogState.FRESH,
+        freshness=fresh.freshness,
+        items=(khommo_product,),
+        error=None,
+    )
+    vietshare_response = CatalogResponse(
+        supplier="vietshare",
+        mode="vietshare-readonly",
+        state=CatalogState.FRESH,
+        freshness=fresh.freshness,
+        items=(vietshare_product,),
+        error=None,
+    )
+    khommo = StubCatalogReader(
+        catalog_response=khommo_response,
+        details={
+            khommo_product.id: CatalogDetailFound(state="found", item=khommo_product),
+        },
+    )
+    vietshare = StubCatalogReader(
+        catalog_response=vietshare_response,
+        details={
+            vietshare_product.id: CatalogDetailFound(state="found", item=vietshare_product),
+        },
+    )
+    catalogs = CatalogRegistry({"khommo": khommo, "vietshare": vietshare})
+    catalog_message = FakeMessage()
+
+    await callback_handler(
+        FakeCallback(encode_source_callback("khommo"), catalog_message),
+        catalogs,
+    )
+
+    assert "DANH MỤC — KHOMMO / CHỈ ĐỌC" in catalog_message.text
+    assert khommo.catalog_reads == 1
+    assert vietshare.catalog_reads == 0
+    assert catalog_message.markup is not None
+    detail_data = catalog_message.markup.inline_keyboard[0][0].callback_data
+    decoded = decode_callback(detail_data)
+    assert decoded.source == "khommo"
+    assert decoded.product_id == khommo_product.id
+
+    detail_message = FakeMessage()
+    await callback_handler(FakeCallback(detail_data, detail_message), catalogs)
+
+    assert "CHI TIẾT SẢN PHẨM — KHOMMO / CHỈ ĐỌC" in detail_message.text
+    assert khommo.product_reads == [khommo_product.id]
+    assert vietshare.product_reads == []
+    assert detail_message.markup is not None
+    assert decode_callback(detail_message.markup.inline_keyboard[0][0].callback_data).source == (
+        "khommo"
+    )
+
+
+async def test_legacy_callback_in_multi_mode_fails_closed_without_guessing_source() -> None:
+    response = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+    khommo = StubCatalogReader(catalog_response=response)
+    vietshare = StubCatalogReader(catalog_response=response)
+    catalogs = CatalogRegistry({"khommo": khommo, "vietshare": vietshare})
+    message = FakeMessage()
+
+    await callback_handler(
+        FakeCallback(encode_detail_callback("learning-pass"), message),
+        catalogs,
+    )
+
+    assert message.text == SAFE_REFRESH_MESSAGE
+    assert khommo.product_reads == []
+    assert vietshare.product_reads == []
+
+
+async def test_legacy_or_wrong_source_callback_cannot_cross_single_live_modes() -> None:
+    response = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+    vietshare = StubCatalogReader(catalog_response=response)
+    catalogs = CatalogRegistry({"vietshare": vietshare})
+
+    legacy_message = FakeMessage()
+    await callback_handler(
+        FakeCallback(encode_detail_callback("learning-pass"), legacy_message),
+        catalogs,
+    )
+    wrong_source_message = FakeMessage()
+    await callback_handler(
+        FakeCallback(
+            encode_detail_callback("learning-pass", "khommo"),
+            wrong_source_message,
+        ),
+        catalogs,
+    )
+
+    assert legacy_message.text == SAFE_REFRESH_MESSAGE
+    assert wrong_source_message.text == SAFE_REFRESH_MESSAGE
+    assert vietshare.product_reads == []
 
 
 async def test_catalog_error_never_echoes_upstream_details() -> None:

@@ -7,6 +7,17 @@ export interface Money {
 export type CatalogSupplier = "mock" | "khommo" | "vietshare";
 export type CatalogMode = "mock" | "khommo-readonly" | "vietshare-readonly";
 
+export interface CatalogSourceOption {
+  supplier: CatalogSupplier;
+  mode: CatalogMode;
+  read_only: true;
+}
+
+export interface CatalogSourcesResponse {
+  sources: CatalogSourceOption[];
+  selection_required: boolean;
+}
+
 export interface CatalogVariant {
   id: string;
   name: string;
@@ -90,8 +101,35 @@ export interface SupplierCapabilities {
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 
-export async function fetchCatalog(signal?: AbortSignal): Promise<CatalogResponse> {
-  const response = await fetch(`${apiBaseUrl}/v1/catalog`, {
+function sourceUrl(path: string, source?: CatalogSupplier): string {
+  if (source === undefined) {
+    return `${apiBaseUrl}${path}`;
+  }
+  const query = new URLSearchParams({ source });
+  return `${apiBaseUrl}${path}?${query.toString()}`;
+}
+
+export async function fetchCatalogSources(
+  signal?: AbortSignal,
+): Promise<CatalogSourcesResponse> {
+  const response = await fetch(`${apiBaseUrl}/v1/catalog/sources`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Catalog sources request failed with ${response.status}`);
+  }
+
+  return (await response.json()) as CatalogSourcesResponse;
+}
+
+export async function fetchCatalog(
+  signal?: AbortSignal,
+  source?: CatalogSupplier,
+): Promise<CatalogResponse> {
+  const response = await fetch(sourceUrl("/v1/catalog", source), {
     method: "GET",
     headers: { Accept: "application/json" },
     signal,
@@ -104,8 +142,11 @@ export async function fetchCatalog(signal?: AbortSignal): Promise<CatalogRespons
   return (await response.json()) as CatalogResponse;
 }
 
-export async function fetchCapabilities(signal?: AbortSignal): Promise<SupplierCapabilities> {
-  const response = await fetch(`${apiBaseUrl}/v1/capabilities`, {
+export async function fetchCapabilities(
+  signal?: AbortSignal,
+  source?: CatalogSupplier,
+): Promise<SupplierCapabilities> {
+  const response = await fetch(sourceUrl("/v1/capabilities", source), {
     method: "GET",
     headers: { Accept: "application/json" },
     signal,

@@ -33,6 +33,24 @@ export function App() {
           </div>
         </div>
         <div className="app-actions">
+          {catalog.sources.length > 1 && (
+            <label className="source-selector">
+              <span>Nguồn</span>
+              <select
+                aria-label="Chọn nguồn catalog"
+                value={catalog.selectedSource ?? ""}
+                onChange={(event) =>
+                  catalog.selectSource(event.target.value as "khommo" | "vietshare")
+                }
+              >
+                {catalog.sources.map((source) => (
+                  <option key={source.supplier} value={source.supplier}>
+                    {source.supplier === "khommo" ? "KhoMMO" : "VietShare"}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <span className="environment-badge" aria-label={`Môi trường ${environmentLabel}`}>
             {environmentLabel}
           </span>

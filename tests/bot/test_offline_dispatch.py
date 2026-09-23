@@ -14,7 +14,7 @@ from aiogram.client.session.base import BaseSession
 from aiogram.methods import AnswerCallbackQuery, SendMessage, TelegramMethod
 from aiogram.types import CallbackQuery, Chat, Message, MessageEntity, Update, User
 
-from nyan_shop_bot.bot.callbacks import encode_quote_callback
+from nyan_shop_bot.bot.callbacks import decode_callback, encode_quote_callback
 from nyan_shop_bot.bot.handlers import (
     build_dispatcher,
     callback_handler,
@@ -24,6 +24,7 @@ from nyan_shop_bot.bot.handlers import (
     support_handler,
 )
 from nyan_shop_bot.catalog.mock import FakeCatalogReader, FakeCatalogScenario
+from nyan_shop_bot.catalog.registry import CatalogRegistry
 
 
 class FakeMessage:
@@ -138,6 +139,52 @@ async def test_aiogram_dispatches_callback_and_uses_current_reader_data() -> Non
     assert len(sent) == 1
     assert "amount_minor=49000; currency=VND; unit=minor" in sent[0].text
     assert "BÁO GIÁ MÔ PHỎNG — MOCK / CHỈ ĐỌC" in sent[0].text
+
+
+async def test_aiogram_multi_source_catalog_starts_with_an_explicit_source_menu() -> None:
+    dispatcher = build_dispatcher(
+        CatalogRegistry(
+            {
+                "khommo": FakeCatalogReader(FakeCatalogScenario.FRESH),
+                "vietshare": FakeCatalogReader(FakeCatalogScenario.FRESH),
+            }
+        )
+    )
+    session = RecordingSession()
+    bot = Bot(token="0:offline", session=session)
+
+    await dispatcher.feed_update(
+        bot,
+        Update(update_id=3, message=_message("/catalog", 3)),
+    )
+
+    sent = [request for request in session.requests if isinstance(request, SendMessage)]
+    assert len(sent) == 1
+    assert "CHỌN NGUỒN DANH MỤC — CHỈ ĐỌC" in sent[0].text
+    assert sent[0].reply_markup is not None
+    assert [row[0].text for row in sent[0].reply_markup.inline_keyboard] == [
+        "KhoMMO · CHỈ ĐỌC",
+        "VietShare · CHỈ ĐỌC",
+    ]
+
+
+async def test_aiogram_single_live_catalog_also_binds_callbacks_to_its_source() -> None:
+    dispatcher = build_dispatcher(
+        CatalogRegistry({"khommo": FakeCatalogReader(FakeCatalogScenario.FRESH)})
+    )
+    session = RecordingSession()
+    bot = Bot(token="0:offline", session=session)
+
+    await dispatcher.feed_update(
+        bot,
+        Update(update_id=4, message=_message("/catalog", 4)),
+    )
+
+    sent = [request for request in session.requests if isinstance(request, SendMessage)]
+    assert len(sent) == 1
+    assert sent[0].reply_markup is not None
+    first_callback = sent[0].reply_markup.inline_keyboard[0][0].callback_data
+    assert decode_callback(first_callback).source == "khommo"
 
 
 async def test_hard_network_guard_covers_all_offline_flows(

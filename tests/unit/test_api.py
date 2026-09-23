@@ -4,8 +4,9 @@ from httpx import ASGITransport, AsyncClient
 
 from nyan_shop_bot.catalog.mock import FakeCatalogReader, FakeCatalogScenario
 from nyan_shop_bot.catalog.ports import CatalogReader
+from nyan_shop_bot.catalog.registry import CatalogRegistry
 from nyan_shop_bot.config import Settings
-from nyan_shop_bot.main import build_catalog_reader, create_app
+from nyan_shop_bot.main import build_catalog_reader, build_catalog_registry, create_app
 from nyan_shop_bot.suppliers.khommo import KhoMmoCatalogReader
 from nyan_shop_bot.suppliers.vietshare import VietShareCatalogReader
 
@@ -16,6 +17,23 @@ class ReadyDatabase:
 
     async def close(self) -> None:
         return None
+
+
+class CountingCatalogReader:
+    capabilities = FakeCatalogReader.capabilities
+
+    def __init__(self) -> None:
+        self.delegate = FakeCatalogReader()
+        self.catalog_reads = 0
+        self.product_reads: list[str] = []
+
+    async def read_catalog(self):  # type: ignore[no-untyped-def]
+        self.catalog_reads += 1
+        return await self.delegate.read_catalog()
+
+    async def get_product(self, product_id: str):  # type: ignore[no-untyped-def]
+        self.product_reads.append(product_id)
+        return await self.delegate.get_product(product_id)
 
 
 def make_client(catalog: CatalogReader | None = None) -> AsyncClient:
@@ -79,6 +97,77 @@ async def test_live_read_factory_constructs_vietshare_without_contacting_supplie
         await close_catalog()
 
 
+async def test_multi_read_factory_constructs_both_sources_without_contacting_them() -> None:
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        supplier_mode="multi-readonly",
+        khommo_api_token="synthetic-khommo",
+        vietshare_api_id="synthetic-vietshare-id",
+        vietshare_api_secret="synthetic-vietshare-secret",
+    )
+
+    registry, close_catalog = build_catalog_registry(settings)
+    try:
+        assert registry.sources == ("khommo", "vietshare")
+        assert isinstance(registry.resolve("khommo"), KhoMmoCatalogReader)
+        assert isinstance(registry.resolve("vietshare"), VietShareCatalogReader)
+    finally:
+        assert close_catalog is not None
+        await close_catalog()
+
+
+async def test_multi_read_api_requires_and_routes_explicit_sources() -> None:
+    khommo = CountingCatalogReader()
+    vietshare = CountingCatalogReader()
+    registry = CatalogRegistry({"khommo": khommo, "vietshare": vietshare})
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        supplier_mode="multi-readonly",
+        khommo_api_token="synthetic-khommo",
+        vietshare_api_id="synthetic-vietshare-id",
+        vietshare_api_secret="synthetic-vietshare-secret",
+    )
+    application = create_app(
+        settings=settings,
+        catalogs=registry,
+        database=ReadyDatabase(),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://test",
+    ) as client:
+        sources = await client.get("/api/v1/catalog/sources")
+        missing_source = await client.get("/api/v1/catalog")
+        khommo_catalog = await client.get("/api/v1/catalog?source=khommo")
+        vietshare_detail = await client.get("/api/v1/catalog/learning-pass?source=vietshare")
+        vietshare_capabilities = await client.get("/api/v1/capabilities?source=vietshare")
+        unavailable = await client.get("/api/v1/catalog?source=mock")
+        invalid = await client.get("/api/v1/catalog?source=roboticvn")
+
+    assert sources.status_code == 200
+    assert sources.json() == {
+        "sources": [
+            {"supplier": "khommo", "mode": "khommo-readonly", "read_only": True},
+            {
+                "supplier": "vietshare",
+                "mode": "vietshare-readonly",
+                "read_only": True,
+            },
+        ],
+        "selection_required": True,
+    }
+    assert missing_source.status_code == 400
+    assert missing_source.json()["detail"] == "catalog source selection is required"
+    assert khommo_catalog.status_code == 200
+    assert vietshare_detail.status_code == 200
+    assert vietshare_capabilities.status_code == 200
+    assert unavailable.status_code == 404
+    assert invalid.status_code == 422
+    assert khommo.catalog_reads == 1
+    assert vietshare.product_reads == ["learning-pass"]
+
+
 async def test_live_read_catalog_routes_reject_non_loopback_clients() -> None:
     settings = Settings(
         _env_file=None,  # type: ignore[call-arg]
@@ -100,6 +189,7 @@ async def test_live_read_catalog_routes_reject_non_loopback_clients() -> None:
     async with AsyncClient(transport=remote_transport, base_url="http://test") as client:
         health = await client.get("/healthz")
         blocked = [
+            await client.get("/api/v1/catalog/sources"),
             await client.get("/api/v1/catalog"),
             await client.get("/api/v1/catalog/p-1"),
             await client.get("/api/v1/capabilities"),
@@ -108,7 +198,7 @@ async def test_live_read_catalog_routes_reject_non_loopback_clients() -> None:
         capabilities = await client.get("/api/v1/capabilities")
 
     assert health.status_code == 200
-    assert [response.status_code for response in blocked] == [403, 403, 403]
+    assert [response.status_code for response in blocked] == [403, 403, 403, 403]
     assert all(
         response.json()["detail"] == "live-read catalog is available only from loopback"
         for response in blocked

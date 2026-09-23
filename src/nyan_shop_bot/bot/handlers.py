@@ -16,6 +16,7 @@ from nyan_shop_bot.bot.callbacks import (
     decode_callback,
     encode_detail_callback,
     encode_quote_callback,
+    encode_source_callback,
 )
 from nyan_shop_bot.catalog.mock import FakeCatalogReader
 from nyan_shop_bot.catalog.models import (
@@ -27,9 +28,15 @@ from nyan_shop_bot.catalog.models import (
     CatalogResponse,
     CatalogState,
     CatalogVariant,
+    LiveCatalogSupplier,
     Money,
 )
 from nyan_shop_bot.catalog.ports import CatalogReader
+from nyan_shop_bot.catalog.registry import (
+    CatalogRegistry,
+    CatalogSourceSelectionRequired,
+    CatalogSourceUnavailable,
+)
 
 MAX_MESSAGE_CHARS: Final = 3_500
 MAX_BUTTON_TEXT_CHARS: Final = 64
@@ -64,6 +71,14 @@ class AnswerableCallbackQuery(Protocol):
 def _catalog_or_default(catalog: CatalogReader | None) -> CatalogReader:
     """Use deterministic synthetic data only when no reader is injected."""
     return catalog if catalog is not None else FakeCatalogReader()
+
+
+def _catalog_access_or_default(
+    catalog: CatalogReader | CatalogRegistry | None,
+) -> CatalogReader | CatalogRegistry:
+    if isinstance(catalog, CatalogRegistry):
+        return catalog
+    return _catalog_or_default(catalog)
 
 
 def _bounded_display(value: str, limit: int, *, fallback: str) -> str:
@@ -108,6 +123,14 @@ def _source_label(supplier: str) -> str:
 
 def _source_name(supplier: str) -> str:
     return {"khommo": "KhoMMO", "vietshare": "VietShare"}.get(supplier, "supplier")
+
+
+def _live_source(supplier: str) -> LiveCatalogSupplier | None:
+    if supplier == "khommo":
+        return "khommo"
+    if supplier == "vietshare":
+        return "vietshare"
+    return None
 
 
 def _button_text(prefix: str, value: str) -> str:
@@ -158,7 +181,8 @@ async def start_handler(message: AnswerableMessage) -> None:
         (
             "Nyan Shop Bot — LOCAL / CHỈ ĐỌC.",
             "Bot chỉ cho phép xem danh mục; thanh toán và mua hàng thật hiện bị vô hiệu hóa.",
-            "Menu: /catalog xem danh mục · /orders xem trạng thái đơn · /support xem trợ giúp.",
+            "Menu: /catalog chọn nguồn và xem danh mục · /orders xem trạng thái đơn · "
+            "/support xem trợ giúp.",
         ),
     )
 
@@ -203,14 +227,18 @@ def _catalog_lines(response: CatalogResponse) -> list[str]:
     return lines
 
 
-def _catalog_keyboard(response: CatalogResponse) -> InlineKeyboardMarkup | None:
+def _catalog_keyboard(
+    response: CatalogResponse,
+    *,
+    source: LiveCatalogSupplier | None = None,
+) -> InlineKeyboardMarkup | None:
     if response.state not in (CatalogState.FRESH, CatalogState.STALE):
         return None
 
     rows: list[list[InlineKeyboardButton]] = []
     for product in response.items[:MAX_CATALOG_ITEMS]:
         try:
-            callback_data = encode_detail_callback(product.id)
+            callback_data = encode_detail_callback(product.id, source)
         except CallbackCodecError:
             continue
         rows.append(
@@ -228,6 +256,8 @@ def _catalog_keyboard(response: CatalogResponse) -> InlineKeyboardMarkup | None:
 async def catalog_handler(
     message: AnswerableMessage,
     catalog: CatalogReader | None = None,
+    *,
+    source: LiveCatalogSupplier | None = None,
 ) -> None:
     """Read and render every normalized catalog envelope state safely."""
     reader = _catalog_or_default(catalog)
@@ -237,7 +267,48 @@ async def catalog_handler(
         await _send(message, (SAFE_CATALOG_ERROR_MESSAGE,))
         return
 
-    await _send(message, _catalog_lines(response), keyboard=_catalog_keyboard(response))
+    await _send(
+        message,
+        _catalog_lines(response),
+        keyboard=_catalog_keyboard(response, source=source),
+    )
+
+
+def _source_menu_keyboard(catalogs: CatalogRegistry) -> InlineKeyboardMarkup | None:
+    rows: list[list[InlineKeyboardButton]] = []
+    labels: dict[LiveCatalogSupplier, str] = {
+        "khommo": "KhoMMO · CHỈ ĐỌC",
+        "vietshare": "VietShare · CHỈ ĐỌC",
+    }
+    for source in catalogs.sources:
+        if source not in labels:
+            continue
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=labels[source],
+                    callback_data=encode_source_callback(source),
+                    style="primary",
+                )
+            ]
+        )
+    return _keyboard(rows)
+
+
+async def catalog_source_menu_handler(
+    message: AnswerableMessage,
+    catalogs: CatalogRegistry,
+) -> None:
+    """Ask the user to choose a live source without contacting either supplier."""
+    await _send(
+        message,
+        (
+            "CHỌN NGUỒN DANH MỤC — CHỈ ĐỌC",
+            "KhoMMO và VietShare là hai nguồn riêng biệt; catalog chưa được gộp.",
+            "Chọn một nguồn bên dưới. Thao tác này không tạo đơn hoặc thanh toán.",
+        ),
+        keyboard=_source_menu_keyboard(catalogs),
+    )
 
 
 async def orders_handler(message: AnswerableMessage) -> None:
@@ -287,11 +358,15 @@ def _detail_lines(product: CatalogProduct) -> list[str]:
     return lines
 
 
-def _detail_keyboard(product: CatalogProduct) -> InlineKeyboardMarkup | None:
+def _detail_keyboard(
+    product: CatalogProduct,
+    *,
+    source: LiveCatalogSupplier | None = None,
+) -> InlineKeyboardMarkup | None:
     rows: list[list[InlineKeyboardButton]] = []
     for variant in product.variants[:MAX_DETAIL_VARIANTS]:
         try:
-            callback_data = encode_quote_callback(product.id, variant.id)
+            callback_data = encode_quote_callback(product.id, variant.id, source)
         except CallbackCodecError:
             continue
         rows.append(
@@ -362,6 +437,7 @@ async def _handle_detail_callback(
     message: AnswerableMessage,
     catalog: CatalogReader,
     product_id: str,
+    source: LiveCatalogSupplier | None,
 ) -> None:
     response = await _read_detail(catalog, product_id)
     if isinstance(response, CatalogDetailFound):
@@ -371,7 +447,7 @@ async def _handle_detail_callback(
         await _send(
             message,
             _detail_lines(response.item),
-            keyboard=_detail_keyboard(response.item),
+            keyboard=_detail_keyboard(response.item, source=source),
         )
         return
     if isinstance(response, CatalogDetailNotFound):
@@ -420,7 +496,7 @@ async def _handle_quote_callback(
 
 async def callback_handler(
     callback: AnswerableCallbackQuery,
-    catalog: CatalogReader | None = None,
+    catalog: CatalogReader | CatalogRegistry | None = None,
 ) -> None:
     """Clear the callback spinner, validate IDs, and re-resolve all server data."""
     await callback.answer()
@@ -434,23 +510,63 @@ async def callback_handler(
         await _send(message, (SAFE_REFRESH_MESSAGE,))
         return
 
-    reader = _catalog_or_default(catalog)
+    access = _catalog_access_or_default(catalog)
+    if isinstance(access, CatalogRegistry):
+        if payload.source is None and access.sources != ("mock",):
+            await _send(message, (SAFE_REFRESH_MESSAGE,))
+            return
+        try:
+            reader = access.resolve(payload.source)
+        except (CatalogSourceSelectionRequired, CatalogSourceUnavailable):
+            await _send(message, (SAFE_REFRESH_MESSAGE,))
+            return
+    else:
+        if payload.source is not None:
+            await _send(message, (SAFE_REFRESH_MESSAGE,))
+            return
+        reader = access
+
+    if payload.action is CallbackAction.SOURCE:
+        if payload.source is None:
+            await _send(message, (SAFE_REFRESH_MESSAGE,))
+            return
+        await catalog_handler(message, reader, source=payload.source)
+        return
+    if payload.product_id is None:
+        await _send(message, (SAFE_REFRESH_MESSAGE,))
+        return
     if payload.action is CallbackAction.DETAIL:
-        await _handle_detail_callback(message, reader, payload.product_id)
+        await _handle_detail_callback(
+            message,
+            reader,
+            payload.product_id,
+            payload.source,
+        )
         return
     await _handle_quote_callback(message, reader, payload.product_id, payload.variant_id)
 
 
-def build_router(catalog: CatalogReader | None = None) -> Router:
+def build_router(catalog: CatalogReader | CatalogRegistry | None = None) -> Router:
     """Build handlers around an injected read-only catalog, without a Bot or token."""
-    reader = _catalog_or_default(catalog)
+    access = _catalog_access_or_default(catalog)
     router = Router(name="foundation")
 
     async def injected_catalog_handler(message: AnswerableMessage) -> None:
-        await catalog_handler(message, reader)
+        if isinstance(access, CatalogRegistry):
+            if access.selection_required:
+                await catalog_source_menu_handler(message, access)
+                return
+            configured_source = access.sources[0]
+            await catalog_handler(
+                message,
+                access.resolve(),
+                source=_live_source(configured_source),
+            )
+            return
+        await catalog_handler(message, access)
 
     async def injected_callback_handler(callback: AnswerableCallbackQuery) -> None:
-        await callback_handler(callback, reader)
+        await callback_handler(callback, access)
 
     router.message(CommandStart())(start_handler)
     router.message(Command("catalog"))(injected_catalog_handler)
@@ -460,7 +576,7 @@ def build_router(catalog: CatalogReader | None = None) -> Router:
     return router
 
 
-def build_dispatcher(catalog: CatalogReader | None = None) -> Dispatcher:
+def build_dispatcher(catalog: CatalogReader | CatalogRegistry | None = None) -> Dispatcher:
     """Build a dispatcher only; never read a token or start polling/webhooks."""
     dispatcher = Dispatcher()
     dispatcher.include_router(build_router(catalog))

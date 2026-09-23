@@ -4,16 +4,28 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Path, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from nyan_shop_bot.catalog.factory import build_catalog_reader
+from nyan_shop_bot.catalog.factory import (
+    build_catalog_reader as build_catalog_reader,
+)
+from nyan_shop_bot.catalog.factory import (
+    build_catalog_registry,
+)
 from nyan_shop_bot.catalog.models import (
     CatalogDetailResponse,
     CatalogResponse,
+    CatalogSourcesResponse,
+    CatalogSupplier,
     SupplierCapabilities,
 )
 from nyan_shop_bot.catalog.ports import CatalogReader
+from nyan_shop_bot.catalog.registry import (
+    CatalogRegistry,
+    CatalogSourceSelectionRequired,
+    CatalogSourceUnavailable,
+)
 from nyan_shop_bot.config import Settings, get_settings, is_loopback_host
 from nyan_shop_bot.database import DatabaseProbe, PostgresDatabase
 from nyan_shop_bot.suppliers.khommo import KhoMmoCatalogSourceUnavailable
@@ -24,14 +36,28 @@ def create_app(
     *,
     settings: Settings | None = None,
     catalog: CatalogReader | None = None,
+    catalogs: CatalogRegistry | None = None,
     database: DatabaseProbe | None = None,
 ) -> FastAPI:
     """Create an app with replaceable read-only dependencies."""
     runtime_settings = settings or get_settings()
-    if catalog is None:
-        catalog_reader, close_catalog = build_catalog_reader(runtime_settings)
+    if catalog is not None and catalogs is not None:
+        raise ValueError("inject either one catalog or a catalog registry, not both")
+    if catalogs is not None:
+        catalog_registry, close_catalog = catalogs, None
+    elif catalog is None:
+        catalog_registry, close_catalog = build_catalog_registry(runtime_settings)
     else:
-        catalog_reader, close_catalog = catalog, None
+        source_by_mode: dict[str, CatalogSupplier] = {
+            "mock": "mock",
+            "khommo-readonly": "khommo",
+            "vietshare-readonly": "vietshare",
+        }
+        source = source_by_mode.get(runtime_settings.supplier_mode)
+        if source is None:
+            raise ValueError("multi-readonly tests must inject an explicit catalog registry")
+        catalog_registry = CatalogRegistry({source: catalog})
+        close_catalog = None
     database_probe = database or PostgresDatabase(runtime_settings.database_url)
 
     @asynccontextmanager
@@ -69,6 +95,20 @@ def create_app(
                 detail="live-read catalog is available only from loopback",
             )
 
+    def selected_catalog(source: CatalogSupplier | None) -> CatalogReader:
+        try:
+            return catalog_registry.resolve(source)
+        except CatalogSourceSelectionRequired as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="catalog source selection is required",
+            ) from exc
+        except CatalogSourceUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="catalog source is not configured",
+            ) from exc
+
     @application.get("/healthz", tags=["system"])
     async def health() -> dict[str, str | bool]:
         return {
@@ -96,13 +136,24 @@ def create_app(
         return {"status": "ready"}
 
     @application.get(
+        "/api/v1/catalog/sources",
+        response_model=CatalogSourcesResponse,
+        tags=["catalog"],
+        dependencies=[Depends(require_local_live_read)],
+    )
+    async def catalog_sources() -> CatalogSourcesResponse:
+        return catalog_registry.source_response
+
+    @application.get(
         "/api/v1/catalog",
         response_model=CatalogResponse,
         tags=["catalog"],
         dependencies=[Depends(require_local_live_read)],
     )
-    async def list_catalog() -> CatalogResponse:
-        return await catalog_reader.read_catalog()
+    async def list_catalog(
+        source: Annotated[CatalogSupplier | None, Query()] = None,
+    ) -> CatalogResponse:
+        return await selected_catalog(source).read_catalog()
 
     @application.get(
         "/api/v1/catalog/{product_id}",
@@ -112,9 +163,10 @@ def create_app(
     )
     async def catalog_detail(
         product_id: Annotated[str, Path(min_length=1, pattern=r".*\S.*")],
+        source: Annotated[CatalogSupplier | None, Query()] = None,
     ) -> CatalogDetailResponse:
         try:
-            return await catalog_reader.get_product(product_id)
+            return await selected_catalog(source).get_product(product_id)
         except (KhoMmoCatalogSourceUnavailable, VietShareCatalogSourceUnavailable) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -127,8 +179,10 @@ def create_app(
         tags=["catalog"],
         dependencies=[Depends(require_local_live_read)],
     )
-    async def capabilities() -> SupplierCapabilities:
-        return catalog_reader.capabilities
+    async def capabilities(
+        source: Annotated[CatalogSupplier | None, Query()] = None,
+    ) -> SupplierCapabilities:
+        return selected_catalog(source).capabilities
 
     return application
 

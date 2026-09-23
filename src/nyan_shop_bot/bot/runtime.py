@@ -9,7 +9,7 @@ import sys
 from aiogram import Bot
 
 from nyan_shop_bot.bot.handlers import build_dispatcher
-from nyan_shop_bot.catalog.factory import build_catalog_reader
+from nyan_shop_bot.catalog.factory import build_catalog_registry
 from nyan_shop_bot.config import Settings, is_loopback_host
 
 
@@ -31,7 +31,11 @@ async def run_local_polling(
         raise TelegramRuntimeConfigurationError(
             "Telegram polling is allowed only with a loopback local application runtime"
         )
-    if settings.supplier_mode not in {"khommo-readonly", "vietshare-readonly"}:
+    if settings.supplier_mode not in {
+        "khommo-readonly",
+        "vietshare-readonly",
+        "multi-readonly",
+    }:
         raise TelegramRuntimeConfigurationError(
             "Telegram live read requires an explicit read-only supplier mode"
         )
@@ -45,8 +49,8 @@ async def run_local_polling(
     bot = Bot(token=token.get_secret_value())
     close_catalog = None
     try:
-        catalog, close_catalog = build_catalog_reader(settings)
-        dispatcher = build_dispatcher(catalog)
+        catalogs, close_catalog = build_catalog_registry(settings)
+        dispatcher = build_dispatcher(catalogs)
         await dispatcher.start_polling(
             bot,
             allowed_updates=dispatcher.resolve_used_update_types(),

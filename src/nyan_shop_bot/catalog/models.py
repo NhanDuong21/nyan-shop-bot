@@ -28,6 +28,7 @@ CurrencyCode = Annotated[StrictStr, Field(pattern=r"^[A-Z]{3}$")]
 NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
 PositiveInt = Annotated[StrictInt, Field(gt=0)]
 CatalogSupplier = Literal["mock", "khommo", "vietshare"]
+LiveCatalogSupplier = Literal["khommo", "vietshare"]
 CatalogMode = Literal["mock", "khommo-readonly", "vietshare-readonly"]
 
 
@@ -35,6 +36,43 @@ class ContractModel(BaseModel):
     """Strict base settings shared by every public catalog model."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class CatalogSourceOption(ContractModel):
+    """One explicitly selectable normalized catalog source."""
+
+    supplier: CatalogSupplier
+    mode: CatalogMode
+    read_only: Literal[True] = True
+
+    @model_validator(mode="after")
+    def mode_matches_supplier(self) -> CatalogSourceOption:
+        expected: CatalogMode
+        if self.supplier == "mock":
+            expected = "mock"
+        elif self.supplier == "khommo":
+            expected = "khommo-readonly"
+        else:
+            expected = "vietshare-readonly"
+        if self.mode != expected:
+            raise ValueError("catalog source option must match its supplier mode")
+        return self
+
+
+class CatalogSourcesResponse(ContractModel):
+    """Available sources plus whether clients must choose one explicitly."""
+
+    sources: Annotated[tuple[CatalogSourceOption, ...], Field(min_length=1)]
+    selection_required: StrictBool
+
+    @model_validator(mode="after")
+    def sources_are_unique_and_selection_is_honest(self) -> CatalogSourcesResponse:
+        suppliers = [source.supplier for source in self.sources]
+        if len(suppliers) != len(set(suppliers)):
+            raise ValueError("catalog sources must be unique")
+        if self.selection_required != (len(self.sources) > 1):
+            raise ValueError("source selection requirement must match available sources")
+        return self
 
 
 class Money(ContractModel):

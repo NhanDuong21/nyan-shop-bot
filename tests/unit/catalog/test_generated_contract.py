@@ -36,6 +36,7 @@ def test_openapi_is_client_input_for_read_only_catalog_routes() -> None:
     schemas = document["components"]["schemas"]
 
     assert set(paths["/api/v1/catalog"]) == {"get"}
+    assert set(paths["/api/v1/catalog/sources"]) == {"get"}
     assert set(paths["/api/v1/catalog/{product_id}"]) == {"get"}
     assert set(paths["/api/v1/capabilities"]) == {"get"}
     assert all(

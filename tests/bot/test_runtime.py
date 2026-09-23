@@ -11,16 +11,18 @@ from nyan_shop_bot.config import Settings
 def _live_settings(
     *,
     telegram_token: str | None = "0:synthetic-telegram",
-    use_vietshare: bool = False,
+    supplier_mode: str = "khommo-readonly",
 ) -> Settings:
+    uses_khommo = supplier_mode in {"khommo-readonly", "multi-readonly"}
+    uses_vietshare = supplier_mode in {"vietshare-readonly", "multi-readonly"}
     return Settings(
         _env_file=None,  # type: ignore[call-arg]
         app_env="local",
         app_host="127.0.0.1",
-        supplier_mode="vietshare-readonly" if use_vietshare else "khommo-readonly",
-        khommo_api_token=None if use_vietshare else "synthetic-khommo",
-        vietshare_api_id="synthetic-vietshare-id" if use_vietshare else None,
-        vietshare_api_secret="synthetic-vietshare-secret" if use_vietshare else None,
+        supplier_mode=supplier_mode,  # type: ignore[arg-type]
+        khommo_api_token="synthetic-khommo" if uses_khommo else None,
+        vietshare_api_id="synthetic-vietshare-id" if uses_vietshare else None,
+        vietshare_api_secret="synthetic-vietshare-secret" if uses_vietshare else None,
         telegram_bot_token=telegram_token,
         payment_mode="disabled",
         allow_real_purchases=False,
@@ -65,13 +67,16 @@ async def test_polling_rejects_mock_catalog_for_the_real_read_slice() -> None:
         await runtime.run_local_polling(settings=settings, owner_confirmed=True)
 
 
-@pytest.mark.parametrize("use_vietshare", [False, True])
+@pytest.mark.parametrize(
+    "supplier_mode",
+    ["khommo-readonly", "vietshare-readonly", "multi-readonly"],
+)
 async def test_confirmed_runtime_injects_catalog_and_closes_every_session(
     monkeypatch: pytest.MonkeyPatch,
-    use_vietshare: bool,
+    supplier_mode: str,
 ) -> None:
     events: list[object] = []
-    reader = object()
+    registry = object()
 
     class FakeSession:
         async def close(self) -> None:
@@ -94,15 +99,19 @@ async def test_confirmed_runtime_injects_catalog_and_closes_every_session(
 
     dispatcher = FakeDispatcher()
     monkeypatch.setattr(runtime, "Bot", FakeBot)
-    monkeypatch.setattr(runtime, "build_catalog_reader", lambda settings: (reader, close_catalog))
+    monkeypatch.setattr(
+        runtime,
+        "build_catalog_registry",
+        lambda settings: (registry, close_catalog),
+    )
     monkeypatch.setattr(
         runtime,
         "build_dispatcher",
-        lambda received_reader: dispatcher if received_reader is reader else None,
+        lambda received_registry: dispatcher if received_registry is registry else None,
     )
 
     await runtime.run_local_polling(
-        settings=_live_settings(use_vietshare=use_vietshare),
+        settings=_live_settings(supplier_mode=supplier_mode),
         owner_confirmed=True,
     )
 

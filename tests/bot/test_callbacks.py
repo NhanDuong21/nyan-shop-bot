@@ -11,6 +11,7 @@ from nyan_shop_bot.bot.callbacks import (
     encode_callback,
     encode_detail_callback,
     encode_quote_callback,
+    encode_source_callback,
 )
 
 
@@ -40,12 +41,49 @@ def test_callback_contains_only_version_action_and_normalized_ids() -> None:
 
 
 @pytest.mark.parametrize(
+    ("source", "source_data", "detail_data", "quote_prefix"),
+    [
+        ("khommo", "2:sk", "2:dk:product-1", "2:qk:"),
+        ("vietshare", "2:sv", "2:dv:product-1", "2:qv:"),
+    ],
+)
+def test_source_bound_callbacks_round_trip_without_supplier_secrets(
+    source: str,
+    source_data: str,
+    detail_data: str,
+    quote_prefix: str,
+) -> None:
+    selected = encode_source_callback(source)  # type: ignore[arg-type]
+    detail = encode_detail_callback("product-1", source)  # type: ignore[arg-type]
+    quote = encode_quote_callback(
+        "p" * MAX_CALLBACK_IDENTIFIER_BYTES,
+        "v" * MAX_CALLBACK_IDENTIFIER_BYTES,
+        source,  # type: ignore[arg-type]
+    )
+
+    assert selected == source_data
+    assert detail == detail_data
+    assert quote.startswith(quote_prefix)
+    assert len(quote.encode("ascii")) == TELEGRAM_CALLBACK_DATA_MAX_BYTES
+    assert decode_callback(selected).source == source
+    assert decode_callback(selected).action is CallbackAction.SOURCE
+    assert decode_callback(detail).source == source
+    assert decode_callback(detail).product_id == "product-1"
+    assert decode_callback(quote).variant_id == "v" * MAX_CALLBACK_IDENTIFIER_BYTES
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         None,
         123,
         "",
         "2:d:product",
+        "2:sk:smuggled",
+        "2:sx",
+        "2:dk",
+        "2:dk:contains space",
+        "2:qv:product",
         "v1:d:product",
         "1",
         "1::product",
