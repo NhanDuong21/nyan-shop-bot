@@ -32,11 +32,15 @@ from nyan_shop_bot.suppliers.vietshare import (
 )
 
 
-def product_fixture(*, product_id: int = 17) -> dict[str, object]:
+def product_fixture(
+    *,
+    product_id: int = 17,
+    description: str = "Offline-only VietShare fixture.",
+) -> dict[str, object]:
     return {
         "id": product_id,
         "name": "Synthetic VietShare item",
-        "description": "Offline-only VietShare fixture.",
+        "description": description,
         "price": 32_000,
         "flash_sale_id": None,
         "stock": 9,
@@ -52,17 +56,23 @@ def encoded(value: object) -> bytes:
 
 
 class RoutingTransport:
-    def __init__(self) -> None:
+    def __init__(self, *, description: str = "Offline-only VietShare fixture.") -> None:
         self.requests: list[VietShareRequest] = []
+        self.description = description
 
     async def send(self, request: VietShareRequest, *, timeout_seconds: float) -> VietShareResponse:
         assert timeout_seconds == 3.0
         self.requests.append(request)
         if request.path_with_query == "/v1/products":
-            body = encoded({"count": 1, "products": [product_fixture()]})
+            body = encoded(
+                {"count": 1, "products": [product_fixture(description=self.description)]}
+            )
             return VietShareResponse(status_code=200, body=body)
         if request.path_with_query == "/v1/products/17":
-            return VietShareResponse(status_code=200, body=encoded(product_fixture()))
+            return VietShareResponse(
+                status_code=200,
+                body=encoded(product_fixture(description=self.description)),
+            )
         return VietShareResponse(status_code=404, body=b"{}")
 
 
@@ -70,9 +80,11 @@ async def no_sleep(_seconds: float) -> None:
     raise AssertionError("successful synthetic reads must not sleep")
 
 
-def make_reader() -> tuple[VietShareCatalogReader, RoutingTransport]:
+def make_reader(
+    *, description: str = "Offline-only VietShare fixture."
+) -> tuple[VietShareCatalogReader, RoutingTransport]:
     nonces = count(1)
-    transport = RoutingTransport()
+    transport = RoutingTransport(description=description)
     adapter = VietShareReadAdapter(
         credentials=VietShareCredentials(
             api_id="synthetic-vietshare-id",
@@ -148,6 +160,27 @@ async def test_catalog_and_detail_share_one_normalized_vnd_projection() -> None:
         "/v1/products/17",
     ]
     assert all(request.method == "GET" and request.body == b"" for request in transport.requests)
+
+
+async def test_catalog_and_detail_strip_telegram_premium_custom_emoji() -> None:
+    reader, _ = make_reader(
+        description=(
+            '<tg-emoji emoji-id="5310278924616356636">🎯</tg-emoji>'
+            "Không giới hạn thời gian "
+            '<tg-emoji emoji-id="5451882707875276247">🕯</tg-emoji>'
+            "Sử dụng full model"
+        )
+    )
+
+    catalog = await reader.read_catalog()
+    detail = await reader.get_product("17")
+
+    assert catalog.items[0].description == "Không giới hạn thời gian Sử dụng full model"
+    assert isinstance(detail, CatalogDetailFound)
+    assert detail.item.description == catalog.items[0].description
+    assert "tg-emoji" not in detail.item.description
+    assert "🎯" not in detail.item.description
+    assert "🕯" not in detail.item.description
 
 
 async def test_invalid_detail_identifier_never_reaches_transport() -> None:
