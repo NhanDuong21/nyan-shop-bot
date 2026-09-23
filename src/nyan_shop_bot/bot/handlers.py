@@ -218,6 +218,7 @@ def _catalog_keyboard(response: CatalogResponse) -> InlineKeyboardMarkup | None:
                 InlineKeyboardButton(
                     text=_catalog_button_text(product),
                     callback_data=callback_data,
+                    style="danger" if product.available_quantity == 0 else "success",
                 )
             ]
         )
