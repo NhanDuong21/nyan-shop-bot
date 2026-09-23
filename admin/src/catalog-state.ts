@@ -16,18 +16,29 @@ import {
 } from "./api";
 
 export type CatalogPanelState =
-  | { kind: "loading" }
-  | { kind: "error"; message: string; retryable: boolean }
-  | { kind: "empty"; freshness: CatalogFreshness | null }
-  | {
-      kind: "success";
-      items: CatalogItem[];
-      freshness: CatalogFreshness | null;
-      warning: CatalogError | null;
-      warningTitle?: string;
-      partial: boolean;
-      omittedCount: number;
-    };
+  { sourceStatuses?: CatalogSourceStatus[] } &
+    (
+      | { kind: "loading" }
+      | { kind: "error"; message: string; retryable: boolean }
+      | { kind: "empty"; freshness: CatalogFreshness | null }
+      | {
+          kind: "success";
+          items: CatalogItem[];
+          freshness: CatalogFreshness | null;
+          warning: CatalogError | null;
+          warningTitle?: string;
+          partial: boolean;
+          omittedCount: number;
+        }
+    );
+
+export interface CatalogSourceStatus {
+  supplier: "khommo" | "vietshare";
+  state: "fresh" | "stale" | "empty" | "error";
+  itemCount: number;
+  partial: boolean;
+  omittedCount: number;
+}
 
 export type SupplierPanelState =
   | { kind: "loading" }
@@ -73,18 +84,26 @@ export interface CatalogStateController {
 
 function mapCatalogState(response: CatalogResponse): CatalogPanelState {
   if (response.mode === "multi-readonly") {
+    const sourceStatuses = response.sources.map((source) => ({
+      supplier: source.supplier,
+      state: source.state,
+      itemCount: source.item_count,
+      partial: source.partial,
+      omittedCount: source.omitted_count,
+    }));
     if (response.state === "empty") {
-      return { kind: "empty", freshness: null };
+      return { kind: "empty", freshness: null, sourceStatuses };
     }
     if (response.state === "error") {
       return {
         kind: "error",
         message: "KhoMMO và VietShare đều không trả về catalog dùng được lúc này.",
         retryable: response.sources.some((source) => source.error?.retryable === true),
+        sourceStatuses,
       };
     }
     const degraded = response.sources.filter(
-      (source) => source.state === "stale" || source.state === "error",
+      (source) => source.state === "stale" || source.state === "error" || source.partial,
     );
     const warning =
       degraded.length === 0
@@ -92,11 +111,20 @@ function mapCatalogState(response: CatalogResponse): CatalogPanelState {
         : {
             code: "source_unavailable" as const,
             message: degraded
-              .map((source) =>
-                source.state === "error"
-                  ? `${source.supplier}: nguồn hiện không khả dụng.`
-                  : `${source.supplier}: đang hiển thị dữ liệu cache đã cũ.`,
-              )
+              .map((source) => {
+                if (source.state === "error") {
+                  return `${source.supplier}: nguồn hiện không khả dụng.`;
+                }
+                const evidence = [
+                  source.state === "stale"
+                    ? "đang hiển thị dữ liệu cache đã cũ"
+                    : "dữ liệu mới",
+                ];
+                if (source.partial) {
+                  evidence.push(`${source.omitted_count} sản phẩm bị loại`);
+                }
+                return `${source.supplier}: ${evidence.join("; ")}.`;
+              })
               .join(" "),
             retryable: degraded.some((source) => source.error?.retryable === true),
           };
@@ -108,6 +136,7 @@ function mapCatalogState(response: CatalogResponse): CatalogPanelState {
       warningTitle: "Một hoặc nhiều nguồn chưa đầy đủ",
       partial: response.partial,
       omittedCount: response.omitted_count,
+      sourceStatuses,
     };
   }
   switch (response.state) {

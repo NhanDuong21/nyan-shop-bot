@@ -427,6 +427,112 @@ async def test_aggregate_catalog_reports_a_failed_source_without_leaking_its_exc
     assert "raw supplier body" not in message.text
 
 
+async def test_aggregate_catalog_identifies_fresh_partial_source_and_omissions() -> None:
+    fresh = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+    khommo_product = _product().model_copy(update={"supplier": "khommo", "mode": "khommo-readonly"})
+    vietshare_product = _product().model_copy(
+        update={"supplier": "vietshare", "mode": "vietshare-readonly"}
+    )
+    khommo = StubCatalogReader(
+        catalog_response=CatalogResponse(
+            supplier="khommo",
+            mode="khommo-readonly",
+            state=CatalogState.FRESH,
+            freshness=fresh.freshness,
+            items=(khommo_product,),
+            error=None,
+            partial=True,
+            omitted_count=3,
+        )
+    )
+    vietshare = StubCatalogReader(
+        catalog_response=CatalogResponse(
+            supplier="vietshare",
+            mode="vietshare-readonly",
+            state=CatalogState.FRESH,
+            freshness=fresh.freshness,
+            items=(vietshare_product,),
+            error=None,
+        )
+    )
+    message = FakeMessage()
+
+    await callback_handler(
+        FakeCallback(encode_source_callback("all"), message),
+        CatalogRegistry({"khommo": khommo, "vietshare": vietshare}),
+    )
+
+    assert "KhoMMO: dữ liệu mới; 1 sản phẩm; 3 sản phẩm bị loại" in message.text
+    assert "VietShare: dữ liệu mới; 1 sản phẩm" in message.text
+
+
+async def test_aggregate_catalog_preserves_stale_and_partial_evidence_together() -> None:
+    fresh = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+    stale = fake_catalog_scenarios()[FakeCatalogScenario.STALE]
+    khommo_product = _product().model_copy(update={"supplier": "khommo", "mode": "khommo-readonly"})
+    vietshare_product = _product().model_copy(
+        update={"supplier": "vietshare", "mode": "vietshare-readonly"}
+    )
+    khommo = StubCatalogReader(
+        catalog_response=CatalogResponse(
+            supplier="khommo",
+            mode="khommo-readonly",
+            state=CatalogState.STALE,
+            freshness=stale.freshness,
+            items=(khommo_product,),
+            error=stale.error,
+            partial=True,
+            omitted_count=2,
+        )
+    )
+    vietshare = StubCatalogReader(
+        catalog_response=CatalogResponse(
+            supplier="vietshare",
+            mode="vietshare-readonly",
+            state=CatalogState.FRESH,
+            freshness=fresh.freshness,
+            items=(vietshare_product,),
+            error=None,
+        )
+    )
+    message = FakeMessage()
+
+    await callback_handler(
+        FakeCallback(encode_source_callback("all"), message),
+        CatalogRegistry({"khommo": khommo, "vietshare": vietshare}),
+    )
+
+    assert "KhoMMO: dữ liệu cache đã cũ; 1 sản phẩm; 2 sản phẩm bị loại" in message.text
+    assert "VietShare: dữ liệu mới; 1 sản phẩm" in message.text
+
+
+async def test_aggregate_catalog_error_keeps_empty_and_failed_source_evidence() -> None:
+    fresh = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+    khommo = StubCatalogReader(
+        catalog_response=CatalogResponse(
+            supplier="khommo",
+            mode="khommo-readonly",
+            state=CatalogState.EMPTY,
+            freshness=fresh.freshness,
+            items=(),
+            error=None,
+        )
+    )
+    vietshare = StubCatalogReader(catalog_error=RuntimeError("token=NEVER-PRINT"))
+    message = FakeMessage()
+
+    await callback_handler(
+        FakeCallback(encode_source_callback("all"), message),
+        CatalogRegistry({"khommo": khommo, "vietshare": vietshare}),
+    )
+
+    assert "Không nguồn catalog nào trả về dữ liệu dùng được" in message.text
+    assert "KhoMMO: phản hồi thành công; catalog trống" in message.text
+    assert "VietShare: không khả dụng" in message.text
+    assert message.markup is None
+    assert "NEVER-PRINT" not in message.text
+
+
 async def test_legacy_callback_in_multi_mode_fails_closed_without_guessing_source() -> None:
     response = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
     khommo = StubCatalogReader(catalog_response=response)

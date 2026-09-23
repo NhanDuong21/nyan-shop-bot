@@ -402,6 +402,203 @@ test("keeps usable aggregate rows while identifying a failed source safely", asy
   expect(screen.queryByText(/NEVER-PRINT/i)).not.toBeInTheDocument();
 });
 
+test("identifies a fresh partial source and its exact aggregate omissions", async () => {
+  const khommoItem = {
+    ...catalogItem,
+    id: "khommo-partial",
+    supplier: "khommo",
+    mode: "khommo-readonly",
+  };
+  const vietshareItem = {
+    ...catalogItem,
+    id: "vietshare-fresh",
+    supplier: "vietshare",
+    mode: "vietshare-readonly",
+  };
+  stubApi(
+    {
+      supplier: "aggregate",
+      mode: "multi-readonly",
+      state: "partial",
+      items: [khommoItem, vietshareItem],
+      sources: [
+        {
+          supplier: "khommo",
+          mode: "khommo-readonly",
+          state: "fresh",
+          freshness,
+          error: null,
+          item_count: 1,
+          partial: true,
+          omitted_count: 3,
+        },
+        {
+          supplier: "vietshare",
+          mode: "vietshare-readonly",
+          state: "fresh",
+          freshness,
+          error: null,
+          item_count: 1,
+          partial: false,
+          omitted_count: 0,
+        },
+      ],
+      read_only: true,
+      partial: true,
+      omitted_count: 3,
+    },
+    capabilities,
+    {
+      sources: [
+        { supplier: "khommo", mode: "khommo-readonly", read_only: true },
+        { supplier: "vietshare", mode: "vietshare-readonly", read_only: true },
+      ],
+      selection_required: true,
+      aggregate_available: true,
+    },
+  );
+
+  render(<App />);
+
+  expect(await screen.findByText(/Trạng thái từng nguồn/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/KhoMMO: dữ liệu mới · 1 sản phẩm · 3 sản phẩm bị loại/i),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/VietShare: dữ liệu mới · 1 sản phẩm/i)).toBeInTheDocument();
+});
+
+test("preserves stale and partial evidence for the same aggregate source", async () => {
+  const staleFreshness = {
+    ...freshness,
+    status: "stale",
+    evaluated_at: "2026-09-20T01:00:00Z",
+  };
+  const khommoItem = {
+    ...catalogItem,
+    id: "khommo-stale-partial",
+    supplier: "khommo",
+    mode: "khommo-readonly",
+  };
+  const vietshareItem = {
+    ...catalogItem,
+    id: "vietshare-fresh",
+    supplier: "vietshare",
+    mode: "vietshare-readonly",
+  };
+  stubApi(
+    {
+      supplier: "aggregate",
+      mode: "multi-readonly",
+      state: "partial",
+      items: [khommoItem, vietshareItem],
+      sources: [
+        {
+          supplier: "khommo",
+          mode: "khommo-readonly",
+          state: "stale",
+          freshness: staleFreshness,
+          error: {
+            code: "source_unavailable",
+            message: "private token=NEVER-PRINT",
+            retryable: true,
+          },
+          item_count: 1,
+          partial: true,
+          omitted_count: 2,
+        },
+        {
+          supplier: "vietshare",
+          mode: "vietshare-readonly",
+          state: "fresh",
+          freshness,
+          error: null,
+          item_count: 1,
+          partial: false,
+          omitted_count: 0,
+        },
+      ],
+      read_only: true,
+      partial: true,
+      omitted_count: 2,
+    },
+    capabilities,
+    {
+      sources: [
+        { supplier: "khommo", mode: "khommo-readonly", read_only: true },
+        { supplier: "vietshare", mode: "vietshare-readonly", read_only: true },
+      ],
+      selection_required: true,
+      aggregate_available: true,
+    },
+  );
+
+  render(<App />);
+
+  expect(
+    await screen.findByText(/KhoMMO: cache đã cũ · 1 sản phẩm · 2 sản phẩm bị loại/i),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/VietShare: dữ liệu mới · 1 sản phẩm/i)).toBeInTheDocument();
+  expect(screen.queryByText(/NEVER-PRINT/i)).not.toBeInTheDocument();
+});
+
+test("keeps successful-empty and failed source evidence when aggregate has no rows", async () => {
+  stubApi(
+    {
+      supplier: "aggregate",
+      mode: "multi-readonly",
+      state: "error",
+      items: [],
+      sources: [
+        {
+          supplier: "khommo",
+          mode: "khommo-readonly",
+          state: "empty",
+          freshness,
+          error: null,
+          item_count: 0,
+          partial: false,
+          omitted_count: 0,
+        },
+        {
+          supplier: "vietshare",
+          mode: "vietshare-readonly",
+          state: "error",
+          freshness: null,
+          error: {
+            code: "source_unavailable",
+            message: "private token=NEVER-PRINT",
+            retryable: true,
+          },
+          item_count: 0,
+          partial: false,
+          omitted_count: 0,
+        },
+      ],
+      read_only: true,
+      partial: false,
+      omitted_count: 0,
+    },
+    capabilities,
+    {
+      sources: [
+        { supplier: "khommo", mode: "khommo-readonly", read_only: true },
+        { supplier: "vietshare", mode: "vietshare-readonly", read_only: true },
+      ],
+      selection_required: true,
+      aggregate_available: true,
+    },
+  );
+
+  render(<App />);
+
+  expect(await screen.findByText(/Không đọc được catalog/i)).toBeInTheDocument();
+  expect(screen.getByText(/KhoMMO: phản hồi thành công · catalog trống/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/VietShare: không khả dụng · không suy đoán sản phẩm bị thiếu/i),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/NEVER-PRINT/i)).not.toBeInTheDocument();
+});
+
 test("shows an explicit empty state from the catalog envelope", async () => {
   stubApi(freshCatalog([]));
 

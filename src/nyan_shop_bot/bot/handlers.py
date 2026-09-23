@@ -22,6 +22,7 @@ from nyan_shop_bot.catalog.mock import FakeCatalogReader
 from nyan_shop_bot.catalog.models import (
     AggregateCatalogResponse,
     AggregateCatalogState,
+    AggregateSourceReport,
     CatalogDetailFound,
     CatalogDetailNotFound,
     CatalogDetailResponse,
@@ -283,41 +284,40 @@ async def catalog_handler(
     )
 
 
+def _aggregate_source_line(report: AggregateSourceReport) -> str:
+    """Render complete sanitized evidence for one aggregate source."""
+    source_name = _source_name(report.supplier)
+    if report.state is CatalogState.ERROR:
+        return f"{source_name}: không khả dụng; không suy đoán sản phẩm bị thiếu."
+    if report.state is CatalogState.EMPTY:
+        return f"{source_name}: phản hồi thành công; catalog trống."
+
+    freshness = "dữ liệu cache đã cũ" if report.state is CatalogState.STALE else "dữ liệu mới"
+    line = f"{source_name}: {freshness}; {report.item_count} sản phẩm"
+    if report.partial:
+        line += f"; {report.omitted_count} sản phẩm bị loại vì dữ liệu bắt buộc bị thiếu"
+    return f"{line}."
+
+
 def _aggregate_catalog_lines(response: AggregateCatalogResponse) -> list[str]:
     title = "DANH MỤC TỔNG HỢP — KHOMMO + VIETSHARE / CHỈ ĐỌC"
-    if response.state is AggregateCatalogState.ERROR:
-        return [
-            title,
-            "Không nguồn catalog nào trả về dữ liệu dùng được lúc này.",
-            "Không có đơn hàng hoặc giao dịch nào được tạo.",
-        ]
-    if response.state is AggregateCatalogState.EMPTY:
-        return [
-            title,
-            "Cả hai nguồn phản hồi thành công nhưng catalog hiện trống.",
-            "Không có đơn hàng hoặc giao dịch nào được tạo.",
-        ]
-
     lines = [title]
-    if response.state is AggregateCatalogState.PARTIAL:
+    if response.state is AggregateCatalogState.ERROR:
+        lines.append("Không nguồn catalog nào trả về dữ liệu dùng được lúc này.")
+    elif response.state is AggregateCatalogState.EMPTY:
+        lines.append("Cả hai nguồn phản hồi thành công nhưng catalog hiện trống.")
+    elif response.state is AggregateCatalogState.PARTIAL:
         lines.append(
             "CẢNH BÁO: catalog tổng hợp đang hiển thị một phần; xem trạng thái từng nguồn bên dưới."
         )
     else:
         lines.append("Dữ liệu từ cả hai nguồn đã được tải · Chọn sản phẩm để xem chi tiết.")
-    for report in response.sources:
-        source_name = _source_name(report.supplier)
-        if report.state is CatalogState.ERROR:
-            lines.append(f"{source_name}: không khả dụng; không suy đoán sản phẩm bị thiếu.")
-        elif report.state is CatalogState.STALE:
-            lines.append(f"{source_name}: {report.item_count} sản phẩm từ cache đã cũ.")
-        elif report.partial:
-            lines.append(
-                f"{source_name}: {report.item_count} sản phẩm; "
-                f"{report.omitted_count} sản phẩm bị loại vì dữ liệu bắt buộc bị thiếu."
-            )
-        else:
-            lines.append(f"{source_name}: {report.item_count} sản phẩm.")
+
+    lines.extend(_aggregate_source_line(report) for report in response.sources)
+    if response.state in {AggregateCatalogState.ERROR, AggregateCatalogState.EMPTY}:
+        lines.append("Không có đơn hàng hoặc giao dịch nào được tạo.")
+        return lines
+
     visible_items = response.items[:MAX_CATALOG_ITEMS]
     if len(response.items) > len(visible_items):
         lines.append(f"Chỉ hiển thị {len(visible_items)} sản phẩm đầu tiên trong menu này.")
