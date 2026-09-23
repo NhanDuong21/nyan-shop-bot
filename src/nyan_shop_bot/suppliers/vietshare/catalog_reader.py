@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -45,6 +46,16 @@ from nyan_shop_bot.suppliers.vietshare.models import (
 
 Clock = Callable[[], datetime]
 type ReadFailure = ProductListError | ProductListRateLimited | ProductListTimeout
+
+_TELEGRAM_CUSTOM_EMOJI_ELEMENT = re.compile(
+    r"<tg-emoji\b[^>]*>[^<]*</tg-emoji\s*>",
+    flags=re.IGNORECASE,
+)
+
+
+def _strip_telegram_custom_emoji(value: str) -> str:
+    """Remove unsupported Telegram Premium custom-emoji elements from display text."""
+    return _TELEGRAM_CUSTOM_EMOJI_ELEMENT.sub("", value).strip()
 
 
 class VietShareCatalogSourceUnavailable(RuntimeError):
@@ -133,7 +144,7 @@ class VietShareCatalogReader:
         return CatalogProduct(
             id=identifier,
             name=product.name,
-            description=product.description,
+            description=_strip_telegram_custom_emoji(product.description),
             supplier="vietshare",
             mode="vietshare-readonly",
             read_only=True,
