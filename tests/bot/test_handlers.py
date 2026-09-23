@@ -263,13 +263,16 @@ async def test_multi_source_menu_is_explicit_and_does_not_contact_suppliers() ->
     await catalog_source_menu_handler(message, catalogs)
 
     assert "CHỌN NGUỒN DANH MỤC — CHỈ ĐỌC" in message.text
-    assert "catalog chưa được gộp" in message.text
+    assert "catalog tổng hợp" in message.text
+    assert "không tự dedupe" in message.text
     assert message.markup is not None
     assert [row[0].text for row in message.markup.inline_keyboard] == [
+        "Tất cả nguồn · CHỈ ĐỌC",
         "KhoMMO · CHỈ ĐỌC",
         "VietShare · CHỈ ĐỌC",
     ]
     assert [row[0].callback_data for row in message.markup.inline_keyboard] == [
+        encode_source_callback("all"),
         encode_source_callback("khommo"),
         encode_source_callback("vietshare"),
     ]
@@ -339,6 +342,89 @@ async def test_multi_source_callbacks_stay_bound_to_the_selected_reader() -> Non
     assert decode_callback(detail_message.markup.inline_keyboard[0][0].callback_data).source == (
         "khommo"
     )
+
+
+async def test_aggregate_catalog_keeps_duplicate_ids_bound_to_their_original_source() -> None:
+    fresh = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+    khommo_product = _product().model_copy(update={"supplier": "khommo", "mode": "khommo-readonly"})
+    vietshare_product = _product().model_copy(
+        update={"supplier": "vietshare", "mode": "vietshare-readonly"}
+    )
+    khommo = StubCatalogReader(
+        catalog_response=CatalogResponse(
+            supplier="khommo",
+            mode="khommo-readonly",
+            state=CatalogState.FRESH,
+            freshness=fresh.freshness,
+            items=(khommo_product,),
+            error=None,
+        ),
+        details={khommo_product.id: CatalogDetailFound(state="found", item=khommo_product)},
+    )
+    vietshare = StubCatalogReader(
+        catalog_response=CatalogResponse(
+            supplier="vietshare",
+            mode="vietshare-readonly",
+            state=CatalogState.FRESH,
+            freshness=fresh.freshness,
+            items=(vietshare_product,),
+            error=None,
+        ),
+        details={vietshare_product.id: CatalogDetailFound(state="found", item=vietshare_product)},
+    )
+    catalogs = CatalogRegistry({"khommo": khommo, "vietshare": vietshare})
+    aggregate_message = FakeMessage()
+
+    await callback_handler(
+        FakeCallback(encode_source_callback("all"), aggregate_message),
+        catalogs,
+    )
+
+    assert "DANH MỤC TỔNG HỢP" in aggregate_message.text
+    assert "không tự ghép hoặc dedupe" in aggregate_message.text
+    assert aggregate_message.markup is not None
+    buttons = [row[0] for row in aggregate_message.markup.inline_keyboard]
+    assert [decode_callback(button.callback_data).source for button in buttons] == [
+        "khommo",
+        "vietshare",
+    ]
+    assert buttons[0].text.startswith("[KhoMMO]")
+    assert buttons[1].text.startswith("[VietShare]")
+
+    detail_message = FakeMessage()
+    await callback_handler(FakeCallback(buttons[1].callback_data, detail_message), catalogs)
+
+    assert "CHI TIẾT SẢN PHẨM — VIETSHARE / CHỈ ĐỌC" in detail_message.text
+    assert khommo.product_reads == []
+    assert vietshare.product_reads == [vietshare_product.id]
+
+
+async def test_aggregate_catalog_reports_a_failed_source_without_leaking_its_exception() -> None:
+    fresh = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+    product = _product().model_copy(update={"supplier": "khommo", "mode": "khommo-readonly"})
+    khommo = StubCatalogReader(
+        catalog_response=CatalogResponse(
+            supplier="khommo",
+            mode="khommo-readonly",
+            state=CatalogState.FRESH,
+            freshness=fresh.freshness,
+            items=(product,),
+            error=None,
+        )
+    )
+    vietshare = StubCatalogReader(catalog_error=RuntimeError("token=NEVER-PRINT raw supplier body"))
+    message = FakeMessage()
+
+    await callback_handler(
+        FakeCallback(encode_source_callback("all"), message),
+        CatalogRegistry({"khommo": khommo, "vietshare": vietshare}),
+    )
+
+    assert "catalog tổng hợp đang hiển thị một phần" in message.text
+    assert "VietShare: không khả dụng" in message.text
+    assert message.markup is not None
+    assert "NEVER-PRINT" not in message.text
+    assert "raw supplier body" not in message.text
 
 
 async def test_legacy_callback_in_multi_mode_fails_closed_without_guessing_source() -> None:

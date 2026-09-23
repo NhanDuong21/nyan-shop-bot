@@ -76,6 +76,7 @@ function sourceResponseFor(catalog: unknown) {
   return {
     sources: [{ supplier, mode, read_only: true }],
     selection_required: false,
+    aggregate_available: false,
   };
 }
 
@@ -216,6 +217,7 @@ test("switches explicitly between KhoMMO and VietShare through FastAPI", async (
       { supplier: "vietshare", mode: "vietshare-readonly", read_only: true },
     ],
     selection_required: true,
+    aggregate_available: false,
   };
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://localhost");
@@ -266,6 +268,138 @@ test("switches explicitly between KhoMMO and VietShare through FastAPI", async (
     "/api/v1/catalog?source=vietshare",
     expect.objectContaining({ method: "GET" }),
   );
+});
+
+test("selects the combined read-only view while preserving duplicate source identities", async () => {
+  const sources = {
+    sources: [
+      { supplier: "khommo", mode: "khommo-readonly", read_only: true },
+      { supplier: "vietshare", mode: "vietshare-readonly", read_only: true },
+    ],
+    selection_required: true,
+    aggregate_available: true,
+  };
+  const khommoItem = {
+    ...catalogItem,
+    id: "shared-id",
+    name: "Sản phẩm KhoMMO tổng hợp",
+    supplier: "khommo",
+    mode: "khommo-readonly",
+  };
+  const vietshareItem = {
+    ...catalogItem,
+    id: "shared-id",
+    name: "Sản phẩm VietShare tổng hợp",
+    supplier: "vietshare",
+    mode: "vietshare-readonly",
+  };
+  const aggregate = {
+    supplier: "aggregate",
+    mode: "multi-readonly",
+    state: "complete",
+    items: [khommoItem, vietshareItem],
+    sources: [
+      {
+        supplier: "khommo",
+        mode: "khommo-readonly",
+        state: "fresh",
+        freshness,
+        error: null,
+        item_count: 1,
+        partial: false,
+        omitted_count: 0,
+      },
+      {
+        supplier: "vietshare",
+        mode: "vietshare-readonly",
+        state: "fresh",
+        freshness,
+        error: null,
+        item_count: 1,
+        partial: false,
+        omitted_count: 0,
+      },
+    ],
+    read_only: true,
+    partial: false,
+    omitted_count: 0,
+  };
+  const fetchMock = stubApi(aggregate, capabilities, sources);
+
+  render(<App />);
+
+  expect(await screen.findByText("Sản phẩm KhoMMO tổng hợp")).toBeInTheDocument();
+  expect(screen.getByText("Sản phẩm VietShare tổng hợp")).toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: /Chọn nguồn catalog/i })).toHaveValue("all");
+  expect(screen.getAllByText(/KhoMMO \+ VietShare/i).length).toBeGreaterThanOrEqual(1);
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/v1/catalog?source=all",
+    expect.objectContaining({ method: "GET" }),
+  );
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/v1/capabilities?source=all",
+    expect.objectContaining({ method: "GET" }),
+  );
+});
+
+test("keeps usable aggregate rows while identifying a failed source safely", async () => {
+  const khommoItem = {
+    ...catalogItem,
+    id: "khommo-only",
+    name: "KhoMMO vẫn khả dụng",
+    supplier: "khommo",
+    mode: "khommo-readonly",
+  };
+  const aggregate = {
+    supplier: "aggregate",
+    mode: "multi-readonly",
+    state: "partial",
+    items: [khommoItem],
+    sources: [
+      {
+        supplier: "khommo",
+        mode: "khommo-readonly",
+        state: "fresh",
+        freshness,
+        error: null,
+        item_count: 1,
+        partial: false,
+        omitted_count: 0,
+      },
+      {
+        supplier: "vietshare",
+        mode: "vietshare-readonly",
+        state: "error",
+        freshness: null,
+        error: {
+          code: "source_unavailable",
+          message: "private token=NEVER-PRINT",
+          retryable: true,
+        },
+        item_count: 0,
+        partial: false,
+        omitted_count: 0,
+      },
+    ],
+    read_only: true,
+    partial: true,
+    omitted_count: 0,
+  };
+  stubApi(aggregate, capabilities, {
+    sources: [
+      { supplier: "khommo", mode: "khommo-readonly", read_only: true },
+      { supplier: "vietshare", mode: "vietshare-readonly", read_only: true },
+    ],
+    selection_required: true,
+    aggregate_available: true,
+  });
+
+  render(<App />);
+
+  expect(await screen.findByText("KhoMMO vẫn khả dụng")).toBeInTheDocument();
+  expect(screen.getByText(/Một hoặc nhiều nguồn chưa đầy đủ/i)).toBeInTheDocument();
+  expect(screen.getByText(/vietshare: nguồn hiện không khả dụng/i)).toBeInTheDocument();
+  expect(screen.queryByText(/NEVER-PRINT/i)).not.toBeInTheDocument();
 });
 
 test("shows an explicit empty state from the catalog envelope", async () => {

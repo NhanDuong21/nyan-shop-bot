@@ -25,7 +25,12 @@ function capabilityLabel(status: "enabled" | "disabled" | "unsupported"): string
 
 export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
   const [filterQuery, setFilterQuery] = useState("");
-  const sourceLabel = state.supplier.kind === "ready" ? state.supplier.supplier : "backend";
+  const sourceLabel =
+    state.supplier.kind === "ready"
+      ? state.supplier.supplier === "aggregate"
+        ? "KhoMMO + VietShare"
+        : state.supplier.supplier
+      : "backend";
   const modeLabel =
     state.supplier.kind === "ready"
       ? `${state.supplier.mode.toLocaleUpperCase("vi-VN")} · ${state.supplier.readOnly ? "READ-ONLY" : "UNKNOWN"}`
@@ -93,7 +98,7 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
           )}
           {state.catalog.kind === "success" && (
             <div className="dashboard-catalog-success">
-              {state.catalog.partial && (
+              {state.catalog.omittedCount > 0 && (
                 <div className="dashboard-state-panel dashboard-state-panel-warning" role="status">
                   <strong>Catalog đang hiển thị một phần</strong>
                   <span>
@@ -104,7 +109,9 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
               )}
               {state.catalog.warning !== null && (
                 <div className="dashboard-state-panel dashboard-state-panel-warning" role="status">
-                  <strong>Đang hiển thị dữ liệu cache đã cũ</strong>
+                  <strong>
+                    {state.catalog.warningTitle ?? "Đang hiển thị dữ liệu cache đã cũ"}
+                  </strong>
                   <span>{state.catalog.warning.message}</span>
                   {state.catalog.warning.retryable && (
                     <button type="button" onClick={onRetry}>
@@ -148,7 +155,7 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
                     </thead>
                     <tbody>
                       {visibleItems.map((item) => (
-                        <tr key={item.id}>
+                        <tr key={`${item.supplier}:${item.id}`}>
                           <th scope="row" data-label="Sản phẩm">
                             <strong>{item.name}</strong>
                             <span>{item.description}</span>
@@ -198,7 +205,7 @@ export function AdminDashboard({ state, onRetry }: AdminDashboardProps) {
               <dl>
                 <div>
                   <dt>Nguồn</dt>
-                  <dd>{state.supplier.supplier}</dd>
+                  <dd>{sourceLabel}</dd>
                 </div>
                 <div>
                   <dt>Chế độ</dt>

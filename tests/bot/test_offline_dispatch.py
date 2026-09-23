@@ -163,6 +163,7 @@ async def test_aiogram_multi_source_catalog_starts_with_an_explicit_source_menu(
     assert "CHỌN NGUỒN DANH MỤC — CHỈ ĐỌC" in sent[0].text
     assert sent[0].reply_markup is not None
     assert [row[0].text for row in sent[0].reply_markup.inline_keyboard] == [
+        "Tất cả nguồn · CHỈ ĐỌC",
         "KhoMMO · CHỈ ĐỌC",
         "VietShare · CHỈ ĐỌC",
     ]

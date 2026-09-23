@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-from nyan_shop_bot.catalog.models import LiveCatalogSupplier
+from nyan_shop_bot.catalog.models import LiveCatalogSelection, LiveCatalogSupplier
 
 TELEGRAM_CALLBACK_DATA_MAX_BYTES: Final = 64
 CALLBACK_VERSION: Final = "1"
@@ -21,11 +21,12 @@ _IDENTIFIER_PATTERN: Final = re.compile(
     rf"[A-Za-z0-9][A-Za-z0-9._-]{{0,{MAX_CALLBACK_IDENTIFIER_BYTES - 1}}}",
     flags=re.ASCII,
 )
-_SOURCE_CODE: Final[dict[LiveCatalogSupplier, str]] = {
+_SOURCE_CODE: Final[dict[LiveCatalogSelection, str]] = {
+    "all": "a",
     "khommo": "k",
     "vietshare": "v",
 }
-_SOURCE_BY_CODE: Final[dict[str, LiveCatalogSupplier]] = {
+_SOURCE_BY_CODE: Final[dict[str, LiveCatalogSelection]] = {
     code: source for source, code in _SOURCE_CODE.items()
 }
 
@@ -49,7 +50,7 @@ class CatalogCallback:
     action: CallbackAction
     product_id: str | None = None
     variant_id: str | None = None
-    source: LiveCatalogSupplier | None = None
+    source: LiveCatalogSelection | None = None
     version: str = CALLBACK_VERSION
 
 
@@ -99,15 +100,15 @@ def encode_callback(
     return encoded
 
 
-def _validated_source(value: object) -> LiveCatalogSupplier:
-    if value == "khommo" or value == "vietshare":
+def _validated_source(value: object) -> LiveCatalogSelection:
+    if value == "all" or value == "khommo" or value == "vietshare":
         return value
     raise CallbackCodecError("unknown catalog source")
 
 
 def _encode_source_bound_callback(
     action: CallbackAction,
-    source: LiveCatalogSupplier,
+    source: LiveCatalogSelection,
     product_id: str | None = None,
     variant_id: str | None = None,
 ) -> str:
@@ -118,6 +119,8 @@ def _encode_source_bound_callback(
         if product_id is not None or variant_id is not None:
             raise CallbackCodecError("source callback cannot contain product identities")
         parts = (MULTI_SOURCE_CALLBACK_VERSION, action_code)
+    elif normalized_source == "all":
+        raise CallbackCodecError("aggregate selection cannot identify a product")
     elif action is CallbackAction.DETAIL:
         if variant_id is not None:
             raise CallbackCodecError("detail callback cannot contain a variant")
@@ -139,7 +142,7 @@ def _encode_source_bound_callback(
     return encoded
 
 
-def encode_source_callback(source: LiveCatalogSupplier) -> str:
+def encode_source_callback(source: LiveCatalogSelection) -> str:
     """Encode a source selection without credentials or supplier URLs."""
     return _encode_source_bound_callback(CallbackAction.SOURCE, source)
 
@@ -185,6 +188,8 @@ def _decode_source_bound(parts: list[str], data: str) -> CatalogCallback:
         canonical = encode_source_callback(source)
         product_id = None
         variant_id = None
+    elif source == "all":
+        raise CallbackCodecError("aggregate selection cannot identify a product")
     elif action is CallbackAction.DETAIL:
         if len(parts) != 3:
             raise CallbackCodecError("detail callback field count is invalid")

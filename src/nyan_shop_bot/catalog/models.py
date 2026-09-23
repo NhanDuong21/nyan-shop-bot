@@ -29,7 +29,15 @@ NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
 PositiveInt = Annotated[StrictInt, Field(gt=0)]
 CatalogSupplier = Literal["mock", "khommo", "vietshare"]
 LiveCatalogSupplier = Literal["khommo", "vietshare"]
+LiveCatalogSelection = Literal["all", "khommo", "vietshare"]
+CatalogSelection = Literal["all", "mock", "khommo", "vietshare"]
 CatalogMode = Literal["mock", "khommo-readonly", "vietshare-readonly"]
+CatalogViewMode = Literal[
+    "mock",
+    "khommo-readonly",
+    "vietshare-readonly",
+    "multi-readonly",
+]
 
 
 class ContractModel(BaseModel):
@@ -64,6 +72,7 @@ class CatalogSourcesResponse(ContractModel):
 
     sources: Annotated[tuple[CatalogSourceOption, ...], Field(min_length=1)]
     selection_required: StrictBool
+    aggregate_available: StrictBool = False
 
     @model_validator(mode="after")
     def sources_are_unique_and_selection_is_honest(self) -> CatalogSourcesResponse:
@@ -72,6 +81,10 @@ class CatalogSourcesResponse(ContractModel):
             raise ValueError("catalog sources must be unique")
         if self.selection_required != (len(self.sources) > 1):
             raise ValueError("source selection requirement must match available sources")
+        live_suppliers = {source.supplier for source in self.sources}
+        expected_aggregate = live_suppliers == {"khommo", "vietshare"}
+        if self.aggregate_available != expected_aggregate:
+            raise ValueError("aggregate availability must match both configured live sources")
         return self
 
 
@@ -299,6 +312,125 @@ class CatalogResponse(ContractModel):
             if self.items or self.freshness is not None or self.error is None:
                 raise ValueError("error catalog requires only error evidence")
         return self
+
+
+class AggregateCatalogState(StrEnum):
+    """Whether the combined view is complete, degraded, empty, or unavailable."""
+
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    EMPTY = "empty"
+    ERROR = "error"
+
+
+class AggregateSourceReport(ContractModel):
+    """Sanitized status for one source contributing to the combined view."""
+
+    supplier: LiveCatalogSupplier
+    mode: CatalogMode
+    state: CatalogState
+    freshness: CatalogFreshness | None
+    error: CatalogError | None
+    item_count: NonNegativeInt
+    partial: StrictBool = False
+    omitted_count: NonNegativeInt = 0
+
+    @model_validator(mode="after")
+    def report_is_consistent(self) -> AggregateSourceReport:
+        expected_mode: CatalogMode = (
+            "khommo-readonly" if self.supplier == "khommo" else "vietshare-readonly"
+        )
+        if self.mode != expected_mode:
+            raise ValueError("aggregate source report must match its supplier mode")
+        if self.partial != (self.omitted_count > 0):
+            raise ValueError("aggregate source partial state must match omitted item evidence")
+        if self.partial and self.state not in {CatalogState.FRESH, CatalogState.STALE}:
+            raise ValueError("only a populated aggregate source can be partial")
+        if self.state is CatalogState.ERROR:
+            if self.item_count != 0 or self.freshness is not None or self.error is None:
+                raise ValueError("aggregate error source requires only safe error evidence")
+        elif self.state is CatalogState.EMPTY:
+            if self.item_count != 0 or self.freshness is None or self.error is not None:
+                raise ValueError("aggregate empty source requires successful freshness evidence")
+            if self.freshness.status is not FreshnessStatus.FRESH:
+                raise ValueError("aggregate empty source requires fresh evidence")
+        else:
+            if self.item_count == 0 or self.freshness is None:
+                raise ValueError("aggregate populated source requires items and freshness evidence")
+            if self.state is CatalogState.FRESH and self.error is not None:
+                raise ValueError("aggregate fresh source cannot contain an error")
+            if (
+                self.state is CatalogState.FRESH
+                and self.freshness.status is not FreshnessStatus.FRESH
+            ):
+                raise ValueError("aggregate fresh source requires fresh evidence")
+            if self.state is CatalogState.STALE and self.error is None:
+                raise ValueError("aggregate stale source requires safe error evidence")
+            if (
+                self.state is CatalogState.STALE
+                and self.freshness.status is not FreshnessStatus.STALE
+            ):
+                raise ValueError("aggregate stale source requires stale evidence")
+        return self
+
+
+class AggregateCatalogResponse(ContractModel):
+    """One read-only view over source-qualified products without deduplication."""
+
+    supplier: Literal["aggregate"] = "aggregate"
+    mode: Literal["multi-readonly"] = "multi-readonly"
+    state: AggregateCatalogState
+    items: tuple[CatalogProduct, ...]
+    sources: Annotated[tuple[AggregateSourceReport, ...], Field(min_length=2)]
+    read_only: Literal[True] = True
+    partial: StrictBool
+    omitted_count: NonNegativeInt
+
+    @model_validator(mode="after")
+    def aggregate_is_consistent(self) -> AggregateCatalogResponse:
+        suppliers = [report.supplier for report in self.sources]
+        if len(suppliers) != len(set(suppliers)):
+            raise ValueError("aggregate source reports must be unique")
+        if set(suppliers) != {"khommo", "vietshare"}:
+            raise ValueError("aggregate requires the verified KhoMMO and VietShare sources")
+
+        identities = [(item.supplier, item.id) for item in self.items]
+        if len(identities) != len(set(identities)):
+            raise ValueError("aggregate products must be unique by source-qualified identity")
+        for report in self.sources:
+            actual_count = sum(item.supplier == report.supplier for item in self.items)
+            if actual_count != report.item_count:
+                raise ValueError("aggregate item counts must match source reports")
+        if any(
+            item.supplier not in suppliers
+            or item.mode
+            != ("khommo-readonly" if item.supplier == "khommo" else "vietshare-readonly")
+            for item in self.items
+        ):
+            raise ValueError("aggregate items must retain a configured live source")
+        if self.omitted_count != sum(report.omitted_count for report in self.sources):
+            raise ValueError("aggregate omitted count must equal known per-source omissions")
+
+        degraded = any(
+            report.partial or report.state in {CatalogState.STALE, CatalogState.ERROR}
+            for report in self.sources
+        )
+        if self.items:
+            expected_state = (
+                AggregateCatalogState.PARTIAL if degraded else AggregateCatalogState.COMPLETE
+            )
+        elif all(report.state is CatalogState.EMPTY for report in self.sources):
+            expected_state = AggregateCatalogState.EMPTY
+        else:
+            expected_state = AggregateCatalogState.ERROR
+        if self.state is not expected_state:
+            raise ValueError("aggregate state must match its per-source evidence")
+        if self.partial != (self.state is AggregateCatalogState.PARTIAL):
+            raise ValueError("aggregate partial flag must match aggregate state")
+        return self
+
+
+type CatalogListResponse = CatalogResponse | AggregateCatalogResponse
 
 
 class CatalogDetailFound(ContractModel):

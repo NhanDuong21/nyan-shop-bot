@@ -1,6 +1,149 @@
 {
   "components": {
     "schemas": {
+      "AggregateCatalogResponse": {
+        "additionalProperties": false,
+        "description": "One read-only view over source-qualified products without deduplication.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogProduct"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "mode": {
+            "const": "multi-readonly",
+            "default": "multi-readonly",
+            "title": "Mode",
+            "type": "string"
+          },
+          "omitted_count": {
+            "minimum": 0.0,
+            "title": "Omitted Count",
+            "type": "integer"
+          },
+          "partial": {
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "read_only": {
+            "const": true,
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/AggregateSourceReport"
+            },
+            "minItems": 2,
+            "title": "Sources",
+            "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/AggregateCatalogState"
+          },
+          "supplier": {
+            "const": "aggregate",
+            "default": "aggregate",
+            "title": "Supplier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "items",
+          "sources",
+          "partial",
+          "omitted_count"
+        ],
+        "title": "AggregateCatalogResponse",
+        "type": "object"
+      },
+      "AggregateCatalogState": {
+        "description": "Whether the combined view is complete, degraded, empty, or unavailable.",
+        "enum": [
+          "complete",
+          "partial",
+          "empty",
+          "error"
+        ],
+        "title": "AggregateCatalogState",
+        "type": "string"
+      },
+      "AggregateSourceReport": {
+        "additionalProperties": false,
+        "description": "Sanitized status for one source contributing to the combined view.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogFreshness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "item_count": {
+            "minimum": 0.0,
+            "title": "Item Count",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "mock",
+              "khommo-readonly",
+              "vietshare-readonly"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "omitted_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Omitted Count",
+            "type": "integer"
+          },
+          "partial": {
+            "default": false,
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CatalogState"
+          },
+          "supplier": {
+            "enum": [
+              "khommo",
+              "vietshare"
+            ],
+            "title": "Supplier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "supplier",
+          "mode",
+          "state",
+          "freshness",
+          "error",
+          "item_count"
+        ],
+        "title": "AggregateSourceReport",
+        "type": "object"
+      },
       "ApprovedMappingApproval": {
         "additionalProperties": false,
         "description": "Evidence that an administrator explicitly approved a mapping.",
@@ -226,6 +369,16 @@
         "title": "CatalogFreshness",
         "type": "object"
       },
+      "CatalogListResponse": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/CatalogResponse"
+          },
+          {
+            "$ref": "#/components/schemas/AggregateCatalogResponse"
+          }
+        ]
+      },
       "CatalogProduct": {
         "additionalProperties": false,
         "description": "A normalized product containing one or more distinct variants.",
@@ -423,6 +576,11 @@
         "additionalProperties": false,
         "description": "Available sources plus whether clients must choose one explicitly.",
         "properties": {
+          "aggregate_available": {
+            "default": false,
+            "title": "Aggregate Available",
+            "type": "boolean"
+          },
           "selection_required": {
             "title": "Selection Required",
             "type": "boolean"
@@ -743,6 +901,7 @@
               "anyOf": [
                 {
                   "enum": [
+                    "all",
                     "mock",
                     "khommo",
                     "vietshare"
@@ -797,6 +956,7 @@
               "anyOf": [
                 {
                   "enum": [
+                    "all",
                     "mock",
                     "khommo",
                     "vietshare"
@@ -816,7 +976,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CatalogResponse"
+                  "$ref": "#/components/schemas/CatalogListResponse"
                 }
               }
             },

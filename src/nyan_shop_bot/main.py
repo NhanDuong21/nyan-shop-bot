@@ -15,7 +15,8 @@ from nyan_shop_bot.catalog.factory import (
 )
 from nyan_shop_bot.catalog.models import (
     CatalogDetailResponse,
-    CatalogResponse,
+    CatalogListResponse,
+    CatalogSelection,
     CatalogSourcesResponse,
     CatalogSupplier,
     SupplierCapabilities,
@@ -146,13 +147,21 @@ def create_app(
 
     @application.get(
         "/api/v1/catalog",
-        response_model=CatalogResponse,
+        response_model=CatalogListResponse,
         tags=["catalog"],
         dependencies=[Depends(require_local_live_read)],
     )
     async def list_catalog(
-        source: Annotated[CatalogSupplier | None, Query()] = None,
-    ) -> CatalogResponse:
+        source: Annotated[CatalogSelection | None, Query()] = None,
+    ) -> CatalogListResponse:
+        if source == "all":
+            try:
+                return await catalog_registry.read_aggregate()
+            except CatalogSourceUnavailable as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="aggregate catalog is not configured",
+                ) from exc
         return await selected_catalog(source).read_catalog()
 
     @application.get(
@@ -180,8 +189,16 @@ def create_app(
         dependencies=[Depends(require_local_live_read)],
     )
     async def capabilities(
-        source: Annotated[CatalogSupplier | None, Query()] = None,
+        source: Annotated[CatalogSelection | None, Query()] = None,
     ) -> SupplierCapabilities:
+        if source == "all":
+            try:
+                return catalog_registry.aggregate_capabilities
+            except CatalogSourceUnavailable as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="aggregate catalog is not configured",
+                ) from exc
         return selected_catalog(source).capabilities
 
     return application

@@ -59,6 +59,16 @@ def test_openapi_is_client_input_for_read_only_catalog_routes() -> None:
     }
     assert schemas["MappingApproval"]["discriminator"]["propertyName"] == "status"
 
+    catalog_union = schemas["CatalogListResponse"]["anyOf"]
+    assert {branch["$ref"] for branch in catalog_union} == {
+        "#/components/schemas/CatalogResponse",
+        "#/components/schemas/AggregateCatalogResponse",
+    }
+    aggregate = schemas["AggregateCatalogResponse"]
+    assert aggregate["properties"]["mode"]["const"] == "multi-readonly"
+    source_parameter = paths["/api/v1/catalog"]["get"]["parameters"][0]
+    assert "all" in source_parameter["schema"]["anyOf"][0]["enum"]
+
 
 def test_ui_fixtures_cover_and_validate_every_required_state() -> None:
     fixtures = decode_json(rendered_artifacts()["catalog-ui-fixtures.json"])
