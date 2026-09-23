@@ -12,6 +12,8 @@ def test_safe_defaults_are_mock_only(monkeypatch: pytest.MonkeyPatch) -> None:
         "PAYMENT_MODE",
         "ALLOW_REAL_PURCHASES",
         "KHOMMO_API_TOKEN",
+        "VIETSHARE_API_ID",
+        "VIETSHARE_API_SECRET",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -78,6 +80,55 @@ def test_khommo_readonly_cannot_start_outside_local_environment(
         Settings(_env_file=None)  # type: ignore[call-arg]
 
 
+def test_vietshare_readonly_requires_both_local_credentials_without_echoing_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SUPPLIER_MODE", "vietshare-readonly")
+    monkeypatch.delenv("VIETSHARE_API_ID", raising=False)
+    monkeypatch.delenv("VIETSHARE_API_SECRET", raising=False)
+
+    with pytest.raises(ValidationError, match="requires local VIETSHARE_API_ID"):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+    api_id = "synthetic-api-id-private"
+    api_secret = "synthetic-api-secret-private"
+    monkeypatch.setenv("VIETSHARE_API_ID", api_id)
+    with pytest.raises(ValidationError, match="requires local VIETSHARE_API_SECRET"):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+    monkeypatch.setenv("VIETSHARE_API_SECRET", api_secret)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.supplier_mode == "vietshare-readonly"
+    assert settings.payment_mode == "disabled"
+    assert settings.allow_real_purchases is False
+    assert api_id not in repr(settings)
+    assert api_secret not in repr(settings)
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "api.local"])
+def test_vietshare_readonly_rejects_non_loopback_or_nonlocal_runtime(host: str) -> None:
+    with pytest.raises(ValidationError, match="APP_HOST to be loopback"):
+        Settings(
+            _env_file=None,  # type: ignore[call-arg]
+            app_env="local",
+            app_host=host,
+            supplier_mode="vietshare-readonly",
+            vietshare_api_id="synthetic-id",
+            vietshare_api_secret="synthetic-secret",
+        )
+
+    with pytest.raises(ValidationError, match="allowed only with APP_ENV=local"):
+        Settings(
+            _env_file=None,  # type: ignore[call-arg]
+            app_env="test",
+            app_host="127.0.0.1",
+            supplier_mode="vietshare-readonly",
+            vietshare_api_id="synthetic-id",
+            vietshare_api_secret="synthetic-secret",
+        )
+
+
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "api.local"])
 def test_khommo_readonly_rejects_every_non_loopback_bind(
     monkeypatch: pytest.MonkeyPatch,
@@ -119,9 +170,13 @@ def test_rejected_configuration_hides_every_secret_input(
     invalid_settings: dict[str, object],
 ) -> None:
     supplier_secret = "SYNTHETIC_KHOMMO_SECRET_MUST_NOT_RENDER"
+    vietshare_id = "SYNTHETIC_VIETSHARE_ID_MUST_NOT_RENDER"
+    vietshare_secret = "SYNTHETIC_VIETSHARE_SECRET_MUST_NOT_RENDER"
     telegram_secret = "SYNTHETIC_TELEGRAM_SECRET_MUST_NOT_RENDER"
     values: dict[str, object] = {
         "khommo_api_token": supplier_secret,
+        "vietshare_api_id": vietshare_id,
+        "vietshare_api_secret": vietshare_secret,
         "telegram_bot_token": telegram_secret,
         **invalid_settings,
     }
@@ -131,4 +186,6 @@ def test_rejected_configuration_hides_every_secret_input(
 
     rendered = f"{captured.value!s}\n{captured.value!r}"
     assert supplier_secret not in rendered
+    assert vietshare_id not in rendered
+    assert vietshare_secret not in rendered
     assert telegram_secret not in rendered

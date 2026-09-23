@@ -9,7 +9,13 @@ export function App() {
   const supplier = catalog.state.supplier;
   const environmentLabel =
     supplier.kind === "ready" ? supplier.mode.toLocaleUpperCase("vi-VN") : "LOADING";
-  const isLiveRead = supplier.kind === "ready" && supplier.mode === "khommo-readonly";
+  const isLiveRead = supplier.kind === "ready" && supplier.mode !== "mock";
+  const supplierLabel =
+    supplier.kind === "ready" && supplier.supplier === "khommo"
+      ? "KhoMMO"
+      : supplier.kind === "ready" && supplier.supplier === "vietshare"
+        ? "VietShare"
+        : "Supplier";
 
   return (
     <div className="app-shell">
@@ -39,7 +45,7 @@ export function App() {
         <strong>Môi trường thử nghiệm chỉ chạy trên localhost.</strong>
         <span>
           {isLiveRead
-            ? " KhoMMO chỉ cho phép đọc catalog; mua hàng, thanh toán và giao hàng vẫn bị khóa."
+            ? ` ${supplierLabel} chỉ cho phép đọc catalog; mua hàng, thanh toán và giao hàng vẫn bị khóa.`
             : " Không mua hàng, thanh toán hoặc gọi supplier thật."}
         </span>
       </aside>

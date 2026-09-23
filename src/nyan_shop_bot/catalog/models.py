@@ -27,8 +27,8 @@ DisplayText = Annotated[StrictStr, Field(min_length=1, pattern=r".*\S.*")]
 CurrencyCode = Annotated[StrictStr, Field(pattern=r"^[A-Z]{3}$")]
 NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
 PositiveInt = Annotated[StrictInt, Field(gt=0)]
-CatalogSupplier = Literal["mock", "khommo"]
-CatalogMode = Literal["mock", "khommo-readonly"]
+CatalogSupplier = Literal["mock", "khommo", "vietshare"]
+CatalogMode = Literal["mock", "khommo-readonly", "vietshare-readonly"]
 
 
 class ContractModel(BaseModel):
@@ -224,7 +224,12 @@ class CatalogResponse(ContractModel):
 
     @model_validator(mode="after")
     def state_is_consistent(self) -> CatalogResponse:
-        expected_mode = "mock" if self.supplier == "mock" else "khommo-readonly"
+        if self.supplier == "mock":
+            expected_mode: CatalogMode = "mock"
+        elif self.supplier == "khommo":
+            expected_mode = "khommo-readonly"
+        else:
+            expected_mode = "vietshare-readonly"
         if self.mode != expected_mode:
             raise ValueError("catalog supplier and mode must describe the same source")
         if any(

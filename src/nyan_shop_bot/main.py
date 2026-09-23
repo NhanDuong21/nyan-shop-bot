@@ -17,6 +17,7 @@ from nyan_shop_bot.catalog.ports import CatalogReader
 from nyan_shop_bot.config import Settings, get_settings, is_loopback_host
 from nyan_shop_bot.database import DatabaseProbe, PostgresDatabase
 from nyan_shop_bot.suppliers.khommo import KhoMmoCatalogSourceUnavailable
+from nyan_shop_bot.suppliers.vietshare import VietShareCatalogSourceUnavailable
 
 
 def create_app(
@@ -59,7 +60,7 @@ def create_app(
 
     async def require_local_live_read(request: Request) -> None:
         """Reject remote triggers even if a live-read server is accidentally public-bound."""
-        if runtime_settings.supplier_mode != "khommo-readonly":
+        if runtime_settings.supplier_mode == "mock":
             return
         client = request.client
         if client is None or not is_loopback_host(client.host):
@@ -114,7 +115,7 @@ def create_app(
     ) -> CatalogDetailResponse:
         try:
             return await catalog_reader.get_product(product_id)
-        except KhoMmoCatalogSourceUnavailable as exc:
+        except (KhoMmoCatalogSourceUnavailable, VietShareCatalogSourceUnavailable) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="catalog source unavailable",

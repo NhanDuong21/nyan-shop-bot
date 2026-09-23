@@ -8,13 +8,19 @@ from nyan_shop_bot.bot import runtime
 from nyan_shop_bot.config import Settings
 
 
-def _live_settings(*, telegram_token: str | None = "0:synthetic-telegram") -> Settings:
+def _live_settings(
+    *,
+    telegram_token: str | None = "0:synthetic-telegram",
+    use_vietshare: bool = False,
+) -> Settings:
     return Settings(
         _env_file=None,  # type: ignore[call-arg]
         app_env="local",
         app_host="127.0.0.1",
-        supplier_mode="khommo-readonly",
-        khommo_api_token="synthetic-khommo",
+        supplier_mode="vietshare-readonly" if use_vietshare else "khommo-readonly",
+        khommo_api_token=None if use_vietshare else "synthetic-khommo",
+        vietshare_api_id="synthetic-vietshare-id" if use_vietshare else None,
+        vietshare_api_secret="synthetic-vietshare-secret" if use_vietshare else None,
         telegram_bot_token=telegram_token,
         payment_mode="disabled",
         allow_real_purchases=False,
@@ -54,13 +60,15 @@ async def test_polling_rejects_mock_catalog_for_the_real_read_slice() -> None:
 
     with pytest.raises(
         runtime.TelegramRuntimeConfigurationError,
-        match="SUPPLIER_MODE=khommo-readonly",
+        match="explicit read-only supplier mode",
     ):
         await runtime.run_local_polling(settings=settings, owner_confirmed=True)
 
 
+@pytest.mark.parametrize("use_vietshare", [False, True])
 async def test_confirmed_runtime_injects_catalog_and_closes_every_session(
     monkeypatch: pytest.MonkeyPatch,
+    use_vietshare: bool,
 ) -> None:
     events: list[object] = []
     reader = object()
@@ -94,7 +102,7 @@ async def test_confirmed_runtime_injects_catalog_and_closes_every_session(
     )
 
     await runtime.run_local_polling(
-        settings=_live_settings(),
+        settings=_live_settings(use_vietshare=use_vietshare),
         owner_confirmed=True,
     )
 

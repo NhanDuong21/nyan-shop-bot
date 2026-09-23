@@ -39,10 +39,12 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot"
     )
-    supplier_mode: Literal["mock", "khommo-readonly"] = "mock"
+    supplier_mode: Literal["mock", "khommo-readonly", "vietshare-readonly"] = "mock"
     payment_mode: Literal["disabled", "mock", "live"] = "disabled"
     allow_real_purchases: bool = False
     khommo_api_token: SecretStr | None = None
+    vietshare_api_id: SecretStr | None = None
+    vietshare_api_secret: SecretStr | None = None
     telegram_bot_token: SecretStr | None = None
 
     @model_validator(mode="after")
@@ -66,6 +68,25 @@ class Settings(BaseSettings):
             if token is None or not token.get_secret_value():
                 raise UnsafeRuntimeConfiguration(
                     "SUPPLIER_MODE=khommo-readonly requires local KHOMMO_API_TOKEN"
+                )
+        if self.supplier_mode == "vietshare-readonly":
+            if self.app_env != "local":
+                raise UnsafeRuntimeConfiguration(
+                    "SUPPLIER_MODE=vietshare-readonly is allowed only with APP_ENV=local"
+                )
+            if not is_loopback_host(self.app_host):
+                raise UnsafeRuntimeConfiguration(
+                    "SUPPLIER_MODE=vietshare-readonly requires APP_HOST to be loopback"
+                )
+            api_id = self.vietshare_api_id
+            api_secret = self.vietshare_api_secret
+            if api_id is None or not api_id.get_secret_value():
+                raise UnsafeRuntimeConfiguration(
+                    "SUPPLIER_MODE=vietshare-readonly requires local VIETSHARE_API_ID"
+                )
+            if api_secret is None or not api_secret.get_secret_value():
+                raise UnsafeRuntimeConfiguration(
+                    "SUPPLIER_MODE=vietshare-readonly requires local VIETSHARE_API_SECRET"
                 )
         return self
 

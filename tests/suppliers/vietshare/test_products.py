@@ -11,6 +11,7 @@ from nyan_shop_bot.suppliers.vietshare import (
     ResponseValidationError,
     VietShareProductList,
     VietShareResponse,
+    parse_product_detail,
     parse_product_list,
 )
 
@@ -28,6 +29,8 @@ def product_fixture() -> dict[str, Any]:
                 "stock": 12,
                 "allow_quantity": True,
                 "max_quantity": 3,
+                "currency": ["VND", "USD"],
+                "price_usd": "2.0",
             },
             {
                 "id": 202,
@@ -38,6 +41,8 @@ def product_fixture() -> dict[str, Any]:
                 "stock": 0,
                 "allow_quantity": False,
                 "max_quantity": 1,
+                "currency": ["VND"],
+                "price_usd": "0",
             },
         ],
     }
@@ -65,6 +70,8 @@ def test_product_list_parses_only_documented_fields_with_explicit_vnd_money() ->
     assert first.allow_quantity is True
     assert first.max_quantity == 3
     assert first.flash_sale_id is None
+    assert first.currencies == ("VND", "USD")
+    assert first.price_usd == "2.0"
 
 
 def _set_product_field(name: str, value: object) -> Callable[[dict[str, Any]], None]:
@@ -108,6 +115,9 @@ def _add_unknown_top_level_field(payload: dict[str, Any]) -> None:
         _set_product_field("max_quantity", 0),
         _set_product_field("max_quantity", 1.5),
         _set_product_field("max_quantity", True),
+        _set_product_field("currency", "VND"),
+        _set_product_field("currency", ["VND", 1]),
+        _set_product_field("price_usd", None),
         _remove_product_field("description"),
         _add_unknown_product_field,
         _add_unknown_top_level_field,
@@ -188,3 +198,25 @@ def test_response_and_parsed_model_reprs_hide_sensitive_response_content() -> No
 def test_parser_requires_exact_bytes_instead_of_serializing_objects() -> None:
     with pytest.raises(ResponseValidationError, match="exact response bytes"):
         parse_product_list(product_fixture())  # type: ignore[arg-type]
+
+
+def test_detail_parser_accepts_only_the_observed_direct_product_object() -> None:
+    product = product_fixture()["products"][0]
+
+    parsed = parse_product_detail(encoded_fixture(product))
+
+    assert parsed.id == 101
+    assert parsed.currencies == ("VND", "USD")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"data": product_fixture()["products"][0]},
+        {"product": product_fixture()["products"][0]},
+        product_fixture(),
+    ],
+)
+def test_detail_parser_rejects_invented_envelopes(payload: object) -> None:
+    with pytest.raises(ResponseValidationError):
+        parse_product_detail(encoded_fixture(payload))

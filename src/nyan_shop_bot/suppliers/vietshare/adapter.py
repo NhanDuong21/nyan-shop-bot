@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC
 from email.utils import parsedate_to_datetime
 from threading import Lock
@@ -10,6 +11,9 @@ from typing import Protocol
 
 from nyan_shop_bot.catalog.models import Capability, CapabilityStatus, SupplierCapabilities
 from nyan_shop_bot.suppliers.vietshare.models import (
+    ProductDetailNotFound,
+    ProductDetailOutcome,
+    ProductDetailSuccess,
     ProductListError,
     ProductListErrorCode,
     ProductListOutcome,
@@ -23,6 +27,7 @@ from nyan_shop_bot.suppliers.vietshare.models import (
     VietShareCredentials,
     VietShareRequest,
     VietShareResponse,
+    parse_product_detail,
     parse_product_list,
 )
 from nyan_shop_bot.suppliers.vietshare.signing import (
@@ -44,7 +49,7 @@ type NonceSource = Callable[[], str]
 type RetrySleeper = Callable[[float], Awaitable[None]]
 
 
-_DETAIL_REASON = "The supplied VietShare snapshot does not define a detail response schema."
+_STOCK_DETAIL_REASON = "The VietShare stock alias is outside this live-read milestone."
 _ACCOUNT_REASON = "The supplied VietShare snapshot does not define an account response schema."
 _PAGINATION_REASON = (
     "The supplied VietShare snapshot does not define product pagination parameters."
@@ -54,15 +59,23 @@ _WRITE_REASON = "This VietShare adapter is read-only; the operation is disabled.
 
 VIETSHARE_CAPABILITIES = SupplierCapabilities(
     catalog_read=Capability(status=CapabilityStatus.ENABLED, reason=None),
-    catalog_detail=Capability(
-        status=CapabilityStatus.UNSUPPORTED,
-        reason=_DETAIL_REASON,
-    ),
+    catalog_detail=Capability(status=CapabilityStatus.ENABLED, reason=None),
     purchase=Capability(status=CapabilityStatus.DISABLED, reason=_WRITE_REASON),
     payment=Capability(status=CapabilityStatus.DISABLED, reason=_WRITE_REASON),
     top_up=Capability(status=CapabilityStatus.DISABLED, reason=_WRITE_REASON),
     refund=Capability(status=CapabilityStatus.DISABLED, reason=_WRITE_REASON),
     delivery=Capability(status=CapabilityStatus.DISABLED, reason=_WRITE_REASON),
+)
+
+
+@dataclass(frozen=True)
+class _RawReadSuccess:
+    response: VietShareResponse
+    attempts: int
+
+
+type _RawReadOutcome = (
+    _RawReadSuccess | ProductListTimeout | ProductListRateLimited | ProductListError
 )
 
 
@@ -163,19 +176,11 @@ class VietShareReadAdapter:
         )
 
     @property
-    def product_detail_projection(self) -> UnsupportedRead:
-        """Report the product-detail schema gap without sending a request."""
-        return UnsupportedRead(
-            operation=UnsupportedReadOperation.PRODUCT_DETAIL,
-            reason=_DETAIL_REASON,
-        )
-
-    @property
     def stock_detail_projection(self) -> UnsupportedRead:
         """Report the stock-detail alias schema gap without sending a request."""
         return UnsupportedRead(
             operation=UnsupportedReadOperation.STOCK_DETAIL,
-            reason=_DETAIL_REASON,
+            reason=_STOCK_DETAIL_REASON,
         )
 
     @property
@@ -190,10 +195,37 @@ class VietShareReadAdapter:
         """Return the explicit schema gap; account payloads are never fetched."""
         return self.account_projection
 
-    async def get_product(self, product_id: int) -> UnsupportedRead:
-        """Return the explicit detail gap without using or transmitting the id."""
-        del product_id
-        return self.product_detail_projection
+    async def get_product(self, product_id: int) -> ProductDetailOutcome:
+        """Read the observed direct product-detail object through the GET-only boundary."""
+        if type(product_id) is not int or product_id <= 0:
+            raise VietShareConfigurationError("Product ID must be a positive integer")
+        raw = await self._read_response(endpoint=f"/products/{product_id}")
+        if not isinstance(raw, _RawReadSuccess):
+            return raw
+
+        response = raw.response
+        if response.status_code == 404:
+            return ProductDetailNotFound(attempts=raw.attempts)
+        if not 200 <= response.status_code <= 299:
+            return ProductListError(
+                code=ProductListErrorCode.HTTP_ERROR,
+                attempts=raw.attempts,
+                status_code=response.status_code,
+                retryable=response.status_code >= 500,
+            )
+        try:
+            product = parse_product_detail(response.body)
+        except ResponseValidationError:
+            return ProductListError(
+                code=ProductListErrorCode.INVALID_RESPONSE,
+                attempts=raw.attempts,
+            )
+        if product.id != product_id:
+            return ProductListError(
+                code=ProductListErrorCode.INVALID_RESPONSE,
+                attempts=raw.attempts,
+            )
+        return ProductDetailSuccess(value=product, attempts=raw.attempts)
 
     async def get_stock(self, product_id: int) -> UnsupportedRead:
         """Return the explicit detail-alias gap without transmitting the id."""
@@ -253,7 +285,7 @@ class VietShareReadAdapter:
             )
         return None
 
-    async def _read_product_list(self, *, endpoint: str) -> ProductListOutcome:
+    async def _read_response(self, *, endpoint: str) -> _RawReadOutcome:
         total_attempts = self._max_retries + 1
         for attempt in range(1, total_attempts + 1):
             try:
@@ -309,21 +341,28 @@ class VietShareReadAdapter:
                     return sleep_error
                 continue
 
-            if not 200 <= response.status_code <= 299:
-                return ProductListError(
-                    code=ProductListErrorCode.HTTP_ERROR,
-                    attempts=attempt,
-                    status_code=response.status_code,
-                    retryable=response.status_code >= 500,
-                )
-
-            try:
-                products = parse_product_list(response.body)
-            except ResponseValidationError:
-                return ProductListError(
-                    code=ProductListErrorCode.INVALID_RESPONSE,
-                    attempts=attempt,
-                )
-            return ProductListSuccess(value=products, attempts=attempt)
+            return _RawReadSuccess(response=response, attempts=attempt)
 
         raise AssertionError("bounded retry loop must return an outcome")
+
+    async def _read_product_list(self, *, endpoint: str) -> ProductListOutcome:
+        raw = await self._read_response(endpoint=endpoint)
+        if not isinstance(raw, _RawReadSuccess):
+            return raw
+
+        response = raw.response
+        if not 200 <= response.status_code <= 299:
+            return ProductListError(
+                code=ProductListErrorCode.HTTP_ERROR,
+                attempts=raw.attempts,
+                status_code=response.status_code,
+                retryable=response.status_code >= 500,
+            )
+        try:
+            products = parse_product_list(response.body)
+        except ResponseValidationError:
+            return ProductListError(
+                code=ProductListErrorCode.INVALID_RESPONSE,
+                attempts=raw.attempts,
+            )
+        return ProductListSuccess(value=products, attempts=raw.attempts)
