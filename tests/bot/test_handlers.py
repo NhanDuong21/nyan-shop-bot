@@ -226,11 +226,13 @@ async def test_catalog_uses_compact_vnd_stock_buttons_without_repeating_products
 
     assert message.markup is not None
     button_texts = [row[0].text for row in message.markup.inline_keyboard]
+    button_styles = [row[0].style for row in message.markup.inline_keyboard]
     assert button_texts == [
         "Synthetic learning pass · 49.000đ · Còn 12",
         "Synthetic design seat · 25.000đ · Còn 5",
         "Synthetic toolkit · 79.000đ · Hết hàng",
     ]
+    assert button_styles == ["success", "success", "danger"]
     assert all(
         product_name not in message.text
         for product_name in (
