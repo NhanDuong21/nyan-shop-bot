@@ -125,6 +125,14 @@ def _source_name(supplier: str) -> str:
     return {"khommo": "KhoMMO", "vietshare": "VietShare"}.get(supplier, "supplier")
 
 
+def _live_source(supplier: str) -> LiveCatalogSupplier | None:
+    if supplier == "khommo":
+        return "khommo"
+    if supplier == "vietshare":
+        return "vietshare"
+    return None
+
+
 def _button_text(prefix: str, value: str) -> str:
     return _bounded_display(f"{prefix}{value}", MAX_BUTTON_TEXT_CHARS, fallback=prefix.rstrip())
 
@@ -504,6 +512,9 @@ async def callback_handler(
 
     access = _catalog_access_or_default(catalog)
     if isinstance(access, CatalogRegistry):
+        if payload.source is None and access.sources != ("mock",):
+            await _send(message, (SAFE_REFRESH_MESSAGE,))
+            return
         try:
             reader = access.resolve(payload.source)
         except (CatalogSourceSelectionRequired, CatalogSourceUnavailable):
@@ -545,7 +556,12 @@ def build_router(catalog: CatalogReader | CatalogRegistry | None = None) -> Rout
             if access.selection_required:
                 await catalog_source_menu_handler(message, access)
                 return
-            await catalog_handler(message, access.resolve())
+            configured_source = access.sources[0]
+            await catalog_handler(
+                message,
+                access.resolve(),
+                source=_live_source(configured_source),
+            )
             return
         await catalog_handler(message, access)
 

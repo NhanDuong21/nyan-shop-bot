@@ -14,7 +14,7 @@ from aiogram.client.session.base import BaseSession
 from aiogram.methods import AnswerCallbackQuery, SendMessage, TelegramMethod
 from aiogram.types import CallbackQuery, Chat, Message, MessageEntity, Update, User
 
-from nyan_shop_bot.bot.callbacks import encode_quote_callback
+from nyan_shop_bot.bot.callbacks import decode_callback, encode_quote_callback
 from nyan_shop_bot.bot.handlers import (
     build_dispatcher,
     callback_handler,
@@ -166,6 +166,25 @@ async def test_aiogram_multi_source_catalog_starts_with_an_explicit_source_menu(
         "KhoMMO · CHỈ ĐỌC",
         "VietShare · CHỈ ĐỌC",
     ]
+
+
+async def test_aiogram_single_live_catalog_also_binds_callbacks_to_its_source() -> None:
+    dispatcher = build_dispatcher(
+        CatalogRegistry({"khommo": FakeCatalogReader(FakeCatalogScenario.FRESH)})
+    )
+    session = RecordingSession()
+    bot = Bot(token="0:offline", session=session)
+
+    await dispatcher.feed_update(
+        bot,
+        Update(update_id=4, message=_message("/catalog", 4)),
+    )
+
+    sent = [request for request in session.requests if isinstance(request, SendMessage)]
+    assert len(sent) == 1
+    assert sent[0].reply_markup is not None
+    first_callback = sent[0].reply_markup.inline_keyboard[0][0].callback_data
+    assert decode_callback(first_callback).source == "khommo"
 
 
 async def test_hard_network_guard_covers_all_offline_flows(

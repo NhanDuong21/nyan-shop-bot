@@ -358,6 +358,30 @@ async def test_legacy_callback_in_multi_mode_fails_closed_without_guessing_sourc
     assert vietshare.product_reads == []
 
 
+async def test_legacy_or_wrong_source_callback_cannot_cross_single_live_modes() -> None:
+    response = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+    vietshare = StubCatalogReader(catalog_response=response)
+    catalogs = CatalogRegistry({"vietshare": vietshare})
+
+    legacy_message = FakeMessage()
+    await callback_handler(
+        FakeCallback(encode_detail_callback("learning-pass"), legacy_message),
+        catalogs,
+    )
+    wrong_source_message = FakeMessage()
+    await callback_handler(
+        FakeCallback(
+            encode_detail_callback("learning-pass", "khommo"),
+            wrong_source_message,
+        ),
+        catalogs,
+    )
+
+    assert legacy_message.text == SAFE_REFRESH_MESSAGE
+    assert wrong_source_message.text == SAFE_REFRESH_MESSAGE
+    assert vietshare.product_reads == []
+
+
 async def test_catalog_error_never_echoes_upstream_details() -> None:
     secret_error = CatalogError(
         code=CatalogErrorCode.SOURCE_UNAVAILABLE,
