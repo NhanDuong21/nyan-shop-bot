@@ -1,4 +1,5 @@
 import { useCatalogState } from "./catalog-state";
+import type { CatalogSelection } from "./api";
 import { AdminDashboard } from "./features/admin-dashboard/AdminDashboard";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAdminTheme } from "./theme";
@@ -11,7 +12,9 @@ export function App() {
     supplier.kind === "ready" ? supplier.mode.toLocaleUpperCase("vi-VN") : "LOADING";
   const isLiveRead = supplier.kind === "ready" && supplier.mode !== "mock";
   const supplierLabel =
-    supplier.kind === "ready" && supplier.supplier === "khommo"
+    supplier.kind === "ready" && supplier.supplier === "aggregate"
+      ? "KhoMMO + VietShare"
+      : supplier.kind === "ready" && supplier.supplier === "khommo"
       ? "KhoMMO"
       : supplier.kind === "ready" && supplier.supplier === "vietshare"
         ? "VietShare"
@@ -40,9 +43,10 @@ export function App() {
                 aria-label="Chọn nguồn catalog"
                 value={catalog.selectedSource ?? ""}
                 onChange={(event) =>
-                  catalog.selectSource(event.target.value as "khommo" | "vietshare")
+                  catalog.selectSource(event.target.value as CatalogSelection)
                 }
               >
+                {catalog.aggregateAvailable && <option value="all">Tất cả nguồn</option>}
                 {catalog.sources.map((source) => (
                   <option key={source.supplier} value={source.supplier}>
                     {source.supplier === "khommo" ? "KhoMMO" : "VietShare"}

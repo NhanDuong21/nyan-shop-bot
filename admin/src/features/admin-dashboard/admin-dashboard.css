@@ -119,6 +119,17 @@
   color: var(--color-warning);
 }
 
+.dashboard-source-status {
+  margin: 1rem 0;
+}
+
+.dashboard-source-status ul {
+  display: grid;
+  gap: 0.375rem;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
 .dashboard-table-region {
   overflow-x: auto;
   border: 1px solid var(--color-border);

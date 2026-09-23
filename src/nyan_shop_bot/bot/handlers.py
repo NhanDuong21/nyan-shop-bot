@@ -20,6 +20,9 @@ from nyan_shop_bot.bot.callbacks import (
 )
 from nyan_shop_bot.catalog.mock import FakeCatalogReader
 from nyan_shop_bot.catalog.models import (
+    AggregateCatalogResponse,
+    AggregateCatalogState,
+    AggregateSourceReport,
     CatalogDetailFound,
     CatalogDetailNotFound,
     CatalogDetailResponse,
@@ -28,6 +31,7 @@ from nyan_shop_bot.catalog.models import (
     CatalogResponse,
     CatalogState,
     CatalogVariant,
+    LiveCatalogSelection,
     LiveCatalogSupplier,
     Money,
 )
@@ -118,11 +122,16 @@ def _source_label(supplier: str) -> str:
         "mock": "MOCK / CHỈ ĐỌC",
         "khommo": "KHOMMO / CHỈ ĐỌC",
         "vietshare": "VIETSHARE / CHỈ ĐỌC",
+        "aggregate": "KHOMMO + VIETSHARE / CHỈ ĐỌC",
     }.get(supplier, "NGUỒN KHÔNG XÁC ĐỊNH / CHỈ ĐỌC")
 
 
 def _source_name(supplier: str) -> str:
-    return {"khommo": "KhoMMO", "vietshare": "VietShare"}.get(supplier, "supplier")
+    return {
+        "khommo": "KhoMMO",
+        "vietshare": "VietShare",
+        "aggregate": "KhoMMO + VietShare",
+    }.get(supplier, "supplier")
 
 
 def _live_source(supplier: str) -> LiveCatalogSupplier | None:
@@ -137,11 +146,12 @@ def _button_text(prefix: str, value: str) -> str:
     return _bounded_display(f"{prefix}{value}", MAX_BUTTON_TEXT_CHARS, fallback=prefix.rstrip())
 
 
-def _catalog_button_text(product: CatalogProduct) -> str:
+def _catalog_button_text(product: CatalogProduct, *, include_source: bool = False) -> str:
     price = _format_catalog_button_price(product.price)
     availability = (
         "Hết hàng" if product.available_quantity == 0 else f"Còn {product.available_quantity}"
     )
+    source_prefix = f"[{_source_name(product.supplier)}] " if include_source else ""
     suffix = f" · {price} · {availability}"
     if len(suffix) >= MAX_BUTTON_TEXT_CHARS:
         return _bounded_display(
@@ -150,7 +160,7 @@ def _catalog_button_text(product: CatalogProduct) -> str:
             fallback="Xem chi tiết",
         )
     name = _bounded_display(
-        product.name,
+        f"{source_prefix}{product.name}",
         MAX_BUTTON_TEXT_CHARS - len(suffix),
         fallback="Sản phẩm",
     )
@@ -274,9 +284,109 @@ async def catalog_handler(
     )
 
 
+def _aggregate_source_line(report: AggregateSourceReport) -> str:
+    """Render complete sanitized evidence for one aggregate source."""
+    source_name = _source_name(report.supplier)
+    if report.state is CatalogState.ERROR:
+        return f"{source_name}: không khả dụng; không suy đoán sản phẩm bị thiếu."
+    if report.state is CatalogState.EMPTY:
+        return f"{source_name}: phản hồi thành công; catalog trống."
+
+    freshness = "dữ liệu cache đã cũ" if report.state is CatalogState.STALE else "dữ liệu mới"
+    line = f"{source_name}: {freshness}; {report.item_count} sản phẩm"
+    if report.partial:
+        line += f"; {report.omitted_count} sản phẩm bị loại vì dữ liệu bắt buộc bị thiếu"
+    return f"{line}."
+
+
+def _aggregate_catalog_lines(response: AggregateCatalogResponse) -> list[str]:
+    title = "DANH MỤC TỔNG HỢP — KHOMMO + VIETSHARE / CHỈ ĐỌC"
+    lines = [title]
+    if response.state is AggregateCatalogState.ERROR:
+        lines.append("Không nguồn catalog nào trả về dữ liệu dùng được lúc này.")
+    elif response.state is AggregateCatalogState.EMPTY:
+        lines.append("Cả hai nguồn phản hồi thành công nhưng catalog hiện trống.")
+    elif response.state is AggregateCatalogState.PARTIAL:
+        lines.append(
+            "CẢNH BÁO: catalog tổng hợp đang hiển thị một phần; xem trạng thái từng nguồn bên dưới."
+        )
+    else:
+        lines.append("Dữ liệu từ cả hai nguồn đã được tải · Chọn sản phẩm để xem chi tiết.")
+
+    lines.extend(_aggregate_source_line(report) for report in response.sources)
+    if response.state in {AggregateCatalogState.ERROR, AggregateCatalogState.EMPTY}:
+        lines.append("Không có đơn hàng hoặc giao dịch nào được tạo.")
+        return lines
+
+    visible_items = response.items[:MAX_CATALOG_ITEMS]
+    if len(response.items) > len(visible_items):
+        lines.append(f"Chỉ hiển thị {len(visible_items)} sản phẩm đầu tiên trong menu này.")
+    lines.extend(
+        (
+            "Các sản phẩm chỉ được xếp chung để xem; không tự ghép hoặc dedupe theo tên/giá.",
+            "Giá và tồn kho là snapshot chỉ đọc theo từng nguồn; không cấp quyền mua.",
+        )
+    )
+    return lines
+
+
+def _aggregate_catalog_keyboard(
+    response: AggregateCatalogResponse,
+) -> InlineKeyboardMarkup | None:
+    if response.state not in {AggregateCatalogState.COMPLETE, AggregateCatalogState.PARTIAL}:
+        return None
+    rows: list[list[InlineKeyboardButton]] = []
+    for product in response.items[:MAX_CATALOG_ITEMS]:
+        source = _live_source(product.supplier)
+        if source is None:
+            continue
+        try:
+            callback_data = encode_detail_callback(product.id, source)
+        except CallbackCodecError:
+            continue
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=_catalog_button_text(product, include_source=True),
+                    callback_data=callback_data,
+                    style="danger" if product.available_quantity == 0 else "success",
+                )
+            ]
+        )
+    return _keyboard(rows)
+
+
+async def aggregate_catalog_handler(
+    message: AnswerableMessage,
+    catalogs: CatalogRegistry,
+) -> None:
+    """Render a source-qualified combined view without creating synthetic SKUs."""
+    try:
+        response = await catalogs.read_aggregate()
+    except Exception:
+        await _send(message, (SAFE_CATALOG_ERROR_MESSAGE,))
+        return
+    await _send(
+        message,
+        _aggregate_catalog_lines(response),
+        keyboard=_aggregate_catalog_keyboard(response),
+    )
+
+
 def _source_menu_keyboard(catalogs: CatalogRegistry) -> InlineKeyboardMarkup | None:
     rows: list[list[InlineKeyboardButton]] = []
-    labels: dict[LiveCatalogSupplier, str] = {
+    if catalogs.aggregate_available:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Tất cả nguồn · CHỈ ĐỌC",
+                    callback_data=encode_source_callback("all"),
+                    style="primary",
+                )
+            ]
+        )
+    labels: dict[LiveCatalogSelection, str] = {
+        "all": "Tất cả nguồn · CHỈ ĐỌC",
         "khommo": "KhoMMO · CHỈ ĐỌC",
         "vietshare": "VietShare · CHỈ ĐỌC",
     }
@@ -304,8 +414,9 @@ async def catalog_source_menu_handler(
         message,
         (
             "CHỌN NGUỒN DANH MỤC — CHỈ ĐỌC",
-            "KhoMMO và VietShare là hai nguồn riêng biệt; catalog chưa được gộp.",
-            "Chọn một nguồn bên dưới. Thao tác này không tạo đơn hoặc thanh toán.",
+            "Có thể xem catalog tổng hợp hoặc lọc riêng KhoMMO/VietShare.",
+            "Bản tổng hợp vẫn giữ nguồn trên từng sản phẩm và không tự dedupe.",
+            "Chọn một mục bên dưới. Thao tác này không tạo đơn hoặc thanh toán.",
         ),
         keyboard=_source_menu_keyboard(catalogs),
     )
@@ -512,6 +623,15 @@ async def callback_handler(
 
     access = _catalog_access_or_default(catalog)
     if isinstance(access, CatalogRegistry):
+        if payload.action is CallbackAction.SOURCE and payload.source == "all":
+            if not access.aggregate_available:
+                await _send(message, (SAFE_REFRESH_MESSAGE,))
+                return
+            await aggregate_catalog_handler(message, access)
+            return
+        if payload.source == "all":
+            await _send(message, (SAFE_REFRESH_MESSAGE,))
+            return
         if payload.source is None and access.sources != ("mock",):
             await _send(message, (SAFE_REFRESH_MESSAGE,))
             return

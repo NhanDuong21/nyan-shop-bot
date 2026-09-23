@@ -4,10 +4,11 @@ import {
   type CatalogError,
   type CatalogFreshness,
   type CatalogItem,
-  type CatalogMode,
   type CatalogResponse,
+  type CatalogSelection,
   type CatalogSourceOption,
-  type CatalogSupplier,
+  type CatalogViewMode,
+  type CatalogViewSupplier,
   fetchCapabilities,
   fetchCatalog,
   fetchCatalogSources,
@@ -15,25 +16,37 @@ import {
 } from "./api";
 
 export type CatalogPanelState =
-  | { kind: "loading" }
-  | { kind: "error"; message: string; retryable: boolean }
-  | { kind: "empty"; freshness: CatalogFreshness }
-  | {
-      kind: "success";
-      items: CatalogItem[];
-      freshness: CatalogFreshness;
-      warning: CatalogError | null;
-      partial: boolean;
-      omittedCount: number;
-    };
+  { sourceStatuses?: CatalogSourceStatus[] } &
+    (
+      | { kind: "loading" }
+      | { kind: "error"; message: string; retryable: boolean }
+      | { kind: "empty"; freshness: CatalogFreshness | null }
+      | {
+          kind: "success";
+          items: CatalogItem[];
+          freshness: CatalogFreshness | null;
+          warning: CatalogError | null;
+          warningTitle?: string;
+          partial: boolean;
+          omittedCount: number;
+        }
+    );
+
+export interface CatalogSourceStatus {
+  supplier: "khommo" | "vietshare";
+  state: "fresh" | "stale" | "empty" | "error";
+  itemCount: number;
+  partial: boolean;
+  omittedCount: number;
+}
 
 export type SupplierPanelState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
   | {
       kind: "ready";
-      supplier: CatalogSupplier;
-      mode: CatalogMode;
+      supplier: CatalogViewSupplier;
+      mode: CatalogViewMode;
       readOnly: true;
       currencies: string[];
       balance: {
@@ -63,12 +76,69 @@ export interface AdminDashboardProps {
 export interface CatalogStateController {
   state: AdminDashboardState;
   sources: CatalogSourceOption[];
-  selectedSource: CatalogSupplier | null;
-  selectSource: (source: CatalogSupplier) => void;
+  aggregateAvailable: boolean;
+  selectedSource: CatalogSelection | null;
+  selectSource: (source: CatalogSelection) => void;
   retry: () => void;
 }
 
 function mapCatalogState(response: CatalogResponse): CatalogPanelState {
+  if (response.mode === "multi-readonly") {
+    const sourceStatuses = response.sources.map((source) => ({
+      supplier: source.supplier,
+      state: source.state,
+      itemCount: source.item_count,
+      partial: source.partial,
+      omittedCount: source.omitted_count,
+    }));
+    if (response.state === "empty") {
+      return { kind: "empty", freshness: null, sourceStatuses };
+    }
+    if (response.state === "error") {
+      return {
+        kind: "error",
+        message: "KhoMMO và VietShare đều không trả về catalog dùng được lúc này.",
+        retryable: response.sources.some((source) => source.error?.retryable === true),
+        sourceStatuses,
+      };
+    }
+    const degraded = response.sources.filter(
+      (source) => source.state === "stale" || source.state === "error" || source.partial,
+    );
+    const warning =
+      degraded.length === 0
+        ? null
+        : {
+            code: "source_unavailable" as const,
+            message: degraded
+              .map((source) => {
+                if (source.state === "error") {
+                  return `${source.supplier}: nguồn hiện không khả dụng.`;
+                }
+                const evidence = [
+                  source.state === "stale"
+                    ? "đang hiển thị dữ liệu cache đã cũ"
+                    : "dữ liệu mới",
+                ];
+                if (source.partial) {
+                  evidence.push(`${source.omitted_count} sản phẩm bị loại`);
+                }
+                return `${source.supplier}: ${evidence.join("; ")}.`;
+              })
+              .join(" "),
+            retryable: degraded.some((source) => source.error?.retryable === true),
+          };
+    return {
+      kind: "success",
+      items: response.items,
+      freshness: null,
+      warning,
+      warningTitle: "Một hoặc nhiều nguồn chưa đầy đủ",
+      partial: response.partial,
+      omittedCount: response.omitted_count,
+      sourceStatuses,
+    };
+  }
   switch (response.state) {
     case "fresh":
       return {
@@ -118,7 +188,8 @@ function requestFailure(resource: string): string {
 export function useCatalogState(): CatalogStateController {
   const [requestVersion, setRequestVersion] = useState(0);
   const [sources, setSources] = useState<CatalogSourceOption[]>([]);
-  const [selectedSource, setSelectedSource] = useState<CatalogSupplier | null>(null);
+  const [aggregateAvailable, setAggregateAvailable] = useState(false);
+  const [selectedSource, setSelectedSource] = useState<CatalogSelection | null>(null);
   const [state, setState] = useState<AdminDashboardState>({
     catalog: { kind: "loading" },
     supplier: { kind: "loading" },
@@ -133,8 +204,11 @@ export function useCatalogState(): CatalogStateController {
   }, []);
 
   const selectSource = useCallback(
-    (source: CatalogSupplier) => {
-      if (!sources.some((option) => option.supplier === source)) {
+    (source: CatalogSelection) => {
+      if (
+        (source === "all" && !aggregateAvailable) ||
+        (source !== "all" && !sources.some((option) => option.supplier === source))
+      ) {
         return;
       }
       setState({
@@ -143,7 +217,7 @@ export function useCatalogState(): CatalogStateController {
       });
       setSelectedSource(source);
     },
-    [sources],
+    [aggregateAvailable, sources],
   );
 
   useEffect(() => {
@@ -155,9 +229,17 @@ export function useCatalogState(): CatalogStateController {
           return;
         }
         setSources(response.sources);
+        const canAggregate = response.aggregate_available === true;
+        setAggregateAvailable(canAggregate);
         setSelectedSource((current) => {
+          if (current === "all" && canAggregate) {
+            return current;
+          }
           if (current !== null && response.sources.some((item) => item.supplier === current)) {
             return current;
+          }
+          if (canAggregate) {
+            return "all";
           }
           return response.sources[0]?.supplier ?? null;
         });
@@ -167,6 +249,7 @@ export function useCatalogState(): CatalogStateController {
           return;
         }
         setSources([]);
+        setAggregateAvailable(false);
         setSelectedSource(null);
         setState({
           catalog: {
@@ -234,5 +317,12 @@ export function useCatalogState(): CatalogStateController {
     return () => controller.abort();
   }, [requestVersion, selectedSource]);
 
-  return { state, sources, selectedSource, selectSource, retry };
+  return {
+    state,
+    sources,
+    aggregateAvailable,
+    selectedSource,
+    selectSource,
+    retry,
+  };
 }

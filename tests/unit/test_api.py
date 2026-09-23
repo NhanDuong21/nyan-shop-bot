@@ -3,6 +3,13 @@
 from httpx import ASGITransport, AsyncClient
 
 from nyan_shop_bot.catalog.mock import FakeCatalogReader, FakeCatalogScenario
+from nyan_shop_bot.catalog.models import (
+    CatalogDetailFound,
+    CatalogDetailResponse,
+    CatalogResponse,
+    CatalogState,
+    CatalogSupplier,
+)
 from nyan_shop_bot.catalog.ports import CatalogReader
 from nyan_shop_bot.catalog.registry import CatalogRegistry
 from nyan_shop_bot.config import Settings
@@ -22,18 +29,40 @@ class ReadyDatabase:
 class CountingCatalogReader:
     capabilities = FakeCatalogReader.capabilities
 
-    def __init__(self) -> None:
+    def __init__(self, source: CatalogSupplier = "mock") -> None:
         self.delegate = FakeCatalogReader()
+        self.source = source
         self.catalog_reads = 0
         self.product_reads: list[str] = []
 
-    async def read_catalog(self):  # type: ignore[no-untyped-def]
+    async def read_catalog(self) -> CatalogResponse:
         self.catalog_reads += 1
-        return await self.delegate.read_catalog()
+        response = await self.delegate.read_catalog()
+        if self.source == "mock":
+            return response
+        mode = "khommo-readonly" if self.source == "khommo" else "vietshare-readonly"
+        return CatalogResponse(
+            supplier=self.source,
+            mode=mode,
+            state=CatalogState.FRESH,
+            freshness=response.freshness,
+            items=tuple(
+                item.model_copy(update={"supplier": self.source, "mode": mode})
+                for item in response.items
+            ),
+            error=None,
+        )
 
-    async def get_product(self, product_id: str):  # type: ignore[no-untyped-def]
+    async def get_product(self, product_id: str) -> CatalogDetailResponse:
         self.product_reads.append(product_id)
-        return await self.delegate.get_product(product_id)
+        response = await self.delegate.get_product(product_id)
+        if self.source == "mock" or not isinstance(response, CatalogDetailFound):
+            return response
+        mode = "khommo-readonly" if self.source == "khommo" else "vietshare-readonly"
+        return CatalogDetailFound(
+            state="found",
+            item=response.item.model_copy(update={"supplier": self.source, "mode": mode}),
+        )
 
 
 def make_client(catalog: CatalogReader | None = None) -> AsyncClient:
@@ -117,8 +146,8 @@ async def test_multi_read_factory_constructs_both_sources_without_contacting_the
 
 
 async def test_multi_read_api_requires_and_routes_explicit_sources() -> None:
-    khommo = CountingCatalogReader()
-    vietshare = CountingCatalogReader()
+    khommo = CountingCatalogReader("khommo")
+    vietshare = CountingCatalogReader("vietshare")
     registry = CatalogRegistry({"khommo": khommo, "vietshare": vietshare})
     settings = Settings(
         _env_file=None,  # type: ignore[call-arg]
@@ -139,9 +168,12 @@ async def test_multi_read_api_requires_and_routes_explicit_sources() -> None:
     ) as client:
         sources = await client.get("/api/v1/catalog/sources")
         missing_source = await client.get("/api/v1/catalog")
+        aggregate = await client.get("/api/v1/catalog?source=all")
         khommo_catalog = await client.get("/api/v1/catalog?source=khommo")
         vietshare_detail = await client.get("/api/v1/catalog/learning-pass?source=vietshare")
         vietshare_capabilities = await client.get("/api/v1/capabilities?source=vietshare")
+        aggregate_capabilities = await client.get("/api/v1/capabilities?source=all")
+        aggregate_detail = await client.get("/api/v1/catalog/learning-pass?source=all")
         unavailable = await client.get("/api/v1/catalog?source=mock")
         invalid = await client.get("/api/v1/catalog?source=roboticvn")
 
@@ -156,15 +188,31 @@ async def test_multi_read_api_requires_and_routes_explicit_sources() -> None:
             },
         ],
         "selection_required": True,
+        "aggregate_available": True,
     }
     assert missing_source.status_code == 400
     assert missing_source.json()["detail"] == "catalog source selection is required"
+    assert aggregate.status_code == 200
+    aggregate_body = aggregate.json()
+    assert aggregate_body["supplier"] == "aggregate"
+    assert aggregate_body["mode"] == "multi-readonly"
+    assert aggregate_body["state"] == "complete"
+    assert [(item["supplier"], item["id"]) for item in aggregate_body["items"][:4]] == [
+        ("khommo", "learning-pass"),
+        ("vietshare", "learning-pass"),
+        ("khommo", "design-seat"),
+        ("vietshare", "design-seat"),
+    ]
     assert khommo_catalog.status_code == 200
     assert vietshare_detail.status_code == 200
     assert vietshare_capabilities.status_code == 200
+    assert aggregate_capabilities.status_code == 200
+    assert aggregate_capabilities.json()["purchase"]["status"] == "disabled"
+    assert aggregate_detail.status_code == 422
     assert unavailable.status_code == 404
     assert invalid.status_code == 422
-    assert khommo.catalog_reads == 1
+    assert khommo.catalog_reads == 2
+    assert vietshare.catalog_reads == 1
     assert vietshare.product_reads == ["learning-pass"]
 
 

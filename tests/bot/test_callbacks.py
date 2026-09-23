@@ -72,6 +72,16 @@ def test_source_bound_callbacks_round_trip_without_supplier_secrets(
     assert decode_callback(quote).variant_id == "v" * MAX_CALLBACK_IDENTIFIER_BYTES
 
 
+def test_aggregate_selection_has_no_product_identity_and_cannot_be_reused_for_detail() -> None:
+    selected = encode_source_callback("all")
+
+    assert selected == "2:sa"
+    assert decode_callback(selected).source == "all"
+    assert decode_callback(selected).product_id is None
+    with pytest.raises(CallbackCodecError, match="cannot identify a product"):
+        decode_callback("2:da:product-1")
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -83,6 +93,7 @@ def test_source_bound_callbacks_round_trip_without_supplier_secrets(
         "2:sx",
         "2:dk",
         "2:dk:contains space",
+        "2:qa:product:variant",
         "2:qv:product",
         "v1:d:product",
         "1",

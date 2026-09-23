@@ -6,6 +6,9 @@ export interface Money {
 
 export type CatalogSupplier = "mock" | "khommo" | "vietshare";
 export type CatalogMode = "mock" | "khommo-readonly" | "vietshare-readonly";
+export type CatalogSelection = CatalogSupplier | "all";
+export type CatalogViewSupplier = CatalogSupplier | "aggregate";
+export type CatalogViewMode = CatalogMode | "multi-readonly";
 
 export interface CatalogSourceOption {
   supplier: CatalogSupplier;
@@ -16,6 +19,7 @@ export interface CatalogSourceOption {
 export interface CatalogSourcesResponse {
   sources: CatalogSourceOption[];
   selection_required: boolean;
+  aggregate_available: boolean;
 }
 
 export interface CatalogVariant {
@@ -50,7 +54,7 @@ export interface CatalogError {
   retryable: boolean;
 }
 
-interface CatalogEnvelopeBase {
+interface SourceCatalogEnvelopeBase {
   supplier: CatalogSupplier;
   mode: CatalogMode;
   read_only: true;
@@ -58,31 +62,55 @@ interface CatalogEnvelopeBase {
   omitted_count: number;
 }
 
-export type CatalogResponse =
-  | (CatalogEnvelopeBase & {
+export type SourceCatalogResponse =
+  | (SourceCatalogEnvelopeBase & {
       state: "fresh";
       freshness: CatalogFreshness;
       items: CatalogItem[];
       error: null;
     })
-  | (CatalogEnvelopeBase & {
+  | (SourceCatalogEnvelopeBase & {
       state: "stale";
       freshness: CatalogFreshness;
       items: CatalogItem[];
       error: CatalogError;
     })
-  | (CatalogEnvelopeBase & {
+  | (SourceCatalogEnvelopeBase & {
       state: "empty";
       freshness: CatalogFreshness;
       items: [];
       error: null;
     })
-  | (CatalogEnvelopeBase & {
+  | (SourceCatalogEnvelopeBase & {
       state: "error";
       freshness: null;
       items: [];
       error: CatalogError;
     });
+
+export interface AggregateSourceReport {
+  supplier: "khommo" | "vietshare";
+  mode: "khommo-readonly" | "vietshare-readonly";
+  state: "fresh" | "stale" | "empty" | "error";
+  freshness: CatalogFreshness | null;
+  error: CatalogError | null;
+  item_count: number;
+  partial: boolean;
+  omitted_count: number;
+}
+
+export interface AggregateCatalogResponse {
+  supplier: "aggregate";
+  mode: "multi-readonly";
+  state: "complete" | "partial" | "empty" | "error";
+  items: CatalogItem[];
+  sources: AggregateSourceReport[];
+  read_only: true;
+  partial: boolean;
+  omitted_count: number;
+}
+
+export type CatalogResponse = SourceCatalogResponse | AggregateCatalogResponse;
 
 export interface Capability {
   status: "enabled" | "disabled" | "unsupported";
@@ -101,7 +129,7 @@ export interface SupplierCapabilities {
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 
-function sourceUrl(path: string, source?: CatalogSupplier): string {
+function sourceUrl(path: string, source?: CatalogSelection): string {
   if (source === undefined) {
     return `${apiBaseUrl}${path}`;
   }
@@ -127,7 +155,7 @@ export async function fetchCatalogSources(
 
 export async function fetchCatalog(
   signal?: AbortSignal,
-  source?: CatalogSupplier,
+  source?: CatalogSelection,
 ): Promise<CatalogResponse> {
   const response = await fetch(sourceUrl("/v1/catalog", source), {
     method: "GET",
@@ -144,7 +172,7 @@ export async function fetchCatalog(
 
 export async function fetchCapabilities(
   signal?: AbortSignal,
-  source?: CatalogSupplier,
+  source?: CatalogSelection,
 ): Promise<SupplierCapabilities> {
   const response = await fetch(sourceUrl("/v1/capabilities", source), {
     method: "GET",
