@@ -23,7 +23,12 @@ from nyan_shop_bot.bot.handlers import (
     start_handler,
     support_handler,
 )
-from nyan_shop_bot.catalog.mock import FakeCatalogReader, FakeCatalogScenario
+from nyan_shop_bot.catalog.mock import (
+    FakeCatalogReader,
+    FakeCatalogScenario,
+    fake_catalog_scenarios,
+)
+from nyan_shop_bot.catalog.models import CatalogResponse, CatalogState, LiveCatalogSupplier
 from nyan_shop_bot.catalog.registry import CatalogRegistry
 
 
@@ -47,6 +52,29 @@ class FakeCallback:
 
     async def answer(self) -> object:
         return object()
+
+
+class LiveFakeCatalogReader(FakeCatalogReader):
+    """Project deterministic fixtures into one source-qualified live envelope."""
+
+    def __init__(self, supplier: LiveCatalogSupplier) -> None:
+        super().__init__(FakeCatalogScenario.FRESH)
+        self.supplier = supplier
+
+    async def read_catalog(self) -> CatalogResponse:
+        response = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+        mode = "khommo-readonly" if self.supplier == "khommo" else "vietshare-readonly"
+        return CatalogResponse(
+            supplier=self.supplier,
+            mode=mode,
+            state=CatalogState.FRESH,
+            freshness=response.freshness,
+            items=tuple(
+                item.model_copy(update={"supplier": self.supplier, "mode": mode})
+                for item in response.items
+            ),
+            error=None,
+        )
 
 
 class RecordingSession(BaseSession):
@@ -97,7 +125,7 @@ def _message(text: str, update_id: int) -> Message:
     ("command", "expected"),
     [
         ("/start", "LOCAL / CHỈ ĐỌC"),
-        ("/catalog", "DANH MỤC — MOCK / CHỈ ĐỌC"),
+        ("/catalog", "DANH MỤC — NYAN SHOP / CHỈ ĐỌC"),
         ("/orders", "Checkout và đơn hàng thật hiện không khả dụng"),
         ("/support", "HỖ TRỢ TĨNH / NGOẠI TUYẾN"),
     ],
@@ -141,12 +169,12 @@ async def test_aiogram_dispatches_callback_and_uses_current_reader_data() -> Non
     assert "BÁO GIÁ MÔ PHỎNG — MOCK / CHỈ ĐỌC" in sent[0].text
 
 
-async def test_aiogram_multi_source_catalog_starts_with_an_explicit_source_menu() -> None:
+async def test_aiogram_multi_source_catalog_defaults_to_white_label_aggregate() -> None:
     dispatcher = build_dispatcher(
         CatalogRegistry(
             {
-                "khommo": FakeCatalogReader(FakeCatalogScenario.FRESH),
-                "vietshare": FakeCatalogReader(FakeCatalogScenario.FRESH),
+                "khommo": LiveFakeCatalogReader("khommo"),
+                "vietshare": LiveFakeCatalogReader("vietshare"),
             }
         )
     )
@@ -160,13 +188,18 @@ async def test_aiogram_multi_source_catalog_starts_with_an_explicit_source_menu(
 
     sent = [request for request in session.requests if isinstance(request, SendMessage)]
     assert len(sent) == 1
-    assert "CHỌN NGUỒN DANH MỤC — CHỈ ĐỌC" in sent[0].text
+    assert "DANH MỤC — NYAN SHOP / CHỈ ĐỌC" in sent[0].text
+    assert "CHỌN NGUỒN" not in sent[0].text
+    assert "khommo" not in sent[0].text.casefold()
+    assert "vietshare" not in sent[0].text.casefold()
     assert sent[0].reply_markup is not None
-    assert [row[0].text for row in sent[0].reply_markup.inline_keyboard] == [
-        "Tất cả nguồn · CHỈ ĐỌC",
-        "KhoMMO · CHỈ ĐỌC",
-        "VietShare · CHỈ ĐỌC",
-    ]
+    buttons = [row[0] for row in sent[0].reply_markup.inline_keyboard]
+    assert {decode_callback(button.callback_data).source for button in buttons} == {
+        "khommo",
+        "vietshare",
+    }
+    assert all("khommo" not in button.text.casefold() for button in buttons)
+    assert all("vietshare" not in button.text.casefold() for button in buttons)
 
 
 async def test_aiogram_single_live_catalog_also_binds_callbacks_to_its_source() -> None:
@@ -183,6 +216,8 @@ async def test_aiogram_single_live_catalog_also_binds_callbacks_to_its_source() 
 
     sent = [request for request in session.requests if isinstance(request, SendMessage)]
     assert len(sent) == 1
+    assert "DANH MỤC — NYAN SHOP / CHỈ ĐỌC" in sent[0].text
+    assert "khommo" not in sent[0].text.casefold()
     assert sent[0].reply_markup is not None
     first_callback = sent[0].reply_markup.inline_keyboard[0][0].callback_data
     assert decode_callback(first_callback).source == "khommo"
