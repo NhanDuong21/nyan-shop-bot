@@ -89,9 +89,13 @@ def _catalog_access_or_default(
 
 
 def _normalized_display(value: str) -> str:
-    visible = "".join(
-        " " if unicodedata.category(character).startswith("C") else character for character in value
-    )
+    visible_parts: list[str] = []
+    for character in value:
+        category = unicodedata.category(character)
+        if category == "Cf":
+            continue
+        visible_parts.append(" " if category.startswith("C") else character)
+    visible = "".join(visible_parts)
     return " ".join(visible.split())
 
 

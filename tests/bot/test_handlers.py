@@ -391,25 +391,38 @@ async def test_aggregate_catalog_keeps_duplicate_ids_bound_to_their_original_sou
     _assert_seller_facing(quote_message.text)
 
 
-async def test_seller_brand_redaction_handles_concatenated_and_format_characters() -> None:
+@pytest.mark.parametrize(
+    ("brand", "split_index"),
+    [
+        (brand, split_index)
+        for brand in ("KhoMMO", "VietShare")
+        for split_index in range(1, len(brand))
+    ],
+)
+async def test_seller_brand_redaction_handles_format_character_at_every_position(
+    brand: str,
+    split_index: int,
+) -> None:
     fresh = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
     base_product = _product()
+    source = "khommo" if brand == "KhoMMO" else "vietshare"
+    branded_value = f"{brand[:split_index]}\u200b{brand[split_index:]}Pro"
     product = base_product.model_copy(
         update={
-            "name": "VietSharePro",
-            "description": "Kho\u200bMMOVIP service",
-            "supplier": "vietshare",
-            "mode": "vietshare-readonly",
+            "name": branded_value,
+            "description": f"{branded_value} service",
+            "supplier": source,
+            "mode": f"{source}-readonly",
             "variants": (
-                base_product.variants[0].model_copy(update={"name": "Viet\u200bShareVIP"}),
-                base_product.variants[1].model_copy(update={"name": "KhoMMOPlus"}),
+                base_product.variants[0].model_copy(update={"name": branded_value}),
+                base_product.variants[1],
             ),
         }
     )
     reader = StubCatalogReader(
         catalog_response=CatalogResponse(
-            supplier="vietshare",
-            mode="vietshare-readonly",
+            supplier=source,
+            mode=f"{source}-readonly",
             state=CatalogState.FRESH,
             freshness=fresh.freshness,
             items=(product,),
@@ -417,14 +430,14 @@ async def test_seller_brand_redaction_handles_concatenated_and_format_characters
         ),
         details={product.id: CatalogDetailFound(state="found", item=product)},
     )
-    catalogs = CatalogRegistry({"vietshare": reader})
+    catalogs = CatalogRegistry({source: reader})
     catalog_message = FakeMessage()
 
-    await catalog_handler(catalog_message, reader, source="vietshare")
+    await catalog_handler(catalog_message, reader, source=source)
 
     assert catalog_message.markup is not None
     detail_button = catalog_message.markup.inline_keyboard[0][0]
-    assert decode_callback(detail_button.callback_data).source == "vietshare"
+    assert decode_callback(detail_button.callback_data).source == source
     _assert_seller_facing(catalog_message.text, detail_button.text)
     assert "Nyan ShopPro" in detail_button.text
 
@@ -433,9 +446,9 @@ async def test_seller_brand_redaction_handles_concatenated_and_format_characters
 
     assert detail_message.markup is not None
     quote_button = detail_message.markup.inline_keyboard[0][0]
-    assert decode_callback(quote_button.callback_data).source == "vietshare"
+    assert decode_callback(quote_button.callback_data).source == source
     _assert_seller_facing(detail_message.text, quote_button.text)
-    assert "Nyan ShopVIP" in detail_message.text
+    assert "Nyan ShopPro" in detail_message.text
 
     quote_message = FakeMessage()
     await callback_handler(FakeCallback(quote_button.callback_data, quote_message), catalogs)
