@@ -43,7 +43,7 @@ export function CatalogCuration({
 
   if (state.kind === "loading") {
     return (
-      <main className="catalog-curation" id="catalog-curation-content">
+      <main className="catalog-curation" id="catalog-content">
         <div className="curation-state-panel" role="status">
           <strong>Đang tải không gian quản trị catalog…</strong>
           <span>Đang đồng bộ danh mục nguồn và cấu hình Nyan Shop.</span>
@@ -54,7 +54,7 @@ export function CatalogCuration({
 
   if (state.kind === "error") {
     return (
-      <main className="catalog-curation" id="catalog-curation-content">
+      <main className="catalog-curation" id="catalog-content">
         <section className="curation-state-panel curation-state-panel-error" role="alert">
           <strong>Không đọc được danh mục quản trị</strong>
           <span>{state.message}</span>
@@ -68,7 +68,7 @@ export function CatalogCuration({
 
   if (state.kind === "empty") {
     return (
-      <main className="catalog-curation" id="catalog-curation-content">
+      <main className="catalog-curation" id="catalog-content">
         <div className="curation-state-panel" role="status">
           <strong>Chưa có sản phẩm nguồn nào để cấu hình.</strong>
           <span>Không tìm thấy đề nghị nào từ các nguồn supplier để biên tập catalog.</span>
@@ -103,7 +103,7 @@ export function CatalogCuration({
   });
 
   return (
-    <main className="catalog-curation" id="catalog-curation-content">
+    <main className="catalog-curation" id="catalog-content">
       {/* Workspace Header */}
       <header className="curation-header">
         <div className="curation-header-title">
@@ -151,11 +151,11 @@ export function CatalogCuration({
               type="button"
               className="curation-btn curation-btn-primary"
               onClick={onSave}
-              disabled={isSaving || !isDirty}
+              disabled={isSaving || (!isDirty && !isSaveError)}
               aria-busy={isSaving}
-              aria-label="Lưu các thay đổi biên tập catalog"
+              aria-label={isSaveError ? "Thử lưu lại thay đổi biên tập" : "Lưu các thay đổi biên tập catalog"}
             >
-              {isSaving ? "Đang lưu…" : "Lưu thay đổi"}
+              {isSaving ? "Đang lưu…" : isSaveError ? "Thử lưu lại" : "Lưu thay đổi"}
             </button>
           </div>
         </div>
