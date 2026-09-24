@@ -3,10 +3,12 @@
 import asyncio
 import json
 import os
+import re
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from nyan_shop_bot.catalog.curation.models import (
     CatalogCurationDocument,
@@ -19,6 +21,8 @@ from nyan_shop_bot.catalog.curation.ports import (
 )
 from nyan_shop_bot.catalog.curation.repository import PostgresCatalogCurationRepository
 from nyan_shop_bot.catalog.models import Money
+
+_TEST_SCHEMA_PATTERN = re.compile(r"^nyan_test_catalog_[0-9a-f]{32}$")
 
 
 def listing() -> CatalogCurationListing:
@@ -132,18 +136,44 @@ async def test_same_revision_race_allows_exactly_one_postgres_commit() -> None:
         "DATABASE_URL",
         "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot",
     )
-    engine = create_async_engine(database_url, hide_parameters=True)
+    schema_name = f"nyan_test_catalog_{uuid4().hex}"
+    if _TEST_SCHEMA_PATTERN.fullmatch(schema_name) is None:
+        raise AssertionError("refusing to create an unguarded integration-test schema")
+    quoted_schema = f'"{schema_name}"'
+    admin_engine = create_async_engine(database_url, hide_parameters=True)
+    isolated_engine: AsyncEngine | None = None
+    schema_created = False
     try:
-        async with engine.begin() as connection:
+        async with admin_engine.begin() as connection:
+            await connection.execute(text(f"CREATE SCHEMA {quoted_schema}"))
             await connection.execute(
-                text("DELETE FROM catalog_curation_documents WHERE id = 'seller-catalog'")
+                text(
+                    f"""
+                    CREATE TABLE {quoted_schema}.catalog_curation_documents (
+                        id VARCHAR(32) PRIMARY KEY,
+                        revision BIGINT NOT NULL,
+                        payload JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
             )
-        repository = PostgresCatalogCurationRepository(engine)
+        schema_created = True
+        isolated_engine = create_async_engine(
+            database_url,
+            hide_parameters=True,
+            connect_args={"server_settings": {"search_path": schema_name}},
+        )
+        repository = PostgresCatalogCurationRepository(isolated_engine)
         assert (await repository.save(expected_revision=0, listings=(listing(),))).revision == 1
 
         left = listing().model_copy(update={"name": "Concurrent left"})
         right = listing().model_copy(update={"name": "Concurrent right"})
-        async with engine.connect() as left_connection, engine.connect() as right_connection:
+        async with (
+            isolated_engine.connect() as left_connection,
+            isolated_engine.connect() as right_connection,
+        ):
             results = await asyncio.gather(
                 save_in_transaction(
                     left_connection,
@@ -164,8 +194,11 @@ async def test_same_revision_race_allows_exactly_one_postgres_commit() -> None:
         assert stored.revision == 2
         assert stored.listings[0].name in {left.name, right.name}
     finally:
-        async with engine.begin() as connection:
-            await connection.execute(
-                text("DELETE FROM catalog_curation_documents WHERE id = 'seller-catalog'")
-            )
-        await engine.dispose()
+        if isolated_engine is not None:
+            await isolated_engine.dispose()
+        if schema_created:
+            if _TEST_SCHEMA_PATTERN.fullmatch(schema_name) is None:
+                raise AssertionError("refusing to drop an unguarded integration-test schema")
+            async with admin_engine.begin() as connection:
+                await connection.execute(text(f"DROP SCHEMA {quoted_schema} CASCADE"))
+        await admin_engine.dispose()
