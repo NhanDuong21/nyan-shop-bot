@@ -211,6 +211,324 @@
         "title": "CapabilityStatus",
         "type": "string"
       },
+      "CatalogCurationListingInput": {
+        "additionalProperties": false,
+        "description": "Admin API listing shape using reversible offer keys.",
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "maxLength": 96,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "description": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9._-]*$",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "offer_keys": {
+            "items": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Offer Keys",
+            "type": "array"
+          },
+          "retail_price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort_order": {
+            "minimum": 0.0,
+            "title": "Sort Order",
+            "type": "integer"
+          },
+          "visible": {
+            "title": "Visible",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "category",
+          "visible",
+          "sort_order",
+          "retail_price",
+          "offer_keys"
+        ],
+        "title": "CatalogCurationListingInput",
+        "type": "object"
+      },
+      "CatalogCurationListingView": {
+        "additionalProperties": false,
+        "description": "Canonical listing projected for the admin UI.",
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "maxLength": 96,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "description": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9._-]*$",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "offer_keys": {
+            "items": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Offer Keys",
+            "type": "array"
+          },
+          "retail_price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort_order": {
+            "minimum": 0.0,
+            "title": "Sort Order",
+            "type": "integer"
+          },
+          "visible": {
+            "title": "Visible",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "category",
+          "visible",
+          "sort_order",
+          "retail_price",
+          "offer_keys"
+        ],
+        "title": "CatalogCurationListingView",
+        "type": "object"
+      },
+      "CatalogCurationOffer": {
+        "additionalProperties": false,
+        "description": "Sanitized read-only candidate exposed only to local admin.",
+        "properties": {
+          "assigned_listing_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[a-z0-9][a-z0-9._-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigned Listing Id"
+          },
+          "available_quantity": {
+            "minimum": 0.0,
+            "title": "Available Quantity",
+            "type": "integer"
+          },
+          "description": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "key": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "price": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "read_only": {
+            "const": true,
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "supplier": {
+            "enum": [
+              "khommo",
+              "vietshare"
+            ],
+            "title": "Supplier",
+            "type": "string"
+          },
+          "supplier_product_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Supplier Product Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "supplier",
+          "supplier_product_id",
+          "name",
+          "description",
+          "price",
+          "available_quantity",
+          "assigned_listing_id"
+        ],
+        "title": "CatalogCurationOffer",
+        "type": "object"
+      },
+      "CatalogCurationSaveRequest": {
+        "additionalProperties": false,
+        "description": "Complete optimistic replacement request.",
+        "properties": {
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "listings": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogCurationListingInput"
+            },
+            "maxItems": 500,
+            "title": "Listings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "listings"
+        ],
+        "title": "CatalogCurationSaveRequest",
+        "type": "object"
+      },
+      "CatalogCurationWorkspace": {
+        "additionalProperties": false,
+        "description": "Complete local admin state without credentials or delivery data.",
+        "properties": {
+          "listings": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogCurationListingView"
+            },
+            "title": "Listings",
+            "type": "array"
+          },
+          "offers": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogCurationOffer"
+            },
+            "title": "Offers",
+            "type": "array"
+          },
+          "read_only": {
+            "const": true,
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "source_partial": {
+            "title": "Source Partial",
+            "type": "boolean"
+          },
+          "supplier_writes_enabled": {
+            "const": false,
+            "default": false,
+            "title": "Supplier Writes Enabled",
+            "type": "boolean"
+          },
+          "unresolved_offer_count": {
+            "minimum": 0.0,
+            "title": "Unresolved Offer Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "offers",
+          "listings",
+          "unresolved_offer_count",
+          "source_partial"
+        ],
+        "title": "CatalogCurationWorkspace",
+        "type": "object"
+      },
       "CatalogDetailFound": {
         "additionalProperties": false,
         "description": "A supported catalog detail read that found a product.",
@@ -889,6 +1207,66 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/admin/catalog-curation": {
+      "get": {
+        "operationId": "get_workspace_api_v1_admin_catalog_curation_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogCurationWorkspace"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Workspace",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "save_workspace_api_v1_admin_catalog_curation_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogCurationSaveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogCurationWorkspace"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Workspace",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/v1/capabilities": {
       "get": {
         "operationId": "capabilities_api_v1_capabilities_get",

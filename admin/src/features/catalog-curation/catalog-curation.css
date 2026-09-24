@@ -1,0 +1,5 @@
+.catalog-curation {
+  width: min(76rem, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 2rem 0 4rem;
+}
