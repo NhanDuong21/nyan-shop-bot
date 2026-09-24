@@ -499,6 +499,12 @@
   text-align: center;
 }
 
+.curation-listing-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .curation-toggle-label {
   display: inline-flex;
   align-items: center;
@@ -515,6 +521,26 @@
   min-height: auto;
   accent-color: var(--color-accent);
   cursor: pointer;
+}
+
+.curation-btn-delete {
+  display: inline-flex;
+  align-items: center;
+  min-height: auto;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  background: var(--color-surface);
+  color: var(--color-danger);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.curation-btn-delete:hover:not(:disabled) {
+  border-color: var(--color-danger);
+  background: var(--color-danger-surface);
 }
 
 /* Form Grid */

@@ -34,6 +34,7 @@ export function CatalogCuration({
   onAssignOffer,
   onUpdateListing,
   onMoveListing,
+  onDeleteListing,
   onSave,
   onReset,
 }: CatalogCurationProps) {
@@ -76,7 +77,7 @@ export function CatalogCuration({
     );
   }
 
-  const { offers, listings, save } = state;
+  const { offers, listings, save, sourcePartial, unresolvedOfferCount } = state;
   const isSaving = save.kind === "saving";
   const isDirty = save.kind === "dirty";
   const isConflict = save.kind === "conflict";
@@ -159,6 +160,24 @@ export function CatalogCuration({
           </div>
         </div>
       </header>
+
+      {/* Incomplete supplier evidence warning banner */}
+      {(sourcePartial || unresolvedOfferCount > 0) && (
+        <section
+          className="curation-state-panel curation-state-panel-warning"
+          role="status"
+          aria-label="Cảnh báo nguồn cung chưa đầy đủ"
+        >
+          <strong>Dữ liệu nguồn cung chưa đầy đủ</strong>
+          <span>
+            {sourcePartial && unresolvedOfferCount > 0
+              ? `Một số nguồn supplier chỉ phản hồi một phần và có ${unresolvedOfferCount} đề nghị chưa được đối soát. Bạn đang xem dữ liệu bằng chứng chưa hoàn chỉnh; không được tự suy đoán hoặc gán liên kết cho các sản phẩm bị thiếu.`
+              : sourcePartial
+                ? "Dữ liệu catalog nguồn chỉ tải được một phần từ nhà cung cấp. Bạn đang xem bằng chứng chưa hoàn chỉnh; không được tự suy đoán hoặc gán liên kết cho các sản phẩm bị thiếu."
+                : `Có ${unresolvedOfferCount} đề nghị từ nguồn chưa được đối soát. Bạn đang xem dữ liệu bằng chứng chưa hoàn chỉnh; không được tự suy đoán hoặc gán liên kết cho các sản phẩm bị thiếu.`}
+          </span>
+        </section>
+      )}
 
       {/* Save conflict or error alert banner */}
       {isConflict && (
@@ -351,6 +370,7 @@ export function CatalogCuration({
                     isSaving={isSaving}
                     onUpdateListing={onUpdateListing}
                     onMoveListing={onMoveListing}
+                    onDeleteListing={onDeleteListing}
                     onAssignOffer={onAssignOffer}
                   />
                 );
@@ -371,6 +391,7 @@ interface ListingEditorItemProps {
   isSaving: boolean;
   onUpdateListing: (listingId: string, patch: CatalogCurationListingPatch) => void;
   onMoveListing: (listingId: string, direction: "up" | "down") => void;
+  onDeleteListing: (listingId: string) => void;
   onAssignOffer: (offerKey: string, listingId: string | null) => void;
 }
 
@@ -382,6 +403,7 @@ function ListingEditorItem({
   isSaving,
   onUpdateListing,
   onMoveListing,
+  onDeleteListing,
   onAssignOffer,
 }: ListingEditorItemProps) {
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -397,11 +419,11 @@ function ListingEditorItem({
       onUpdateListing(listing.id, { retailPrice: null });
       return;
     }
-    const parsed = parseInt(rawVal, 10);
-    if (!isNaN(parsed) && parsed >= 0) {
+    const num = Number(rawVal);
+    if (Number.isSafeInteger(num) && num >= 0) {
       onUpdateListing(listing.id, {
         retailPrice: {
-          amount_minor: parsed,
+          amount_minor: num,
           currency: "VND",
           unit: "minor",
         },
@@ -452,8 +474,18 @@ function ListingEditorItem({
               disabled={isSaving}
               onChange={(e) => onUpdateListing(listing.id, { visible: e.target.checked })}
             />
-            <span>{listing.visible ? "Đang hiển thị" : "Tạm ẩn"}</span>
+            <span>{listing.visible ? "Đang hiển thị" : "Đang ẩn"}</span>
           </label>
+          <button
+            type="button"
+            className="curation-btn-delete"
+            onClick={() => onDeleteListing(listing.id)}
+            disabled={isSaving}
+            aria-label={`Xóa mục hàng "${listing.name || "Chưa đặt tên"}"`}
+            title="Xóa mục hàng khỏi bản nháp"
+          >
+            Xóa mục
+          </button>
         </div>
       </div>
 
@@ -505,7 +537,7 @@ function ListingEditorItem({
             id={priceInputId}
             type="number"
             min="0"
-            step="1000"
+            step="1"
             value={listing.retailPrice ? listing.retailPrice.amount_minor : ""}
             disabled={isSaving}
             onChange={handlePriceChange}
@@ -568,7 +600,7 @@ function ListingEditorItem({
           >
             <span>Xem trước giao diện khách hàng</span>
             <span className="curation-preview-arrow" aria-hidden="true">
-              {isPreviewOpen ? "▲ Thu gọn" : "▼ Mở xem"}
+              {isPreviewOpen ? "Thu gọn" : "Mở xem"}
             </span>
           </button>
         </div>
@@ -591,7 +623,7 @@ function ListingEditorItem({
                     : "curation-preview-status-hidden"
                 }`}
               >
-                {listing.visible ? "Đang mở bán" : "Đã tạm dừng"}
+                {listing.visible ? "Đang hiển thị" : "Đang ẩn"}
               </span>
             </div>
 
@@ -612,8 +644,8 @@ function ListingEditorItem({
 
             <div className="curation-preview-safety-footer">
               <small>
-                ✓ Xem trước được bảo vệ: Tuyệt đối không hiển thị tên nhà cung ứng, mã nguồn
-                hay thông tin kho thô cho khách.
+                Xem trước chỉ mang tính chất hiển thị: Không hiển thị thông tin nhà cung ứng,
+                mã nguồn, giá gốc hay tồn kho cho khách hàng. Không thực hiện mua bán trên giao diện này.
               </small>
             </div>
           </div>
