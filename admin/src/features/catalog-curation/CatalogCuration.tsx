@@ -14,6 +14,8 @@ const integerFormatter = new Intl.NumberFormat("vi-VN", {
   maximumFractionDigits: 0,
 });
 
+const SOURCE_OFFERS_PER_PAGE = 10;
+
 function formatMinorMoney(money: Money | null | undefined): string {
   if (!money) {
     return "Chưa đặt giá";
@@ -39,6 +41,7 @@ export function CatalogCuration({
   onReset,
 }: CatalogCurationProps) {
   const [filterQuery, setFilterQuery] = useState("");
+  const [candidatePage, setCandidatePage] = useState(1);
   const searchInputId = useId();
 
   if (state.kind === "loading") {
@@ -101,6 +104,17 @@ export function CatalogCuration({
       o.supplierProductId.toLocaleLowerCase("vi-VN").includes(query)
     );
   });
+  const candidatePageCount = Math.max(
+    1,
+    Math.ceil(filteredCandidates.length / SOURCE_OFFERS_PER_PAGE),
+  );
+  const visibleCandidatePage = Math.min(candidatePage, candidatePageCount);
+  const candidateStart = (visibleCandidatePage - 1) * SOURCE_OFFERS_PER_PAGE;
+  const candidateEnd = Math.min(
+    candidateStart + SOURCE_OFFERS_PER_PAGE,
+    filteredCandidates.length,
+  );
+  const visibleCandidates = filteredCandidates.slice(candidateStart, candidateEnd);
 
   return (
     <main className="catalog-curation" id="catalog-content">
@@ -220,11 +234,44 @@ export function CatalogCuration({
               id={searchInputId}
               type="search"
               value={filterQuery}
-              onChange={(e) => setFilterQuery(e.target.value)}
+              onChange={(e) => {
+                setFilterQuery(e.target.value);
+                setCandidatePage(1);
+              }}
               placeholder="Tìm theo tên, mã hoặc nguồn..."
               disabled={isSaving}
             />
           </div>
+
+          {filteredCandidates.length > 0 && (
+            <nav className="curation-pagination" aria-label="Phân trang sản phẩm nguồn">
+              <span className="curation-pagination-status" aria-live="polite">
+                Hiển thị {candidateStart + 1}–{candidateEnd} / {filteredCandidates.length} · Trang {visibleCandidatePage} / {candidatePageCount}
+              </span>
+              <div className="curation-pagination-actions">
+                <button
+                  type="button"
+                  className="curation-btn curation-btn-secondary"
+                  onClick={() => setCandidatePage(Math.max(1, visibleCandidatePage - 1))}
+                  disabled={isSaving || visibleCandidatePage === 1}
+                  aria-label="Trang sản phẩm nguồn trước"
+                >
+                  Trước
+                </button>
+                <button
+                  type="button"
+                  className="curation-btn curation-btn-secondary"
+                  onClick={() =>
+                    setCandidatePage(Math.min(candidatePageCount, visibleCandidatePage + 1))
+                  }
+                  disabled={isSaving || visibleCandidatePage === candidatePageCount}
+                  aria-label="Trang sản phẩm nguồn sau"
+                >
+                  Sau
+                </button>
+              </div>
+            </nav>
+          )}
 
           {unassignedOffers.length === 0 ? (
             <div className="curation-empty-box" role="status">
@@ -250,7 +297,7 @@ export function CatalogCuration({
             </div>
           ) : (
             <div className="curation-offers-list" role="list" aria-label="Danh sách sản phẩm nguồn">
-              {filteredCandidates.map((offer) => {
+              {visibleCandidates.map((offer) => {
                 return (
                   <article
                     key={offer.key}

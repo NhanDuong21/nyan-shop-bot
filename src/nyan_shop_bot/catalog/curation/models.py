@@ -55,6 +55,18 @@ def _validate_display_text(value: str) -> str:
     return value
 
 
+def _validate_multiline_text(value: str) -> str:
+    """Allow owner-authored LF line breaks while rejecting other controls."""
+
+    if value != value.strip():
+        raise ValueError("text cannot contain leading or trailing whitespace")
+    if unicodedata.normalize("NFC", value) != value:
+        raise ValueError("text must use Unicode NFC normalization")
+    if any(character != "\n" and not character.isprintable() for character in value):
+        raise ValueError("text contains an unsupported control character")
+    return value
+
+
 class CatalogCurationOfferRef(CurationModel):
     """One exact read-only supplier product reference."""
 
@@ -82,10 +94,15 @@ class CatalogCurationListing(CurationModel):
         Field(min_length=1, max_length=MAX_OFFERS_PER_LISTING),
     ]
 
-    @field_validator("name", "description")
+    @field_validator("name")
     @classmethod
     def validate_required_text(cls, value: str) -> str:
         return _validate_display_text(value)
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str) -> str:
+        return _validate_multiline_text(value)
 
     @field_validator("category")
     @classmethod
@@ -143,10 +160,15 @@ class CatalogCurationListingInput(CurationModel):
         Field(min_length=1, max_length=MAX_OFFERS_PER_LISTING),
     ]
 
-    @field_validator("name", "description")
+    @field_validator("name")
     @classmethod
     def validate_required_text(cls, value: str) -> str:
         return _validate_display_text(value)
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str) -> str:
+        return _validate_multiline_text(value)
 
     @field_validator("category")
     @classmethod

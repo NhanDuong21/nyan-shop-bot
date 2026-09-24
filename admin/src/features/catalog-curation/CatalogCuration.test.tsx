@@ -166,6 +166,60 @@ describe("CatalogCuration UI feature component", () => {
     ).toHaveValue(syntheticListing1.name);
   });
 
+  test("paginates source offers after filtering and clamps a stale page", () => {
+    const pagedOffers = Array.from({ length: 12 }, (_, index) => {
+      const number = String(index + 1).padStart(2, "0");
+      return {
+        ...syntheticOffer2,
+        key: `vietshare:paged-${number}`,
+        supplierProductId: `PAGE-${number}`,
+        name: `Offer phân trang ${number}`,
+      } satisfies CatalogCurationOffer;
+    });
+    const readyState: CatalogCurationState = {
+      kind: "ready",
+      revision: 1,
+      offers: pagedOffers,
+      listings: [],
+      sourcePartial: false,
+      unresolvedOfferCount: 0,
+      save: { kind: "clean" },
+    };
+    const { rerender } = render(
+      <CatalogCuration {...createMockProps({ state: readyState })} />,
+    );
+
+    expect(screen.getByText("Offer phân trang 01")).toBeInTheDocument();
+    expect(screen.getByText("Offer phân trang 10")).toBeInTheDocument();
+    expect(screen.queryByText("Offer phân trang 11")).not.toBeInTheDocument();
+    expect(screen.getByText("Hiển thị 1–10 / 12 · Trang 1 / 2")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Trang sản phẩm nguồn sau" }));
+
+    expect(screen.queryByText("Offer phân trang 01")).not.toBeInTheDocument();
+    expect(screen.getByText("Offer phân trang 11")).toBeInTheDocument();
+    expect(screen.getByText("Offer phân trang 12")).toBeInTheDocument();
+    expect(screen.getByText("Hiển thị 11–12 / 12 · Trang 2 / 2")).toBeInTheDocument();
+
+    rerender(
+      <CatalogCuration
+        {...createMockProps({ state: { ...readyState, offers: pagedOffers.slice(0, 9) } })}
+      />,
+    );
+
+    expect(screen.getByText("Offer phân trang 01")).toBeInTheDocument();
+    expect(screen.getByText("Hiển thị 1–9 / 9 · Trang 1 / 1")).toBeInTheDocument();
+
+    rerender(<CatalogCuration {...createMockProps({ state: readyState })} />);
+    fireEvent.change(screen.getByLabelText("Lọc sản phẩm nguồn"), {
+      target: { value: "PAGE-12" },
+    });
+
+    expect(screen.getByText("Offer phân trang 12")).toBeInTheDocument();
+    expect(screen.queryByText("Offer phân trang 01")).not.toBeInTheDocument();
+    expect(screen.getByText("Hiển thị 1–1 / 1 · Trang 1 / 1")).toBeInTheDocument();
+  });
+
   test("shows accessible warning banner when sourcePartial is true and missing links must not be guessed", () => {
     const props = createMockProps({
       state: {

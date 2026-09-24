@@ -101,7 +101,7 @@ async def test_write_requires_local_origin_json_and_optimistic_revision() -> Non
                 {
                     "id": "nyan-learning",
                     "name": "Gói học tập Nyan",
-                    "description": "Mô tả do chủ shop biên tập.",
+                    "description": "Mô tả dòng một.\nMô tả dòng hai.",
                     "category": "Học tập",
                     "visible": True,
                     "sort_order": 0,
@@ -138,6 +138,7 @@ async def test_write_requires_local_origin_json_and_optimistic_revision() -> Non
     assert wrong_type.status_code == 403
     assert saved.status_code == 200
     assert saved.json()["revision"] == 1
+    assert saved.json()["listings"][0]["description"] == "Mô tả dòng một.\nMô tả dòng hai."
     assert stale.status_code == 409
     assert "reload" in stale.json()["detail"]
 

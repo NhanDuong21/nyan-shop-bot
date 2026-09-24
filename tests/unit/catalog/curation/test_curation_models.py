@@ -14,6 +14,7 @@ from nyan_shop_bot.catalog.models import Money
 def listing(
     identifier: str = "nyan-learning",
     *,
+    description: str = "Mô tả do chủ shop biên tập.",
     supplier: str = "khommo",
     product_id: str = "source-learning",
     sort_order: int = 0,
@@ -23,7 +24,7 @@ def listing(
     return CatalogCurationListing(
         id=identifier,
         name="Gói học tập Nyan",
-        description="Mô tả do chủ shop biên tập.",
+        description=description,
         category="Học tập",
         visible=visible,
         sort_order=sort_order,
@@ -102,3 +103,13 @@ def test_owner_authored_display_text_fails_closed(invalid: str) -> None:
                 ),
             ),
         )
+
+
+def test_owner_authored_description_allows_lf_but_rejects_other_controls() -> None:
+    value = listing(description="Dòng mô tả thứ nhất.\nDòng mô tả thứ hai.")
+
+    assert value.description == "Dòng mô tả thứ nhất.\nDòng mô tả thứ hai."
+
+    for invalid in ("Có tab\tkhông hợp lệ.", "Có carriage return\rkhông hợp lệ."):
+        with pytest.raises(ValidationError, match="unsupported control character"):
+            listing(description=invalid)
