@@ -1,5 +1,6 @@
 """Offline handler coverage for every catalog and simulated-quote outcome."""
 
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -79,7 +80,7 @@ class FakeCallback:
 
 
 def _assert_seller_facing(*values: str) -> None:
-    rendered = " ".join(values).casefold()
+    rendered = re.sub(r"[\W_]+", "", " ".join(values).casefold())
     assert "khommo" not in rendered
     assert "vietshare" not in rendered
 
@@ -388,6 +389,59 @@ async def test_aggregate_catalog_keeps_duplicate_ids_bound_to_their_original_sou
 
     assert "THÔNG TIN GIÁ — NYAN SHOP / CHỈ ĐỌC" in quote_message.text
     _assert_seller_facing(quote_message.text)
+
+
+async def test_seller_brand_redaction_handles_concatenated_and_format_characters() -> None:
+    fresh = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
+    base_product = _product()
+    product = base_product.model_copy(
+        update={
+            "name": "VietSharePro",
+            "description": "Kho\u200bMMOVIP service",
+            "supplier": "vietshare",
+            "mode": "vietshare-readonly",
+            "variants": (
+                base_product.variants[0].model_copy(update={"name": "Viet\u200bShareVIP"}),
+                base_product.variants[1].model_copy(update={"name": "KhoMMOPlus"}),
+            ),
+        }
+    )
+    reader = StubCatalogReader(
+        catalog_response=CatalogResponse(
+            supplier="vietshare",
+            mode="vietshare-readonly",
+            state=CatalogState.FRESH,
+            freshness=fresh.freshness,
+            items=(product,),
+            error=None,
+        ),
+        details={product.id: CatalogDetailFound(state="found", item=product)},
+    )
+    catalogs = CatalogRegistry({"vietshare": reader})
+    catalog_message = FakeMessage()
+
+    await catalog_handler(catalog_message, reader, source="vietshare")
+
+    assert catalog_message.markup is not None
+    detail_button = catalog_message.markup.inline_keyboard[0][0]
+    assert decode_callback(detail_button.callback_data).source == "vietshare"
+    _assert_seller_facing(catalog_message.text, detail_button.text)
+    assert "Nyan ShopPro" in detail_button.text
+
+    detail_message = FakeMessage()
+    await callback_handler(FakeCallback(detail_button.callback_data, detail_message), catalogs)
+
+    assert detail_message.markup is not None
+    quote_button = detail_message.markup.inline_keyboard[0][0]
+    assert decode_callback(quote_button.callback_data).source == "vietshare"
+    _assert_seller_facing(detail_message.text, quote_button.text)
+    assert "Nyan ShopVIP" in detail_message.text
+
+    quote_message = FakeMessage()
+    await callback_handler(FakeCallback(quote_button.callback_data, quote_message), catalogs)
+
+    _assert_seller_facing(quote_message.text)
+    assert "Sản phẩm: Nyan ShopPro" in quote_message.text
 
 
 async def test_aggregate_catalog_reports_a_failed_source_without_leaking_its_exception() -> None:

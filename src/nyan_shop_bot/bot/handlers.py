@@ -46,7 +46,7 @@ MAX_CATALOG_ITEMS: Final = 20
 MAX_DETAIL_VARIANTS: Final = 20
 SELLER_CATALOG_LABEL: Final = "NYAN SHOP / CHỈ ĐỌC"
 _UPSTREAM_BRAND_PATTERN: Final = re.compile(
-    r"\b(?:kho[\s_-]*mmo|viet[\s_-]*share)\b",
+    r"(?:kho[\s._-]*mmo|viet[\s._-]*share)",
     flags=re.IGNORECASE,
 )
 
@@ -88,11 +88,15 @@ def _catalog_access_or_default(
     return _catalog_or_default(catalog)
 
 
-def _bounded_display(value: str, limit: int, *, fallback: str) -> str:
+def _normalized_display(value: str) -> str:
     visible = "".join(
         " " if unicodedata.category(character).startswith("C") else character for character in value
     )
-    visible = " ".join(visible.split())
+    return " ".join(visible.split())
+
+
+def _bounded_display(value: str, limit: int, *, fallback: str) -> str:
+    visible = _normalized_display(value)
     if not visible:
         return fallback
     if len(visible) <= limit:
@@ -102,7 +106,7 @@ def _bounded_display(value: str, limit: int, *, fallback: str) -> str:
 
 def _seller_display(value: str, limit: int, *, fallback: str) -> str:
     """White-label known upstream brands only in customer-visible copy."""
-    branded = _UPSTREAM_BRAND_PATTERN.sub("Nyan Shop", value)
+    branded = _UPSTREAM_BRAND_PATTERN.sub("Nyan Shop", _normalized_display(value))
     return _bounded_display(branded, limit, fallback=fallback)
 
 
