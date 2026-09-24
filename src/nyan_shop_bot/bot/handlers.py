@@ -39,6 +39,15 @@ from nyan_shop_bot.catalog.registry import (
     CatalogSourceSelectionRequired,
     CatalogSourceUnavailable,
 )
+from nyan_shop_bot.catalog.storefront.models import (
+    StorefrontAvailability,
+    StorefrontCatalogResponse,
+    StorefrontCatalogState,
+    StorefrontDetailFound,
+    StorefrontDetailNotFound,
+    StorefrontProduct,
+)
+from nyan_shop_bot.catalog.storefront.ports import StorefrontCatalogReader
 
 MAX_MESSAGE_CHARS: Final = 3_500
 MAX_BUTTON_TEXT_CHARS: Final = 64
@@ -279,6 +288,102 @@ async def catalog_handler(
     )
 
 
+def _storefront_button_text(product: StorefrontProduct) -> str:
+    price = _format_catalog_button_price(product.price)
+    availability = {
+        StorefrontAvailability.IN_STOCK: "Còn hàng",
+        StorefrontAvailability.OUT_OF_STOCK: "Hết hàng",
+        StorefrontAvailability.UNKNOWN: "Đang cập nhật",
+    }[product.availability]
+    suffix = f" · {price} · {availability}"
+    if len(suffix) >= MAX_BUTTON_TEXT_CHARS:
+        return _bounded_display(
+            f"{price} · {availability}",
+            MAX_BUTTON_TEXT_CHARS,
+            fallback="Xem chi tiết",
+        )
+    name = _seller_display(
+        product.name,
+        MAX_BUTTON_TEXT_CHARS - len(suffix),
+        fallback="Sản phẩm",
+    )
+    return f"{name}{suffix}"
+
+
+def _storefront_catalog_lines(response: StorefrontCatalogResponse) -> list[str]:
+    lines = ["DANH MỤC — NYAN SHOP / CHỈ ĐỌC"]
+    if response.state is StorefrontCatalogState.EMPTY:
+        lines.extend(
+            (
+                "Danh mục chưa có sản phẩm Nyan nào được đăng.",
+                "Không có đơn hàng hoặc giao dịch nào được tạo.",
+            )
+        )
+        return lines
+    if response.state is StorefrontCatalogState.PARTIAL:
+        lines.append("⚠ CẢNH BÁO: một phần trạng thái hàng đang được cập nhật.")
+        if response.unresolved_offer_count:
+            lines.append(
+                f"{response.unresolved_offer_count} liên kết hàng chưa có bằng chứng hiện tại; "
+                "bot không suy đoán còn hàng."
+            )
+    else:
+        lines.append("Chọn một sản phẩm để xem thông tin chi tiết.")
+    visible_items = response.items[:MAX_CATALOG_ITEMS]
+    if len(response.items) > len(visible_items):
+        lines.append(f"Chỉ hiển thị {len(visible_items)} sản phẩm đầu tiên trong menu này.")
+    lines.append(
+        "Giá là giá bán Nyan bằng VND; trạng thái hàng chỉ là dữ liệu đọc hiện tại và "
+        "không cấp quyền mua."
+    )
+    return lines
+
+
+def _storefront_catalog_keyboard(
+    response: StorefrontCatalogResponse,
+) -> InlineKeyboardMarkup | None:
+    if response.state is StorefrontCatalogState.EMPTY:
+        return None
+    rows: list[list[InlineKeyboardButton]] = []
+    for product in response.items[:MAX_CATALOG_ITEMS]:
+        try:
+            callback_data = encode_detail_callback(product.id)
+        except CallbackCodecError:
+            continue
+        style = {
+            StorefrontAvailability.IN_STOCK: "success",
+            StorefrontAvailability.OUT_OF_STOCK: "danger",
+            StorefrontAvailability.UNKNOWN: "primary",
+        }[product.availability]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=_storefront_button_text(product),
+                    callback_data=callback_data,
+                    style=style,
+                )
+            ]
+        )
+    return _keyboard(rows)
+
+
+async def storefront_catalog_handler(
+    message: AnswerableMessage,
+    storefront: StorefrontCatalogReader,
+) -> None:
+    """Render only the persisted customer-safe Nyan projection."""
+    try:
+        response = await storefront.read_storefront()
+    except Exception:
+        await _send(message, (SAFE_CATALOG_ERROR_MESSAGE,))
+        return
+    await _send(
+        message,
+        _storefront_catalog_lines(response),
+        keyboard=_storefront_catalog_keyboard(response),
+    )
+
+
 def _aggregate_catalog_lines(response: AggregateCatalogResponse) -> list[str]:
     title = f"DANH MỤC — {SELLER_CATALOG_LABEL}"
     lines = [title]
@@ -405,6 +510,31 @@ def _detail_lines(product: CatalogProduct) -> list[str]:
             f"Chỉ hiển thị {len(visible_variants)} biến thể đầu tiên để giữ tin nhắn an toàn."
         )
     lines.append("Thông tin này không tạo đơn, không giữ chỗ và không cam kết còn hàng.")
+    return lines
+
+
+def _storefront_detail_lines(product: StorefrontProduct) -> list[str]:
+    availability = {
+        StorefrontAvailability.IN_STOCK: "Còn hàng",
+        StorefrontAvailability.OUT_OF_STOCK: "Hết hàng",
+        StorefrontAvailability.UNKNOWN: "Đang cập nhật",
+    }[product.availability]
+    lines = [
+        "CHI TIẾT SẢN PHẨM — NYAN SHOP / CHỈ ĐỌC",
+        f"Tên: {_seller_display(product.name, 120, fallback='Sản phẩm không có tên hiển thị')}",
+        f"Mô tả: {_seller_display(product.description, 500, fallback='Không có mô tả hiển thị')}",
+    ]
+    if product.category is not None:
+        lines.append(
+            f"Danh mục: {_seller_display(product.category, 96, fallback='Chưa phân loại')}"
+        )
+    lines.extend(
+        (
+            f"Giá bán: {_format_catalog_button_price(product.price)}",
+            f"Tình trạng: {availability}",
+            "Thông tin này không tạo đơn, không giữ chỗ và không cam kết còn hàng.",
+        )
+    )
     return lines
 
 
@@ -614,12 +744,64 @@ async def callback_handler(
     await _handle_quote_callback(message, reader, payload.product_id, payload.variant_id)
 
 
-def build_router(catalog: CatalogReader | CatalogRegistry | None = None) -> Router:
+async def storefront_callback_handler(
+    callback: AnswerableCallbackQuery,
+    storefront: StorefrontCatalogReader,
+) -> None:
+    """Resolve a Nyan detail callback without accepting source or quote actions."""
+    await callback.answer()
+    message = callback.message
+    if message is None:
+        return
+    try:
+        payload = decode_callback(callback.data)
+    except CallbackCodecError:
+        await _send(message, (SAFE_REFRESH_MESSAGE,))
+        return
+    if (
+        payload.action is not CallbackAction.DETAIL
+        or payload.source is not None
+        or payload.product_id is None
+    ):
+        await _send(message, (SAFE_REFRESH_MESSAGE,))
+        return
+    try:
+        response = await storefront.get_storefront_product(payload.product_id)
+    except Exception:
+        await _send(message, (SAFE_REFRESH_MESSAGE,))
+        return
+    if isinstance(response, StorefrontDetailFound):
+        if response.item.id != payload.product_id:
+            await _send(message, (SAFE_REFRESH_MESSAGE,))
+            return
+        await _send(message, _storefront_detail_lines(response.item))
+        return
+    if isinstance(response, StorefrontDetailNotFound):
+        await _send(
+            message,
+            (
+                "Sản phẩm này không còn trong danh mục Nyan hiện tại. "
+                "Vui lòng dùng /catalog để làm mới; không có thao tác nào được tạo.",
+            ),
+        )
+        return
+    await _send(message, (SAFE_REFRESH_MESSAGE,))
+
+
+def build_router(
+    catalog: CatalogReader | CatalogRegistry | None = None,
+    *,
+    storefront: StorefrontCatalogReader | None = None,
+) -> Router:
     """Build handlers around an injected read-only catalog, without a Bot or token."""
-    access = _catalog_access_or_default(catalog)
+    access = None if storefront is not None else _catalog_access_or_default(catalog)
     router = Router(name="foundation")
 
     async def injected_catalog_handler(message: AnswerableMessage) -> None:
+        if storefront is not None:
+            await storefront_catalog_handler(message, storefront)
+            return
+        assert access is not None
         if isinstance(access, CatalogRegistry):
             if access.aggregate_available:
                 await aggregate_catalog_handler(message, access)
@@ -637,6 +819,10 @@ def build_router(catalog: CatalogReader | CatalogRegistry | None = None) -> Rout
         await catalog_handler(message, access)
 
     async def injected_callback_handler(callback: AnswerableCallbackQuery) -> None:
+        if storefront is not None:
+            await storefront_callback_handler(callback, storefront)
+            return
+        assert access is not None
         await callback_handler(callback, access)
 
     router.message(CommandStart())(start_handler)
@@ -647,8 +833,12 @@ def build_router(catalog: CatalogReader | CatalogRegistry | None = None) -> Rout
     return router
 
 
-def build_dispatcher(catalog: CatalogReader | CatalogRegistry | None = None) -> Dispatcher:
+def build_dispatcher(
+    catalog: CatalogReader | CatalogRegistry | None = None,
+    *,
+    storefront: StorefrontCatalogReader | None = None,
+) -> Dispatcher:
     """Build a dispatcher only; never read a token or start polling/webhooks."""
     dispatcher = Dispatcher()
-    dispatcher.include_router(build_router(catalog))
+    dispatcher.include_router(build_router(catalog, storefront=storefront))
     return dispatcher

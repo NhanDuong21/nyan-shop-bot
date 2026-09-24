@@ -76,6 +76,8 @@ async def test_repository_insert_update_and_revision_conflict_are_atomic() -> No
                 first = await repository.save(expected_revision=0, listings=(listing(),))
                 assert first.revision == 1
                 assert (await repository.load()) == first
+                restarted_repository = PostgresCatalogCurationRepository(connection)
+                assert (await restarted_repository.load()) == first
 
                 second = await repository.save(
                     expected_revision=1,

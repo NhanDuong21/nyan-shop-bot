@@ -14,7 +14,11 @@ from aiogram.client.session.base import BaseSession
 from aiogram.methods import AnswerCallbackQuery, SendMessage, TelegramMethod
 from aiogram.types import CallbackQuery, Chat, Message, MessageEntity, Update, User
 
-from nyan_shop_bot.bot.callbacks import decode_callback, encode_quote_callback
+from nyan_shop_bot.bot.callbacks import (
+    decode_callback,
+    encode_detail_callback,
+    encode_quote_callback,
+)
 from nyan_shop_bot.bot.handlers import (
     build_dispatcher,
     callback_handler,
@@ -28,8 +32,17 @@ from nyan_shop_bot.catalog.mock import (
     FakeCatalogScenario,
     fake_catalog_scenarios,
 )
-from nyan_shop_bot.catalog.models import CatalogResponse, CatalogState, LiveCatalogSupplier
+from nyan_shop_bot.catalog.models import CatalogResponse, CatalogState, LiveCatalogSupplier, Money
 from nyan_shop_bot.catalog.registry import CatalogRegistry
+from nyan_shop_bot.catalog.storefront.models import (
+    StorefrontAvailability,
+    StorefrontCatalogResponse,
+    StorefrontCatalogState,
+    StorefrontDetailFound,
+    StorefrontDetailNotFound,
+    StorefrontDetailResponse,
+    StorefrontProduct,
+)
 
 
 class FakeMessage:
@@ -75,6 +88,33 @@ class LiveFakeCatalogReader(FakeCatalogReader):
             ),
             error=None,
         )
+
+
+class OfflineStorefront:
+    def __init__(self) -> None:
+        self.product = StorefrontProduct(
+            id="nyan-learning",
+            name="Gói học tập Nyan",
+            description="Mô tả do chủ shop biên tập.",
+            category="Học tập",
+            price=Money(amount_minor=125_000, currency="VND", unit="minor"),
+            availability=StorefrontAvailability.IN_STOCK,
+        )
+
+    async def read_storefront(self) -> StorefrontCatalogResponse:
+        return StorefrontCatalogResponse(
+            revision=1,
+            state=StorefrontCatalogState.READY,
+            items=(self.product,),
+            partial=False,
+            unresolved_offer_count=0,
+            source_evidence_partial=False,
+        )
+
+    async def get_storefront_product(self, product_id: str) -> StorefrontDetailResponse:
+        if product_id != self.product.id:
+            return StorefrontDetailNotFound(state="not_found", product_id=product_id)
+        return StorefrontDetailFound(state="found", item=self.product)
 
 
 class RecordingSession(BaseSession):
@@ -167,6 +207,40 @@ async def test_aiogram_dispatches_callback_and_uses_current_reader_data() -> Non
     assert len(sent) == 1
     assert "amount_minor=49000; currency=VND; unit=minor" in sent[0].text
     assert "BÁO GIÁ MÔ PHỎNG — MOCK / CHỈ ĐỌC" in sent[0].text
+
+
+async def test_aiogram_dispatches_storefront_catalog_and_detail_from_one_reader() -> None:
+    storefront = OfflineStorefront()
+    dispatcher = build_dispatcher(storefront=storefront)
+    session = RecordingSession()
+    bot = Bot(token="0:offline", session=session)
+
+    await dispatcher.feed_update(
+        bot,
+        Update(update_id=20, message=_message("/catalog", 20)),
+    )
+    callback = CallbackQuery(
+        id="storefront-detail",
+        from_user=User(id=200, is_bot=False, first_name="Offline"),
+        chat_instance="offline-chat",
+        message=_message("catalog result", 21),
+        data=encode_detail_callback("nyan-learning"),
+    )
+    await dispatcher.feed_update(bot, Update(update_id=21, callback_query=callback))
+
+    sent = [request for request in session.requests if isinstance(request, SendMessage)]
+    assert len(sent) == 2
+    assert "DANH MỤC — NYAN SHOP / CHỈ ĐỌC" in sent[0].text
+    assert sent[0].reply_markup is not None
+    assert "Gói học tập Nyan · 125.000đ · Còn hàng" in (
+        sent[0].reply_markup.inline_keyboard[0][0].text
+    )
+    assert "CHI TIẾT SẢN PHẨM — NYAN SHOP / CHỈ ĐỌC" in sent[1].text
+    assert "Giá bán: 125.000đ" in sent[1].text
+    rendered = " ".join(request.text for request in sent).casefold()
+    assert "khommo" not in rendered
+    assert "vietshare" not in rendered
+    assert any(isinstance(request, AnswerCallbackQuery) for request in session.requests)
 
 
 async def test_aiogram_multi_source_catalog_defaults_to_white_label_aggregate() -> None:

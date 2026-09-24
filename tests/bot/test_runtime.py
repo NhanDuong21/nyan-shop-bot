@@ -94,11 +94,20 @@ async def test_confirmed_runtime_injects_catalog_and_closes_every_session(
         async def start_polling(self, bot: object, **kwargs: object) -> None:
             events.append(("polling", bot, kwargs))
 
+    class FakeDatabase:
+        def __init__(self, database_url: str) -> None:
+            events.append(("database-created", database_url))
+            self.engine = object()
+
+        async def close(self) -> None:
+            events.append("database-closed")
+
     async def close_catalog() -> None:
         events.append("catalog-closed")
 
     dispatcher = FakeDispatcher()
     monkeypatch.setattr(runtime, "Bot", FakeBot)
+    monkeypatch.setattr(runtime, "PostgresDatabase", FakeDatabase)
     monkeypatch.setattr(
         runtime,
         "build_catalog_registry",
@@ -107,7 +116,9 @@ async def test_confirmed_runtime_injects_catalog_and_closes_every_session(
     monkeypatch.setattr(
         runtime,
         "build_dispatcher",
-        lambda received_registry: dispatcher if received_registry is registry else None,
+        lambda catalog=None, *, storefront=None: (
+            dispatcher if catalog is None and storefront is not None else None
+        ),
     )
 
     await runtime.run_local_polling(
@@ -120,4 +131,4 @@ async def test_confirmed_runtime_injects_catalog_and_closes_every_session(
         "allowed_updates": ["message", "callback_query"],
         "close_bot_session": False,
     }
-    assert events[-2:] == ["catalog-closed", "bot-closed"]
+    assert events[-3:] == ["catalog-closed", "database-closed", "bot-closed"]
