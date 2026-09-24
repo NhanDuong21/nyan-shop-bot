@@ -17,7 +17,12 @@ from nyan_shop_bot.catalog.curation.models import (
     CatalogCurationWorkspace,
 )
 from nyan_shop_bot.catalog.curation.ports import CatalogCurationRepository
-from nyan_shop_bot.catalog.models import CatalogProduct, CatalogState, LiveCatalogSupplier
+from nyan_shop_bot.catalog.models import (
+    AggregateCatalogState,
+    CatalogProduct,
+    CatalogState,
+    LiveCatalogSupplier,
+)
 from nyan_shop_bot.catalog.registry import CatalogRegistry
 
 
@@ -69,7 +74,10 @@ class CatalogCurationService:
     async def _read_products(self) -> tuple[tuple[CatalogProduct, ...], bool]:
         if self._catalogs.aggregate_available:
             response = await self._catalogs.read_aggregate()
-            return response.items, response.partial
+            return (
+                response.items,
+                response.partial or response.state is AggregateCatalogState.ERROR,
+            )
 
         products: list[CatalogProduct] = []
         partial = False

@@ -56,6 +56,12 @@ class LiveReader:
         return await self._delegate.get_product(product_id)
 
 
+class FailingLiveReader(LiveReader):
+    async def read_catalog(self) -> CatalogResponse:
+        self.catalog_reads += 1
+        raise RuntimeError("synthetic read-only catalog outage")
+
+
 def service() -> tuple[
     CatalogCurationService,
     InMemoryCatalogCurationRepository,
@@ -128,6 +134,24 @@ async def test_workspace_and_save_keep_grouping_explicit_and_read_only() -> None
     rendered = saved.model_dump_json()
     assert "credential" not in rendered
     assert "delivery" not in rendered
+
+
+async def test_complete_source_outage_remains_explicitly_degraded() -> None:
+    khommo = FailingLiveReader("khommo")
+    vietshare = FailingLiveReader("vietshare")
+    subject = CatalogCurationService(
+        catalogs=CatalogRegistry({"khommo": khommo, "vietshare": vietshare}),
+        repository=InMemoryCatalogCurationRepository(),
+    )
+
+    workspace = await subject.get_workspace()
+
+    assert workspace.offers == ()
+    assert workspace.listings == ()
+    assert workspace.source_partial is True
+    assert workspace.supplier_writes_enabled is False
+    assert khommo.catalog_reads == 1
+    assert vietshare.catalog_reads == 1
 
 
 async def test_unknown_snapshot_offer_and_stale_revision_fail_closed() -> None:
