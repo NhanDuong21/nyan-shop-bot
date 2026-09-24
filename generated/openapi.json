@@ -1007,6 +1007,228 @@
           }
         ]
       },
+      "MockCatalogItem": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "variants": {
+            "items": {
+              "$ref": "#/components/schemas/MockCatalogVariant"
+            },
+            "title": "Variants",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "variants"
+        ],
+        "title": "MockCatalogItem",
+        "type": "object"
+      },
+      "MockCatalogResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MockCatalogItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "mode": {
+            "default": "MOCK",
+            "title": "Mode",
+            "type": "string"
+          },
+          "payment_mode": {
+            "default": "disabled",
+            "title": "Payment Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "MockCatalogResponse",
+        "type": "object"
+      },
+      "MockCatalogVariant": {
+        "additionalProperties": false,
+        "properties": {
+          "available_quantity": {
+            "title": "Available Quantity",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "price": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "price",
+          "available_quantity"
+        ],
+        "title": "MockCatalogVariant",
+        "type": "object"
+      },
+      "MockCheckoutRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "max_unit_price": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "product_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Product Id",
+            "type": "string"
+          },
+          "quantity": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "scenario": {
+            "$ref": "#/components/schemas/MockScenario"
+          },
+          "variant_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Variant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "product_id",
+          "variant_id",
+          "quantity",
+          "idempotency_key",
+          "max_unit_price",
+          "scenario"
+        ],
+        "title": "MockCheckoutRequest",
+        "type": "object"
+      },
+      "MockEvidence": {
+        "enum": [
+          "unresolved",
+          "confirmed_success",
+          "confirmed_out_of_stock"
+        ],
+        "title": "MockEvidence",
+        "type": "string"
+      },
+      "MockOrderResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "intent_id": {
+            "title": "Intent Id",
+            "type": "string"
+          },
+          "max_unit_price": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "product_id": {
+            "title": "Product Id",
+            "type": "string"
+          },
+          "purchase_state": {
+            "title": "Purchase State",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "total_price": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "unit_price": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "variant_id": {
+            "title": "Variant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "intent_id",
+          "product_id",
+          "variant_id",
+          "quantity",
+          "unit_price",
+          "max_unit_price",
+          "total_price",
+          "purchase_state",
+          "failure_code"
+        ],
+        "title": "MockOrderResponse",
+        "type": "object"
+      },
+      "MockReconciliationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "$ref": "#/components/schemas/MockEvidence"
+          }
+        },
+        "required": [
+          "evidence"
+        ],
+        "title": "MockReconciliationRequest",
+        "type": "object"
+      },
+      "MockScenario": {
+        "enum": [
+          "success",
+          "failed_safe",
+          "unknown"
+        ],
+        "title": "MockScenario",
+        "type": "string"
+      },
       "Money": {
         "additionalProperties": false,
         "description": "An integer amount in an explicitly named currency and storage unit.",
@@ -1652,6 +1874,291 @@
         "summary": "Catalog Detail",
         "tags": [
           "catalog"
+        ]
+      }
+    },
+    "/api/v1/mock-checkout/catalog": {
+      "get": {
+        "operationId": "catalog_api_v1_mock_checkout_catalog_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MockCatalogResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Catalog",
+        "tags": [
+          "mock-checkout"
+        ]
+      }
+    },
+    "/api/v1/mock-checkout/orders": {
+      "get": {
+        "operationId": "history_api_v1_mock_checkout_orders_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MockOrderResponse"
+                  },
+                  "title": "Response History Api V1 Mock Checkout Orders Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "History",
+        "tags": [
+          "mock-checkout"
+        ]
+      },
+      "post": {
+        "operationId": "checkout_api_v1_mock_checkout_orders_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MockCheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MockOrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Checkout",
+        "tags": [
+          "mock-checkout"
+        ]
+      }
+    },
+    "/api/v1/mock-checkout/orders/{intent_id}": {
+      "get": {
+        "operationId": "order_detail_api_v1_mock_checkout_orders__intent_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "intent_id",
+            "required": true,
+            "schema": {
+              "title": "Intent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MockOrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Order Detail",
+        "tags": [
+          "mock-checkout"
+        ]
+      }
+    },
+    "/api/v1/mock-checkout/orders/{intent_id}/reconcile": {
+      "post": {
+        "operationId": "reconcile_api_v1_mock_checkout_orders__intent_id__reconcile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "intent_id",
+            "required": true,
+            "schema": {
+              "title": "Intent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MockReconciliationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MockOrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reconcile",
+        "tags": [
+          "mock-checkout"
         ]
       }
     },

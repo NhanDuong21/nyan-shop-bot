@@ -248,6 +248,20 @@ class InMemoryOrderRepository:
             except KeyError:
                 raise OrderNotFound from None
 
+    async def list_recent(
+        self, *, customer_reference: str | None = None, limit: int = 50
+    ) -> tuple[OrderAggregate, ...]:
+        if not 1 <= limit <= 100:
+            raise InvalidOrderInput
+        async with self._lock:
+            values = reversed(tuple(self._by_id.values()))
+            return tuple(
+                item
+                for item in values
+                if customer_reference is None
+                or item.intent.customer_reference == customer_reference
+            )[:limit]
+
     async def claim_prepared(self, intent_id: str) -> OrderAggregate | None:
         async with self._lock:
             aggregate = self._require(intent_id)

@@ -149,6 +149,24 @@ class PostgresOrderRepository:
         async with self._sessions() as session:
             return await self._load(session, intent_id, for_update=False)
 
+    async def list_recent(
+        self, *, customer_reference: str | None = None, limit: int = 50
+    ) -> tuple[OrderAggregate, ...]:
+        if not 1 <= limit <= 100:
+            raise InvalidOrderInput
+        statement = (
+            sa.select(_order_intents.c.id)
+            .order_by(_order_intents.c.created_at.desc(), _order_intents.c.id.desc())
+            .limit(limit)
+        )
+        if customer_reference is not None:
+            statement = statement.where(_order_intents.c.customer_reference == customer_reference)
+        async with self._sessions() as session:
+            ids = (await session.execute(statement)).scalars().all()
+            return tuple(
+                [await self._load(session, str(intent_id), for_update=False) for intent_id in ids]
+            )
+
     async def claim_prepared(self, intent_id: str) -> OrderAggregate | None:
         """Commit DISPATCHING before returning authority to invoke the fake port."""
         async with self._sessions() as session:

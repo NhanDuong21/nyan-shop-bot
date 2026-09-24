@@ -60,7 +60,7 @@ async def save_in_transaction(
 async def test_repository_insert_update_and_revision_conflict_are_atomic() -> None:
     database_url = os.environ.get(
         "DATABASE_URL",
-        "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot",
+        "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot_test",
     )
     engine = create_async_engine(database_url, hide_parameters=True)
     try:
@@ -99,7 +99,7 @@ async def test_repository_insert_update_and_revision_conflict_are_atomic() -> No
 async def test_repository_rejects_unknown_persisted_payload_fields() -> None:
     database_url = os.environ.get(
         "DATABASE_URL",
-        "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot",
+        "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot_test",
     )
     engine = create_async_engine(database_url, hide_parameters=True)
     try:
@@ -136,7 +136,7 @@ async def test_repository_rejects_unknown_persisted_payload_fields() -> None:
 async def test_same_revision_race_allows_exactly_one_postgres_commit() -> None:
     database_url = os.environ.get(
         "DATABASE_URL",
-        "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot",
+        "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot_test",
     )
     schema_name = f"nyan_test_catalog_{uuid4().hex}"
     if _TEST_SCHEMA_PATTERN.fullmatch(schema_name) is None:

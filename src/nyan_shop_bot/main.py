@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from nyan_shop_bot.catalog.curation.api import build_catalog_curation_router
 from nyan_shop_bot.catalog.curation.ports import (
@@ -43,6 +44,9 @@ from nyan_shop_bot.catalog.storefront.models import (
 )
 from nyan_shop_bot.config import Settings, get_settings, is_loopback_host
 from nyan_shop_bot.database import DatabaseProbe, PostgresDatabase
+from nyan_shop_bot.orders.mock_checkout import build_mock_checkout_router
+from nyan_shop_bot.orders.ports import OrderRepository
+from nyan_shop_bot.orders.repository import PostgresOrderRepository
 from nyan_shop_bot.suppliers.khommo import KhoMmoCatalogSourceUnavailable
 from nyan_shop_bot.suppliers.vietshare import VietShareCatalogSourceUnavailable
 
@@ -54,6 +58,7 @@ def create_app(
     catalogs: CatalogRegistry | None = None,
     database: DatabaseProbe | None = None,
     curation_repository: CatalogCurationRepository | None = None,
+    order_repository: OrderRepository | None = None,
 ) -> FastAPI:
     """Create an app with replaceable read-only dependencies."""
     runtime_settings = settings or get_settings()
@@ -85,6 +90,11 @@ def create_app(
         catalogs=catalog_registry,
         repository=local_curation_repository,
     )
+    local_order_repository = order_repository
+    if local_order_repository is None and isinstance(database_probe, PostgresDatabase):
+        local_order_repository = PostgresOrderRepository(
+            async_sessionmaker(database_probe.engine, expire_on_commit=False)
+        )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -106,13 +116,19 @@ def create_app(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
         allow_credentials=False,
-        allow_methods=["GET", "PUT"],
-        allow_headers=["Content-Type"],
+        allow_methods=["GET", "PUT", "POST"],
+        allow_headers=["Content-Type", "Authorization"],
     )
     application.include_router(
         build_catalog_curation_router(
             settings=runtime_settings,
             service=curation_service,
+        )
+    )
+    application.include_router(
+        build_mock_checkout_router(
+            settings=runtime_settings,
+            repository=local_order_repository,
         )
     )
 

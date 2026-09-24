@@ -20,7 +20,7 @@ from nyan_shop_bot.orders.repository import PostgresOrderRepository
 from nyan_shop_bot.orders.service import OrderService
 
 DISPOSABLE_ORDER_DATABASE_URL = (
-    "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot"
+    "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot_test"
 )
 
 
