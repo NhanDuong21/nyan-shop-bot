@@ -517,4 +517,46 @@ describe("CatalogCuration UI feature component", () => {
     expect(screen.queryByRole("button", { name: /hoàn tiền/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /giao hàng/i })).not.toBeInTheDocument();
   });
+
+  test("renders neutral fail-closed copy without all-curated claim when ready with zero offers, zero listings, and sourcePartial true", () => {
+    const props = createMockProps({
+      state: {
+        kind: "ready",
+        revision: 1,
+        offers: [],
+        listings: [],
+        sourcePartial: true,
+        unresolvedOfferCount: 0,
+        save: { kind: "clean" },
+      },
+    });
+    render(<CatalogCuration {...props} />);
+
+    // Warning banner is visible
+    const warningBanner = screen.getByRole("status", { name: /Cảnh báo nguồn cung chưa đầy đủ/i });
+    expect(warningBanner).toBeInTheDocument();
+    expect(warningBanner).toHaveTextContent(/Dữ liệu nguồn cung chưa đầy đủ/i);
+    expect(warningBanner).toHaveTextContent(/không được tự suy đoán hoặc gán liên kết cho các sản phẩm bị thiếu/i);
+
+    // Neutral outage / incomplete copy is visible
+    expect(screen.getByText("Không có sản phẩm nguồn khả dụng")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Hiện không có đề nghị nào từ nguồn cung khả dụng để biên tập và chưa thể xác nhận tính đầy đủ của dữ liệu nguồn/i,
+      ),
+    ).toBeInTheDocument();
+
+    // False "all-curated" claim must be absent
+    expect(screen.queryByText("Tất cả sản phẩm nguồn đã được biên tập")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Mọi đề nghị từ supplier đều đã được tạo hoặc gán vào danh mục Nyan Shop."),
+    ).not.toBeInTheDocument();
+
+    // Listings empty state placeholder is visible
+    expect(screen.getByText("Chưa có mục hàng Nyan nào")).toBeInTheDocument();
+
+    // No write-money controls
+    expect(screen.queryByRole("button", { name: /mua hàng/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /thanh toán/i })).not.toBeInTheDocument();
+  });
 });

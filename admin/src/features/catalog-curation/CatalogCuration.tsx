@@ -228,8 +228,20 @@ export function CatalogCuration({
 
           {unassignedOffers.length === 0 ? (
             <div className="curation-empty-box" role="status">
-              <strong>Tất cả sản phẩm nguồn đã được biên tập</strong>
-              <p>Mọi đề nghị từ supplier đều đã được tạo hoặc gán vào danh mục Nyan Shop.</p>
+              {sourcePartial || unresolvedOfferCount > 0 ? (
+                <>
+                  <strong>Không có sản phẩm nguồn khả dụng</strong>
+                  <p>
+                    Hiện không có đề nghị nào từ nguồn cung khả dụng để biên tập và chưa thể xác nhận
+                    tính đầy đủ của dữ liệu nguồn.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <strong>Tất cả sản phẩm nguồn đã được biên tập</strong>
+                  <p>Mọi đề nghị từ supplier đều đã được tạo hoặc gán vào danh mục Nyan Shop.</p>
+                </>
+              )}
             </div>
           ) : filteredCandidates.length === 0 ? (
             <div className="curation-empty-box" role="status">
