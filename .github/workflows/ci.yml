@@ -103,7 +103,7 @@ jobs:
   frontend:
     name: Admin lint, typecheck, test, and build
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - name: Check out exact revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -117,6 +117,9 @@ jobs:
           cache-dependency-path: admin/package-lock.json
       - name: Install locked dependencies
         run: npm ci
+        working-directory: admin
+      - name: Install pinned browser for E2E
+        run: npx playwright install --with-deps --only-shell chromium
         working-directory: admin
       - name: Run shared frontend verification
         run: python scripts/verify.py --scope frontend

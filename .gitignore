@@ -25,11 +25,14 @@ node_modules/
 admin/node_modules/
 admin/dist/
 admin/coverage/
+admin/test-results/
+admin/playwright-report/
 *.tsbuildinfo
 
 # Local data and logs
 data/
 .nyan-runner/
+.nyan-demo/
 *.db
 *.sqlite
 *.sqlite3

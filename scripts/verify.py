@@ -12,9 +12,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ADMIN = ROOT / "admin"
+TEST_DATABASE_URL = (
+    "postgresql+asyncpg://nyan_local:nyan_local_only@127.0.0.1:5432/nyan_shop_bot_test"
+)
 
 
-def run(command: Sequence[str], *, cwd: Path = ROOT) -> None:
+def run(command: Sequence[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> None:
     printable = " ".join(command)
     print(f"\n> {printable}", flush=True)
     executable = shutil.which(command[0]) or command[0]
@@ -22,7 +25,7 @@ def run(command: Sequence[str], *, cwd: Path = ROOT) -> None:
         (executable, *command[1:]),
         cwd=cwd,
         check=True,
-        env=os.environ.copy(),
+        env=env or os.environ.copy(),
     )
 
 
@@ -41,6 +44,7 @@ def verify_python_tests() -> None:
             "tests/unit",
             "tests/suppliers",
             "tests/bot",
+            "tests/e2e",
             "-m",
             "not integration",
         ]
@@ -48,15 +52,24 @@ def verify_python_tests() -> None:
 
 
 def verify_database() -> None:
-    run([sys.executable, "-m", "alembic", "upgrade", "head"])
-    run([sys.executable, "-m", "alembic", "current", "--check-head"])
-    run([sys.executable, "-m", "pytest", "tests/integration", "-m", "integration"])
+    run([sys.executable, "scripts/ensure_test_database.py"])
+    test_env = os.environ.copy()
+    test_env.update(
+        DATABASE_URL=TEST_DATABASE_URL,
+        SUPPLIER_MODE="mock",
+        PAYMENT_MODE="disabled",
+        ALLOW_REAL_PURCHASES="false",
+    )
+    run([sys.executable, "-m", "alembic", "upgrade", "head"], env=test_env)
+    run([sys.executable, "-m", "alembic", "current", "--check-head"], env=test_env)
+    run([sys.executable, "-m", "pytest", "tests/integration", "-m", "integration"], env=test_env)
 
 
 def verify_frontend() -> None:
     run(["npm", "run", "lint"], cwd=ADMIN)
     run(["npm", "run", "typecheck"], cwd=ADMIN)
     run(["npm", "run", "test"], cwd=ADMIN)
+    run(["npm", "run", "test:e2e"], cwd=ADMIN)
     run(["npm", "run", "build"], cwd=ADMIN)
 
 

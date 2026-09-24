@@ -128,6 +128,10 @@ class OrderRepository(Protocol):
 
     async def get(self, intent_id: str) -> OrderAggregate: ...
 
+    async def list_recent(
+        self, *, customer_reference: str | None = None, limit: int = 50
+    ) -> tuple[OrderAggregate, ...]: ...
+
     async def claim_prepared(self, intent_id: str) -> OrderAggregate | None: ...
 
     async def record_success(

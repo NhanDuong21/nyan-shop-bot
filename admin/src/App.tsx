@@ -5,11 +5,12 @@ import { useCatalogState } from "./catalog-state";
 import type { CatalogSelection } from "./api";
 import { AdminDashboard } from "./features/admin-dashboard/AdminDashboard";
 import { CatalogCuration } from "./features/catalog-curation/CatalogCuration";
+import { MockCheckout } from "./features/mock-checkout/MockCheckout";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAdminTheme } from "./theme";
 
 export function App() {
-  const [view, setView] = useState<"overview" | "curation">("overview");
+  const [view, setView] = useState<"overview" | "curation" | "checkout">("overview");
   const catalog = useCatalogState();
   const curation = useCatalogCurationState(view === "curation");
   const theme = useAdminTheme();
@@ -56,6 +57,8 @@ export function App() {
           >
             Biên tập catalog
           </button>
+          <button type="button" aria-current={view === "checkout" ? "page" : undefined}
+            onClick={() => setView("checkout")}>Checkout MOCK</button>
         </nav>
         <div className="app-actions">
           {catalog.sources.length > 1 && (
@@ -80,7 +83,9 @@ export function App() {
           <span className="environment-badge" aria-label={`Môi trường ${environmentLabel}`}>
             {environmentLabel}
           </span>
-          <span className="environment-badge environment-badge-muted">READ-ONLY</span>
+          <span className="environment-badge environment-badge-muted">
+            {view === "checkout" ? "MOCK ONLY" : "READ-ONLY"}
+          </span>
           <ThemeToggle theme={theme.theme} onToggle={theme.toggleTheme} />
         </div>
       </header>
@@ -96,8 +101,10 @@ export function App() {
 
       {view === "overview" ? (
         <AdminDashboard state={catalog.state} onRetry={catalog.retry} />
-      ) : (
+      ) : view === "curation" ? (
         <CatalogCuration {...curation} />
+      ) : (
+        <MockCheckout />
       )}
     </div>
   );

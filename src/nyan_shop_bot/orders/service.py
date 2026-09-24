@@ -259,6 +259,15 @@ class OrderService:
         assert_safe_execution(self._runtime)
         return OrderSnapshot.from_aggregate(await self._repository.get(intent_id))
 
+    async def list_recent(
+        self, *, customer_reference: str | None = None, limit: int = 50
+    ) -> tuple[OrderSnapshot, ...]:
+        assert_safe_execution(self._runtime)
+        aggregates = await self._repository.list_recent(
+            customer_reference=customer_reference, limit=limit
+        )
+        return tuple(OrderSnapshot.from_aggregate(item) for item in aggregates)
+
     async def _dispatch_once(self, intent_id: str) -> OrderAggregate:
         assert_safe_execution(self._runtime)
         self._require_purchase_capability()

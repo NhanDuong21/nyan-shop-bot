@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     vietshare_api_id: SecretStr | None = None
     vietshare_api_secret: SecretStr | None = None
     telegram_bot_token: SecretStr | None = None
+    mock_checkout_access_token: SecretStr | None = None
 
     @model_validator(mode="after")
     def enforce_read_only_safety(self) -> Self:

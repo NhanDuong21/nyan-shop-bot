@@ -1,0 +1,17 @@
+.mock-checkout { max-width: 72rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; display: grid; gap: 1rem; }
+.mock-checkout h1 { margin: 0 0 .5rem; font-size: 1.75rem; }
+.mock-checkout h2 { margin: 0 0 .75rem; font-size: 1rem; }
+.mock-checkout p { margin: .5rem 0; color: var(--color-text-muted); }
+.mock-panel { display: grid; gap: .5rem; padding: 1rem; border: 1px solid var(--color-border); border-radius: .75rem; background: var(--color-surface); }
+.mock-panel label { font-weight: 700; }
+.mock-panel select, .mock-panel input { max-width: 32rem; }
+.mock-inline, .mock-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.mock-inline input { flex: 1 1 15rem; }
+.mock-actions { margin: .5rem 0; }
+.mock-actions button:first-child { border-color: var(--color-accent); }
+.mock-error { padding: .75rem; border: 1px solid var(--color-danger); border-radius: .625rem; background: var(--color-danger-surface); color: var(--color-danger) !important; }
+.mock-history { display: grid; gap: .75rem; margin: 0; padding-left: 1.5rem; }
+.mock-history li { padding: .75rem; border: 1px solid var(--color-border); border-radius: .625rem; }
+.mock-history li > * { display: block; margin-bottom: .25rem; }
+.mock-history small { overflow-wrap: anywhere; color: var(--color-text-muted); }
+.mock-history-heading { justify-content: space-between; }

@@ -14,7 +14,7 @@ python scripts/task.py dev
 
 Open the admin at <http://127.0.0.1:5173>, API docs at <http://127.0.0.1:8000/docs>, and health at <http://127.0.0.1:8000/healthz>. The admin is unauthenticated in NSB-001 and therefore only binds to localhost.
 
-On Linux, use `python3` if `python` is not available. See [the runbook](docs/runbook.md) for PowerShell/Linux commands and safe cleanup.
+On Linux, use `python3` if `python` is not available. See [the runbook](docs/runbook.md) for PowerShell/Linux commands and safe cleanup. The isolated synthetic checkout trial is documented in [the mock checkout demo](docs/mock-checkout-demo.md).
 
 ## Safety defaults
 
@@ -27,7 +27,7 @@ ALLOW_REAL_PURCHASES=false
 These remain the defaults. The owner-approved local mode `SUPPLIER_MODE=khommo-readonly`
 enables only KhoMMO's documented GET catalog boundary and still requires
 `PAYMENT_MODE=disabled` plus `ALLOW_REAL_PURCHASES=false`. Generic live mode remains invalid,
-no purchase/top-up/refund/delivery routes exist, and CI receives no supplier, bank, Telegram,
+no live purchase/top-up/refund/delivery routes exist, and CI receives no supplier, bank, Telegram,
 or OpenAI production secrets. See the runbook before configuring `KHOMMO_API_TOKEN` locally.
 
 ## Repository map
@@ -35,7 +35,7 @@ or OpenAI production secrets. See the runbook before configuring `KHOMMO_API_TOK
 - `src/nyan_shop_bot/`: FastAPI, shared read-only catalog boundary, offline-testable bot handlers,
   and an explicit owner-started local Telegram runtime.
 - `alembic/`: initial PostgreSQL migration.
-- `admin/`: localhost-only catalog UI for mock or owner-approved KhoMMO read-only data.
+- `admin/`: localhost-only catalog and authenticated synthetic checkout trial.
 - `tests/`: unit, network-policy, bot, and PostgreSQL integration tests.
 - `scripts/`: cross-platform task, verification, policy, smoke, and GitHub seed tools.
 - `src/nyan_shop_bot/orchestrator/`: durable local runner, CLI adapters, policy, and state machine.
