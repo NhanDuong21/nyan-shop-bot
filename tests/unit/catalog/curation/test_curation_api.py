@@ -50,10 +50,16 @@ class LiveReader:
 
 
 def application(*, app_env: str = "local"):
+    supplier_mode = "multi-readonly" if app_env == "local" else "mock"
     settings = Settings(  # type: ignore[call-arg]
         _env_file=None,
         app_env=app_env,
-        supplier_mode="mock",
+        supplier_mode=supplier_mode,
+        khommo_api_token="synthetic-khommo" if supplier_mode == "multi-readonly" else None,
+        vietshare_api_id=("synthetic-vietshare-id" if supplier_mode == "multi-readonly" else None),
+        vietshare_api_secret=(
+            "synthetic-vietshare-secret" if supplier_mode == "multi-readonly" else None
+        ),
     )
     registry = CatalogRegistry(
         {
@@ -150,6 +156,75 @@ async def test_nonlocal_environment_rejects_admin_route() -> None:
         response = await client.get("/api/v1/admin/catalog-curation")
 
     assert response.status_code == 403
+
+
+async def test_storefront_is_loopback_only_redacted_and_matches_detail() -> None:
+    app = application()
+    local_transport = ASGITransport(app=app, client=("127.0.0.1", 41000))
+    remote_transport = ASGITransport(app=app, client=("203.0.113.8", 41001))
+    async with AsyncClient(transport=local_transport, base_url="http://test") as client:
+        workspace = (await client.get("/api/v1/admin/catalog-curation")).json()
+        offer = workspace["offers"][0]
+        saved = await client.put(
+            "/api/v1/admin/catalog-curation",
+            json={
+                "expected_revision": 0,
+                "listings": [
+                    {
+                        "id": "nyan-learning",
+                        "name": "Gói KhoMMO và VietShare",
+                        "description": "Mô tả dòng một.\nMô tả dòng hai.",
+                        "category": "Học tập",
+                        "visible": True,
+                        "sort_order": 0,
+                        "retail_price": {
+                            "amount_minor": 125000,
+                            "currency": "VND",
+                            "unit": "minor",
+                        },
+                        "offer_keys": [offer["key"]],
+                    }
+                ],
+            },
+            headers={"Origin": "http://127.0.0.1:5173"},
+        )
+        catalog = await client.get("/api/v1/storefront/catalog")
+        detail = await client.get("/api/v1/storefront/catalog/nyan-learning")
+    async with AsyncClient(transport=remote_transport, base_url="http://test") as client:
+        remote = await client.get("/api/v1/storefront/catalog")
+
+    assert saved.status_code == 200
+    assert catalog.status_code == 200
+    body = catalog.json()
+    assert body["revision"] == 1
+    assert body["state"] == "ready"
+    assert body["supplier_provenance_exposed"] is False
+    assert body["purchase_enabled"] is False
+    assert body["payment_enabled"] is False
+    assert body["items"] == [
+        {
+            "id": "nyan-learning",
+            "name": "Gói Nyan và Nyan",
+            "description": "Mô tả dòng một.\nMô tả dòng hai.",
+            "category": "Học tập",
+            "price": {"amount_minor": 125000, "currency": "VND", "unit": "minor"},
+            "availability": "in_stock",
+            "read_only": True,
+        }
+    ]
+    rendered = catalog.text.lower()
+    for forbidden in (
+        "khommo",
+        "vietshare",
+        offer["supplier_product_id"].lower(),
+        "available_quantity",
+        "delivery",
+        "credential",
+    ):
+        assert forbidden not in rendered
+    assert detail.status_code == 200
+    assert detail.json() == {"state": "found", "item": body["items"][0]}
+    assert remote.status_code == 403
 
 
 async def test_supplier_and_money_routes_remain_absent() -> None:

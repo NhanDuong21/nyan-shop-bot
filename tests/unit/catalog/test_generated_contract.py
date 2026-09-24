@@ -39,6 +39,8 @@ def test_openapi_is_client_input_for_read_only_catalog_routes() -> None:
     assert set(paths["/api/v1/catalog/sources"]) == {"get"}
     assert set(paths["/api/v1/catalog/{product_id}"]) == {"get"}
     assert set(paths["/api/v1/capabilities"]) == {"get"}
+    assert set(paths["/api/v1/storefront/catalog"]) == {"get"}
+    assert set(paths["/api/v1/storefront/catalog/{product_id}"]) == {"get"}
     admin_path = "/api/v1/admin/catalog-curation"
     assert set(paths[admin_path]) == {"get", "put"}
     assert all(
@@ -82,6 +84,25 @@ def test_openapi_is_client_input_for_read_only_catalog_routes() -> None:
     assert workspace["properties"]["supplier_writes_enabled"]["const"] is False
     save_request = schemas["CatalogCurationSaveRequest"]
     assert set(save_request["required"]) == {"expected_revision", "listings"}
+
+    storefront_product = schemas["StorefrontProduct"]
+    assert set(storefront_product["properties"]) == {
+        "id",
+        "name",
+        "description",
+        "category",
+        "price",
+        "availability",
+        "read_only",
+    }
+    storefront = schemas["StorefrontCatalogResponse"]
+    assert storefront["properties"]["supplier_provenance_exposed"]["const"] is False
+    assert storefront["properties"]["purchase_enabled"]["const"] is False
+    assert storefront["properties"]["payment_enabled"]["const"] is False
+    detail_schema = paths["/api/v1/storefront/catalog/{product_id}"]["get"]["responses"]["200"][
+        "content"
+    ]["application/json"]["schema"]
+    assert detail_schema["discriminator"]["propertyName"] == "state"
 
 
 def test_ui_fixtures_cover_and_validate_every_required_state() -> None:

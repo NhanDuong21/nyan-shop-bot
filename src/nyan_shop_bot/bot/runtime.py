@@ -9,8 +9,11 @@ import sys
 from aiogram import Bot
 
 from nyan_shop_bot.bot.handlers import build_dispatcher
+from nyan_shop_bot.catalog.curation.repository import PostgresCatalogCurationRepository
+from nyan_shop_bot.catalog.curation.service import CatalogCurationService
 from nyan_shop_bot.catalog.factory import build_catalog_registry
 from nyan_shop_bot.config import Settings, is_loopback_host
+from nyan_shop_bot.database import PostgresDatabase
 
 
 class TelegramRuntimeConfigurationError(ValueError):
@@ -48,9 +51,15 @@ async def run_local_polling(
 
     bot = Bot(token=token.get_secret_value())
     close_catalog = None
+    database = None
     try:
         catalogs, close_catalog = build_catalog_registry(settings)
-        dispatcher = build_dispatcher(catalogs)
+        database = PostgresDatabase(settings.database_url)
+        storefront = CatalogCurationService(
+            catalogs=catalogs,
+            repository=PostgresCatalogCurationRepository(database.engine),
+        )
+        dispatcher = build_dispatcher(storefront=storefront)
         await dispatcher.start_polling(
             bot,
             allowed_updates=dispatcher.resolve_used_update_types(),
@@ -61,7 +70,11 @@ async def run_local_polling(
             if close_catalog is not None:
                 await close_catalog()
         finally:
-            await bot.session.close()
+            try:
+                if database is not None:
+                    await database.close()
+            finally:
+                await bot.session.close()
 
 
 def main(argv: list[str] | None = None) -> int:

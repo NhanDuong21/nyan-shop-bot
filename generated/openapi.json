@@ -1051,6 +1051,198 @@
         "title": "PendingMappingApproval",
         "type": "object"
       },
+      "StorefrontAvailability": {
+        "description": "Conservative stock state without exposing exact supplier inventory.",
+        "enum": [
+          "in_stock",
+          "out_of_stock",
+          "unknown"
+        ],
+        "title": "StorefrontAvailability",
+        "type": "string"
+      },
+      "StorefrontCatalogResponse": {
+        "additionalProperties": false,
+        "description": "Versioned customer catalog with explicit degraded evidence.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StorefrontProduct"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "partial": {
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "payment_enabled": {
+            "const": false,
+            "default": false,
+            "title": "Payment Enabled",
+            "type": "boolean"
+          },
+          "purchase_enabled": {
+            "const": false,
+            "default": false,
+            "title": "Purchase Enabled",
+            "type": "boolean"
+          },
+          "read_only": {
+            "const": true,
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "source_evidence_partial": {
+            "title": "Source Evidence Partial",
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/StorefrontCatalogState"
+          },
+          "supplier_provenance_exposed": {
+            "const": false,
+            "default": false,
+            "title": "Supplier Provenance Exposed",
+            "type": "boolean"
+          },
+          "unresolved_offer_count": {
+            "minimum": 0.0,
+            "title": "Unresolved Offer Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "state",
+          "items",
+          "partial",
+          "unresolved_offer_count",
+          "source_evidence_partial"
+        ],
+        "title": "StorefrontCatalogResponse",
+        "type": "object"
+      },
+      "StorefrontCatalogState": {
+        "description": "Whether the persisted storefront has complete read-only evidence.",
+        "enum": [
+          "ready",
+          "partial",
+          "empty"
+        ],
+        "title": "StorefrontCatalogState",
+        "type": "string"
+      },
+      "StorefrontDetailFound": {
+        "additionalProperties": false,
+        "description": "A current visible storefront product.",
+        "properties": {
+          "item": {
+            "$ref": "#/components/schemas/StorefrontProduct"
+          },
+          "state": {
+            "const": "found",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "item"
+        ],
+        "title": "StorefrontDetailFound",
+        "type": "object"
+      },
+      "StorefrontDetailNotFound": {
+        "additionalProperties": false,
+        "description": "A hidden, removed, or unknown storefront product.",
+        "properties": {
+          "product_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9._-]*$",
+            "title": "Product Id",
+            "type": "string"
+          },
+          "state": {
+            "const": "not_found",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "product_id"
+        ],
+        "title": "StorefrontDetailNotFound",
+        "type": "object"
+      },
+      "StorefrontProduct": {
+        "additionalProperties": false,
+        "description": "One visible Nyan listing with no supplier identity or source price.",
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/StorefrontAvailability"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "maxLength": 96,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "description": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9._-]*$",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "price": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "read_only": {
+            "const": true,
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "category",
+          "price",
+          "availability"
+        ],
+        "title": "StorefrontProduct",
+        "type": "object"
+      },
       "SupplierCapabilities": {
         "additionalProperties": false,
         "description": "Read capability truth with all money and delivery operations locked off.",
@@ -1460,6 +1652,87 @@
         "summary": "Catalog Detail",
         "tags": [
           "catalog"
+        ]
+      }
+    },
+    "/api/v1/storefront/catalog": {
+      "get": {
+        "operationId": "storefront_catalog_api_v1_storefront_catalog_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorefrontCatalogResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Storefront Catalog",
+        "tags": [
+          "storefront"
+        ]
+      }
+    },
+    "/api/v1/storefront/catalog/{product_id}": {
+      "get": {
+        "operationId": "storefront_detail_api_v1_storefront_catalog__product_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9._-]*$",
+              "title": "Product Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "discriminator": {
+                    "mapping": {
+                      "found": "#/components/schemas/StorefrontDetailFound",
+                      "not_found": "#/components/schemas/StorefrontDetailNotFound"
+                    },
+                    "propertyName": "state"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/StorefrontDetailFound"
+                    },
+                    {
+                      "$ref": "#/components/schemas/StorefrontDetailNotFound"
+                    }
+                  ],
+                  "title": "Response Storefront Detail Api V1 Storefront Catalog  Product Id  Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Storefront Detail",
+        "tags": [
+          "storefront"
         ]
       }
     },

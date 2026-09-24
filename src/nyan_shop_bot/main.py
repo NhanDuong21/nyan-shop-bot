@@ -8,7 +8,10 @@ from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, statu
 from fastapi.middleware.cors import CORSMiddleware
 
 from nyan_shop_bot.catalog.curation.api import build_catalog_curation_router
-from nyan_shop_bot.catalog.curation.ports import CatalogCurationRepository
+from nyan_shop_bot.catalog.curation.ports import (
+    CatalogCurationRepository,
+    CatalogCurationRepositoryUnavailable,
+)
 from nyan_shop_bot.catalog.curation.repository import (
     PostgresCatalogCurationRepository,
     UnavailableCatalogCurationRepository,
@@ -33,6 +36,10 @@ from nyan_shop_bot.catalog.registry import (
     CatalogRegistry,
     CatalogSourceSelectionRequired,
     CatalogSourceUnavailable,
+)
+from nyan_shop_bot.catalog.storefront.models import (
+    StorefrontCatalogResponse,
+    StorefrontDetailResponse,
 )
 from nyan_shop_bot.config import Settings, get_settings, is_loopback_host
 from nyan_shop_bot.database import DatabaseProbe, PostgresDatabase
@@ -168,6 +175,45 @@ def create_app(
     )
     async def catalog_sources() -> CatalogSourcesResponse:
         return catalog_registry.source_response
+
+    @application.get(
+        "/api/v1/storefront/catalog",
+        response_model=StorefrontCatalogResponse,
+        tags=["storefront"],
+        dependencies=[Depends(require_local_live_read)],
+    )
+    async def storefront_catalog() -> StorefrontCatalogResponse:
+        try:
+            return await curation_service.read_storefront()
+        except CatalogCurationRepositoryUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="storefront catalog database is unavailable",
+            ) from exc
+
+    @application.get(
+        "/api/v1/storefront/catalog/{product_id}",
+        response_model=StorefrontDetailResponse,
+        tags=["storefront"],
+        dependencies=[Depends(require_local_live_read)],
+    )
+    async def storefront_detail(
+        product_id: Annotated[
+            str,
+            Path(
+                min_length=1,
+                max_length=64,
+                pattern=r"^[a-z0-9][a-z0-9._-]*$",
+            ),
+        ],
+    ) -> StorefrontDetailResponse:
+        try:
+            return await curation_service.get_storefront_product(product_id)
+        except CatalogCurationRepositoryUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="storefront catalog database is unavailable",
+            ) from exc
 
     @application.get(
         "/api/v1/catalog",
