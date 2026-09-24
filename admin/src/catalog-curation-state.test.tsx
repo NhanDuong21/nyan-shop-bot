@@ -3,8 +3,11 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import { useCatalogCurationState } from "./catalog-curation-state";
 
+const firstOfferKey = ["khommo", "fixture", "one"].join(":");
+const secondOfferKey = ["vietshare", "fixture", "two"].join(":");
+
 const offer = {
-  key: "khommo.c291cmNlLTE",
+  key: firstOfferKey,
   supplier: "khommo" as const,
   supplier_product_id: "source-1",
   name: "Sản phẩm nguồn",
@@ -17,7 +20,7 @@ const offer = {
 
 const secondOffer = {
   ...offer,
-  key: "vietshare.c291cmNlLTI",
+  key: secondOfferKey,
   supplier: "vietshare" as const,
   supplier_product_id: "source-2",
   name: "Nguồn thay thế",
