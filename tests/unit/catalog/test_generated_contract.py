@@ -30,7 +30,7 @@ def test_generator_can_target_an_isolated_directory(tmp_path: Path) -> None:
     } == rendered_artifacts()
 
 
-def test_openapi_is_client_input_for_read_only_catalog_routes() -> None:
+def test_openapi_keeps_catalog_read_only_and_limits_mock_checkout_routes() -> None:
     document = decode_json(rendered_artifacts()["openapi.json"])
     paths = document["paths"]
     schemas = document["components"]["schemas"]
@@ -43,17 +43,32 @@ def test_openapi_is_client_input_for_read_only_catalog_routes() -> None:
     assert set(paths["/api/v1/storefront/catalog/{product_id}"]) == {"get"}
     admin_path = "/api/v1/admin/catalog-curation"
     assert set(paths[admin_path]) == {"get", "put"}
+    mock_prefix = "/api/v1/mock-checkout"
+    assert set(paths[f"{mock_prefix}/catalog"]) == {"get"}
+    assert set(paths[f"{mock_prefix}/orders"]) == {"get", "post"}
+    assert set(paths[f"{mock_prefix}/orders/{{intent_id}}"]) == {"get"}
+    assert set(paths[f"{mock_prefix}/orders/{{intent_id}}/reconcile"]) == {"post"}
     assert all(
         method not in path
         for name, path in paths.items()
-        if name != admin_path
+        if name != admin_path and not name.startswith(mock_prefix)
         for method in ("post", "put", "patch", "delete")
     )
     assert not any(
         forbidden in path
         for path in paths
-        for forbidden in ("orders", "purchase", "payment", "topup", "refund", "delivery")
+        for forbidden in ("purchase", "payment", "topup", "refund", "delivery")
     )
+    checkout = schemas["MockCheckoutRequest"]
+    assert "supplier_code" not in checkout["properties"]
+    assert set(checkout["required"]) == {
+        "product_id",
+        "variant_id",
+        "quantity",
+        "idempotency_key",
+        "max_unit_price",
+        "scenario",
+    }
 
     money = schemas["Money"]
     assert set(money["required"]) == {"amount_minor", "currency", "unit"}
