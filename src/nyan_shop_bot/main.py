@@ -7,6 +7,13 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from nyan_shop_bot.catalog.curation.api import build_catalog_curation_router
+from nyan_shop_bot.catalog.curation.ports import CatalogCurationRepository
+from nyan_shop_bot.catalog.curation.repository import (
+    PostgresCatalogCurationRepository,
+    UnavailableCatalogCurationRepository,
+)
+from nyan_shop_bot.catalog.curation.service import CatalogCurationService
 from nyan_shop_bot.catalog.factory import (
     build_catalog_reader as build_catalog_reader,
 )
@@ -39,6 +46,7 @@ def create_app(
     catalog: CatalogReader | None = None,
     catalogs: CatalogRegistry | None = None,
     database: DatabaseProbe | None = None,
+    curation_repository: CatalogCurationRepository | None = None,
 ) -> FastAPI:
     """Create an app with replaceable read-only dependencies."""
     runtime_settings = settings or get_settings()
@@ -60,6 +68,16 @@ def create_app(
         catalog_registry = CatalogRegistry({source: catalog})
         close_catalog = None
     database_probe = database or PostgresDatabase(runtime_settings.database_url)
+    if curation_repository is not None:
+        local_curation_repository = curation_repository
+    elif isinstance(database_probe, PostgresDatabase):
+        local_curation_repository = PostgresCatalogCurationRepository(database_probe.engine)
+    else:
+        local_curation_repository = UnavailableCatalogCurationRepository()
+    curation_service = CatalogCurationService(
+        catalogs=catalog_registry,
+        repository=local_curation_repository,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -81,8 +99,14 @@ def create_app(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
         allow_credentials=False,
-        allow_methods=["GET"],
+        allow_methods=["GET", "PUT"],
         allow_headers=["Content-Type"],
+    )
+    application.include_router(
+        build_catalog_curation_router(
+            settings=runtime_settings,
+            service=curation_service,
+        )
     )
 
     async def require_local_live_read(request: Request) -> None:

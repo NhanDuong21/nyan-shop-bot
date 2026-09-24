@@ -1,11 +1,17 @@
+import { useState } from "react";
+
+import { useCatalogCurationState } from "./catalog-curation-state";
 import { useCatalogState } from "./catalog-state";
 import type { CatalogSelection } from "./api";
 import { AdminDashboard } from "./features/admin-dashboard/AdminDashboard";
+import { CatalogCuration } from "./features/catalog-curation/CatalogCuration";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAdminTheme } from "./theme";
 
 export function App() {
+  const [view, setView] = useState<"overview" | "curation">("overview");
   const catalog = useCatalogState();
+  const curation = useCatalogCurationState(view === "curation");
   const theme = useAdminTheme();
   const supplier = catalog.state.supplier;
   const environmentLabel =
@@ -35,6 +41,22 @@ export function App() {
             <span>Quản trị vận hành</span>
           </div>
         </div>
+        <nav className="app-view-nav" aria-label="Khu vực quản trị">
+          <button
+            type="button"
+            aria-current={view === "overview" ? "page" : undefined}
+            onClick={() => setView("overview")}
+          >
+            Tổng quan
+          </button>
+          <button
+            type="button"
+            aria-current={view === "curation" ? "page" : undefined}
+            onClick={() => setView("curation")}
+          >
+            Biên tập catalog
+          </button>
+        </nav>
         <div className="app-actions">
           {catalog.sources.length > 1 && (
             <label className="source-selector">
@@ -72,7 +94,11 @@ export function App() {
         </span>
       </aside>
 
-      <AdminDashboard state={catalog.state} onRetry={catalog.retry} />
+      {view === "overview" ? (
+        <AdminDashboard state={catalog.state} onRetry={catalog.retry} />
+      ) : (
+        <CatalogCuration {...curation} />
+      )}
     </div>
   );
 }

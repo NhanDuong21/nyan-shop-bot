@@ -39,10 +39,18 @@ def test_openapi_is_client_input_for_read_only_catalog_routes() -> None:
     assert set(paths["/api/v1/catalog/sources"]) == {"get"}
     assert set(paths["/api/v1/catalog/{product_id}"]) == {"get"}
     assert set(paths["/api/v1/capabilities"]) == {"get"}
+    admin_path = "/api/v1/admin/catalog-curation"
+    assert set(paths[admin_path]) == {"get", "put"}
     assert all(
         method not in path
-        for path in paths.values()
+        for name, path in paths.items()
+        if name != admin_path
         for method in ("post", "put", "patch", "delete")
+    )
+    assert not any(
+        forbidden in path
+        for path in paths
+        for forbidden in ("orders", "purchase", "payment", "topup", "refund", "delivery")
     )
 
     money = schemas["Money"]
@@ -68,6 +76,12 @@ def test_openapi_is_client_input_for_read_only_catalog_routes() -> None:
     assert aggregate["properties"]["mode"]["const"] == "multi-readonly"
     source_parameter = paths["/api/v1/catalog"]["get"]["parameters"][0]
     assert "all" in source_parameter["schema"]["anyOf"][0]["enum"]
+
+    workspace = schemas["CatalogCurationWorkspace"]
+    assert workspace["properties"]["read_only"]["const"] is True
+    assert workspace["properties"]["supplier_writes_enabled"]["const"] is False
+    save_request = schemas["CatalogCurationSaveRequest"]
+    assert set(save_request["required"]) == {"expected_revision", "listings"}
 
 
 def test_ui_fixtures_cover_and_validate_every_required_state() -> None:

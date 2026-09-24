@@ -24,6 +24,11 @@ class PostgresDatabase:
             hide_parameters=True,
         )
 
+    @property
+    def engine(self) -> AsyncEngine:
+        """Share the configured engine with local repositories."""
+        return self._engine
+
     async def ping(self) -> bool:
         async with self._engine.connect() as connection:
             value: int | None = await connection.scalar(text("SELECT 1"))

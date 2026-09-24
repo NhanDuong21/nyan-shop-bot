@@ -26,12 +26,13 @@ async def test_migrations_are_at_head_and_tables_exist() -> None:
                     "order_intents",
                     "supplier_order_attempts",
                     "delivery_attempts",
+                    "catalog_curation_documents",
                 )
             }
     finally:
         await engine.dispose()
 
-    assert revision == "20260921_0002"
+    assert revision == "20260924_0003"
     assert table_names == {name: name for name in table_names}
 
 
