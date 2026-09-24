@@ -57,12 +57,10 @@ class PostgresCatalogCurationRepository:
         if row is None:
             return CatalogCurationDocument(revision=0, listings=())
         payload = row["payload"]
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or set(payload) != {"listings"}:
             raise CatalogCurationRepositoryUnavailable("persisted curation payload is invalid")
         try:
-            return CatalogCurationDocument.model_validate(
-                {"revision": row["revision"], "listings": payload.get("listings")}
-            )
+            return CatalogCurationDocument.model_validate({"revision": row["revision"], **payload})
         except ValidationError as exc:
             raise CatalogCurationRepositoryUnavailable(
                 "persisted curation payload is invalid"

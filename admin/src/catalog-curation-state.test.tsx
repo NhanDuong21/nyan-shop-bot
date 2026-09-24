@@ -51,6 +51,30 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+test("preserves a complete source outage as degraded ready state", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      Promise.resolve(
+        jsonResponse({
+          ...workspace(),
+          offers: [],
+          listings: [],
+          source_partial: true,
+        }),
+      ),
+    ),
+  );
+  const { result } = renderHook(() => useCatalogCurationState(true));
+
+  await waitFor(() => expect(result.current.state.kind).toBe("ready"));
+  if (result.current.state.kind !== "ready") throw new Error("expected ready state");
+  expect(result.current.state.offers).toEqual([]);
+  expect(result.current.state.listings).toEqual([]);
+  expect(result.current.state.sourcePartial).toBe(true);
+  expect(result.current.state.unresolvedOfferCount).toBe(0);
+});
+
 test("loads offers and keeps grouping entirely owner-authored", async () => {
   vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(workspace()))));
   const { result } = renderHook(() => useCatalogCurationState(true));

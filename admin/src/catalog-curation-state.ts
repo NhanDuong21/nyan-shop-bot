@@ -81,7 +81,12 @@ function mapWorkspace(
   workspace: CatalogCurationWorkspaceWire,
   save: CatalogCurationSaveState,
 ): CatalogCurationState {
-  if (workspace.offers.length === 0 && workspace.listings.length === 0) {
+  if (
+    workspace.offers.length === 0 &&
+    workspace.listings.length === 0 &&
+    !workspace.source_partial &&
+    workspace.unresolved_offer_count === 0
+  ) {
     return { kind: "empty" };
   }
   const assignments = new Map<string, string>();
