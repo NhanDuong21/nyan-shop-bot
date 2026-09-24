@@ -40,7 +40,8 @@ export function MockCheckout() {
   const [error, setError] = useState("");
   const [result, setResult] = useState<MockOrder | null>(null);
   const [submitted, setSubmitted] = useState(false);
-  const pending = useRef<{ key: string; scenario: MockScenario } | null>(null);
+  const [hasPending, setHasPending] = useState(false);
+  const pending = useRef<Parameters<typeof placeMockOrder>[1] | null>(null);
   const locked = useRef(false);
 
   const choices = catalog?.items.flatMap((product) =>
@@ -69,24 +70,26 @@ export function MockCheckout() {
   }
 
   async function submit(scenario: MockScenario) {
-    if (locked.current || !selected || (submitted && pending.current === null)) return;
+    if (locked.current || submitted || (!pending.current && !selected)) return;
     locked.current = true;
     setLoading(true);
     setError("");
-    const active = pending.current ?? { key: crypto.randomUUID(), scenario };
+    const active = pending.current ?? {
+      product_id: selected.product.id,
+      variant_id: selected.variant.id,
+      quantity,
+      idempotency_key: crypto.randomUUID(),
+      max_unit_price: { ...selected.variant.price },
+      scenario,
+    };
     pending.current = active;
+    setHasPending(true);
     try {
-      const order = await placeMockOrder(token, {
-        product_id: selected.product.id,
-        variant_id: selected.variant.id,
-        quantity,
-        idempotency_key: active.key,
-        max_unit_price: selected.variant.price,
-        scenario: active.scenario,
-      });
+      const order = await placeMockOrder(token, active);
       setResult(order);
       setSubmitted(true);
       pending.current = null;
+      setHasPending(false);
       setOrders(await fetchMockOrders(token));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Không xác định được kết quả. Xem lịch sử.");
@@ -115,6 +118,7 @@ export function MockCheckout() {
 
   function newOrder() {
     pending.current = null;
+    setHasPending(false);
     setResult(null);
     setSubmitted(false);
     setError("");
@@ -144,8 +148,8 @@ export function MockCheckout() {
           {choices.length === 0 ? <p>Catalog MOCK trống.</p> : (
             <>
               <label htmlFor="mock-product">Sản phẩm / biến thể</label>
-              <select id="mock-product" value={selected?.key} disabled={submitted || loading}
-                onChange={(event) => { setSelection(event.target.value); pending.current = null; }}>
+              <select id="mock-product" value={selected?.key} disabled={submitted || loading || hasPending}
+                onChange={(event) => setSelection(event.target.value)}>
                 {choices.map(({ product, variant, key }) => (
                   <option key={key} value={key}>{product.name} / {variant.name}</option>
                 ))}
@@ -153,12 +157,13 @@ export function MockCheckout() {
               {selected && <p>Giá hiện tại: {money(selected.variant.price)} · Tồn kho mô phỏng: {selected.variant.available_quantity}</p>}
               <label htmlFor="mock-quantity">Số lượng</label>
               <input id="mock-quantity" type="number" min="1" max="100" value={quantity}
-                disabled={submitted || loading} onChange={(event) => setQuantity(Number(event.target.value))} />
+                disabled={submitted || loading || hasPending} onChange={(event) => setQuantity(Number(event.target.value))} />
+              {hasPending && <p role="status">Phản hồi gửi đơn chưa rõ. Giữ nguyên yêu cầu và thử lại cùng mã đơn; không tạo yêu cầu mới.</p>}
               <div className="mock-actions">
-                <button type="button" disabled={loading || submitted || !selected || !available(selected.variant, quantity)} onClick={() => submit("success")}>Mô phỏng thành công</button>
-                <button type="button" disabled={loading || submitted || !selected || !available(selected.variant, quantity)} onClick={() => submit("failed_safe")}>Mô phỏng thất bại an toàn</button>
-                <button type="button" disabled={loading || submitted || !selected || !available(selected.variant, quantity)} onClick={() => submit("unknown")}>Mô phỏng UNKNOWN</button>
-                {pending.current && <button type="button" disabled={loading} onClick={() => submit(pending.current!.scenario)}>Thử lại cùng mã đơn</button>}
+                <button type="button" disabled={loading || submitted || hasPending || !selected || !available(selected.variant, quantity)} onClick={() => submit("success")}>Mô phỏng thành công</button>
+                <button type="button" disabled={loading || submitted || hasPending || !selected || !available(selected.variant, quantity)} onClick={() => submit("failed_safe")}>Mô phỏng thất bại an toàn</button>
+                <button type="button" disabled={loading || submitted || hasPending || !selected || !available(selected.variant, quantity)} onClick={() => submit("unknown")}>Mô phỏng UNKNOWN</button>
+                {hasPending && <button type="button" disabled={loading} onClick={() => submit(pending.current!.scenario)}>Thử lại cùng mã đơn</button>}
               </div>
               {submitted && <button type="button" onClick={newOrder}>Tạo đơn thử mới</button>}
             </>

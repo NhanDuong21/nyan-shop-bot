@@ -71,3 +71,73 @@ test("browser submits one mock intent and shows reconciliation history", async (
   await page.getByRole("button", { name: "Checkout MOCK" }).click();
   await expect(page.getByLabel("Khóa demo từ terminal")).toHaveValue("");
 });
+
+test("lost checkout response keeps one immutable request through retry", async ({ page }) => {
+  const attempts: Array<Record<string, unknown>> = [];
+  const orders: Array<Record<string, unknown>> = [];
+  await page.route("**/api/**", async (route) => {
+    const { pathname } = new URL(route.request().url());
+    const method = route.request().method();
+    const reply = (body: unknown) => route.fulfill({
+      contentType: "application/json", body: JSON.stringify(body),
+    });
+    if (pathname.endsWith("/v1/catalog/sources")) {
+      await reply({ sources: [{ supplier: "mock", mode: "mock", read_only: true }], selection_required: false, aggregate_available: false });
+    } else if (pathname.endsWith("/v1/catalog")) {
+      await reply({ supplier: "mock", mode: "mock", read_only: true, partial: false, omitted_count: 0,
+        state: "empty", freshness: null, items: [], error: null });
+    } else if (pathname.endsWith("/v1/capabilities")) {
+      const disabled = { status: "disabled", reason: "Demo only" };
+      await reply({ catalog_read: disabled, catalog_detail: disabled, purchase: disabled,
+        payment: disabled, top_up: disabled, refund: disabled, delivery: disabled });
+    } else if (pathname.endsWith("/v1/mock-checkout/catalog")) {
+      await reply({ mode: "MOCK", payment_mode: "disabled", items: [
+        product,
+        { id: "design-seat", name: "Other product", description: "Synthetic", variants: [
+          { id: "design-seat-7d", name: "7 days", price, available_quantity: 5 },
+        ] },
+      ] });
+    } else if (pathname.endsWith("/v1/mock-checkout/orders") && method === "GET") {
+      await reply(orders);
+    } else if (pathname.endsWith("/v1/mock-checkout/orders") && method === "POST") {
+      const input = route.request().postDataJSON();
+      attempts.push(input);
+      if (attempts.length === 1) {
+        orders.push({
+          intent_id: "00000000-0000-0000-0000-000000000002",
+          product_id: input.product_id,
+          variant_id: input.variant_id,
+          quantity: input.quantity,
+          unit_price: price,
+          max_unit_price: input.max_unit_price,
+          total_price: price,
+          purchase_state: "SUCCEEDED",
+          failure_code: null,
+        });
+        await route.abort("failed");
+      } else {
+        await reply(orders[0]);
+      }
+    } else {
+      await reply({ detail: "not found" });
+    }
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Checkout MOCK" }).click();
+  await page.getByLabel("Khóa demo từ terminal").fill("synthetic-demo-key");
+  await page.getByRole("button", { name: "Tải catalog và lịch sử" }).click();
+  await expect(page.getByLabel("Sản phẩm / biến thể")).toHaveValue("learning-pass/learning-pass-30d");
+  await page.getByRole("button", { name: "Mô phỏng thành công" }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.getByLabel("Sản phẩm / biến thể")).toBeDisabled();
+  await expect(page.getByLabel("Số lượng")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Mô phỏng thất bại an toàn" })).toBeDisabled();
+  await page.getByRole("button", { name: "Làm mới" }).click();
+  await expect(page.getByLabel("Sản phẩm / biến thể")).toBeDisabled();
+  await page.getByRole("button", { name: "Thử lại cùng mã đơn" }).click();
+  await expect(page.getByText(/Thành công mô phỏng/).first()).toBeVisible();
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1]).toEqual(attempts[0]);
+  expect(orders).toHaveLength(1);
+});
