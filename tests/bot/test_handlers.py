@@ -19,7 +19,6 @@ from nyan_shop_bot.bot.handlers import (
     build_router,
     callback_handler,
     catalog_handler,
-    catalog_source_menu_handler,
     orders_handler,
     start_handler,
     support_handler,
@@ -77,6 +76,12 @@ class FakeCallback:
     async def answer(self) -> object:
         self.answers += 1
         return object()
+
+
+def _assert_seller_facing(*values: str) -> None:
+    rendered = " ".join(values).casefold()
+    assert "khommo" not in rendered
+    assert "vietshare" not in rendered
 
 
 class StubCatalogReader:
@@ -167,6 +172,7 @@ async def test_start_is_honest_and_contains_the_static_menu() -> None:
     assert "LOCAL / CHỈ ĐỌC" in message.text
     assert "vô hiệu hóa" in message.text
     assert all(command in message.text for command in ("/catalog", "/orders", "/support"))
+    assert "chọn nguồn" not in message.text
 
 
 @pytest.mark.parametrize(
@@ -196,7 +202,7 @@ async def test_catalog_renders_all_envelope_states_honestly(
         assert "làm mới" in message.text
 
 
-async def test_live_partial_catalog_shows_source_and_exact_omission_count() -> None:
+async def test_live_partial_catalog_uses_seller_brand_and_exact_omission_count() -> None:
     fresh = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
     live_product = _product().model_copy(update={"supplier": "khommo", "mode": "khommo-readonly"})
     response = CatalogResponse(
@@ -213,7 +219,7 @@ async def test_live_partial_catalog_shows_source_and_exact_omission_count() -> N
 
     await catalog_handler(message, StubCatalogReader(catalog_response=response))
 
-    assert "DANH MỤC — KHOMMO / CHỈ ĐỌC" in message.text
+    assert "DANH MỤC — NYAN SHOP / CHỈ ĐỌC" in message.text
     assert "CATALOG PARTIAL" in message.text
     assert "3 sản phẩm bị loại" in message.text
     assert "không cấp quyền mua" in message.text
@@ -222,6 +228,7 @@ async def test_live_partial_catalog_shows_source_and_exact_omission_count() -> N
     assert "currency=" not in message.text
     assert message.markup is not None
     assert message.markup.inline_keyboard[0][0].text == "Sản phẩm do máy chủ trả về · 111đ · Còn 8"
+    _assert_seller_facing(message.text, message.markup.inline_keyboard[0][0].text)
     for forbidden in ("secret-supplier-identity", "secret-product", "secret-variant"):
         assert forbidden not in message.text
 
@@ -252,36 +259,7 @@ async def test_catalog_uses_compact_vnd_stock_buttons_without_repeating_products
     assert "available_quantity" not in message.text
 
 
-async def test_multi_source_menu_is_explicit_and_does_not_contact_suppliers() -> None:
-    khommo = StubCatalogReader(catalog_response=fake_catalog_scenarios()[FakeCatalogScenario.FRESH])
-    vietshare = StubCatalogReader(
-        catalog_response=fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
-    )
-    catalogs = CatalogRegistry({"khommo": khommo, "vietshare": vietshare})
-    message = FakeMessage()
-
-    await catalog_source_menu_handler(message, catalogs)
-
-    assert "CHỌN NGUỒN DANH MỤC — CHỈ ĐỌC" in message.text
-    assert "catalog tổng hợp" in message.text
-    assert "không tự dedupe" in message.text
-    assert message.markup is not None
-    assert [row[0].text for row in message.markup.inline_keyboard] == [
-        "Tất cả nguồn · CHỈ ĐỌC",
-        "KhoMMO · CHỈ ĐỌC",
-        "VietShare · CHỈ ĐỌC",
-    ]
-    assert [row[0].callback_data for row in message.markup.inline_keyboard] == [
-        encode_source_callback("all"),
-        encode_source_callback("khommo"),
-        encode_source_callback("vietshare"),
-    ]
-    assert all(row[0].style == "primary" for row in message.markup.inline_keyboard)
-    assert khommo.catalog_reads == 0
-    assert vietshare.catalog_reads == 0
-
-
-async def test_multi_source_callbacks_stay_bound_to_the_selected_reader() -> None:
+async def test_legacy_source_selection_redirects_to_seller_aggregate() -> None:
     fresh = fake_catalog_scenarios()[FakeCatalogScenario.FRESH]
     khommo_product = _product().model_copy(update={"supplier": "khommo", "mode": "khommo-readonly"})
     vietshare_product = _product().model_copy(
@@ -323,21 +301,26 @@ async def test_multi_source_callbacks_stay_bound_to_the_selected_reader() -> Non
         catalogs,
     )
 
-    assert "DANH MỤC — KHOMMO / CHỈ ĐỌC" in catalog_message.text
+    assert "DANH MỤC — NYAN SHOP / CHỈ ĐỌC" in catalog_message.text
     assert khommo.catalog_reads == 1
-    assert vietshare.catalog_reads == 0
+    assert vietshare.catalog_reads == 1
     assert catalog_message.markup is not None
     detail_data = catalog_message.markup.inline_keyboard[0][0].callback_data
     decoded = decode_callback(detail_data)
     assert decoded.source == "khommo"
     assert decoded.product_id == khommo_product.id
+    _assert_seller_facing(
+        catalog_message.text,
+        *(row[0].text for row in catalog_message.markup.inline_keyboard),
+    )
 
     detail_message = FakeMessage()
     await callback_handler(FakeCallback(detail_data, detail_message), catalogs)
 
-    assert "CHI TIẾT SẢN PHẨM — KHOMMO / CHỈ ĐỌC" in detail_message.text
+    assert "CHI TIẾT SẢN PHẨM — NYAN SHOP / CHỈ ĐỌC" in detail_message.text
     assert khommo.product_reads == [khommo_product.id]
     assert vietshare.product_reads == []
+    _assert_seller_facing(detail_message.text)
     assert detail_message.markup is not None
     assert decode_callback(detail_message.markup.inline_keyboard[0][0].callback_data).source == (
         "khommo"
@@ -380,23 +363,31 @@ async def test_aggregate_catalog_keeps_duplicate_ids_bound_to_their_original_sou
         catalogs,
     )
 
-    assert "DANH MỤC TỔNG HỢP" in aggregate_message.text
-    assert "không tự ghép hoặc dedupe" in aggregate_message.text
+    assert "DANH MỤC — NYAN SHOP / CHỈ ĐỌC" in aggregate_message.text
+    assert "chưa được tự động hợp nhất" in aggregate_message.text
     assert aggregate_message.markup is not None
     buttons = [row[0] for row in aggregate_message.markup.inline_keyboard]
     assert [decode_callback(button.callback_data).source for button in buttons] == [
         "khommo",
         "vietshare",
     ]
-    assert buttons[0].text.startswith("[KhoMMO]")
-    assert buttons[1].text.startswith("[VietShare]")
+    _assert_seller_facing(aggregate_message.text, *(button.text for button in buttons))
 
     detail_message = FakeMessage()
     await callback_handler(FakeCallback(buttons[1].callback_data, detail_message), catalogs)
 
-    assert "CHI TIẾT SẢN PHẨM — VIETSHARE / CHỈ ĐỌC" in detail_message.text
+    assert "CHI TIẾT SẢN PHẨM — NYAN SHOP / CHỈ ĐỌC" in detail_message.text
     assert khommo.product_reads == []
     assert vietshare.product_reads == [vietshare_product.id]
+    _assert_seller_facing(detail_message.text)
+
+    assert detail_message.markup is not None
+    quote_message = FakeMessage()
+    quote_data = detail_message.markup.inline_keyboard[0][0].callback_data
+    await callback_handler(FakeCallback(quote_data, quote_message), catalogs)
+
+    assert "THÔNG TIN GIÁ — NYAN SHOP / CHỈ ĐỌC" in quote_message.text
+    _assert_seller_facing(quote_message.text)
 
 
 async def test_aggregate_catalog_reports_a_failed_source_without_leaking_its_exception() -> None:
@@ -420,9 +411,10 @@ async def test_aggregate_catalog_reports_a_failed_source_without_leaking_its_exc
         CatalogRegistry({"khommo": khommo, "vietshare": vietshare}),
     )
 
-    assert "catalog tổng hợp đang hiển thị một phần" in message.text
-    assert "VietShare: không khả dụng" in message.text
+    assert "danh mục đang hiển thị một phần" in message.text
+    assert "Một phần dữ liệu tạm thời không khả dụng" in message.text
     assert message.markup is not None
+    _assert_seller_facing(message.text)
     assert "NEVER-PRINT" not in message.text
     assert "raw supplier body" not in message.text
 
@@ -462,8 +454,8 @@ async def test_aggregate_catalog_identifies_fresh_partial_source_and_omissions()
         CatalogRegistry({"khommo": khommo, "vietshare": vietshare}),
     )
 
-    assert "KhoMMO: dữ liệu mới; 1 sản phẩm; 3 sản phẩm bị loại" in message.text
-    assert "VietShare: dữ liệu mới; 1 sản phẩm" in message.text
+    assert "3 sản phẩm bị loại vì thiếu dữ liệu bắt buộc" in message.text
+    _assert_seller_facing(message.text)
 
 
 async def test_aggregate_catalog_preserves_stale_and_partial_evidence_together() -> None:
@@ -502,8 +494,9 @@ async def test_aggregate_catalog_preserves_stale_and_partial_evidence_together()
         CatalogRegistry({"khommo": khommo, "vietshare": vietshare}),
     )
 
-    assert "KhoMMO: dữ liệu cache đã cũ; 1 sản phẩm; 2 sản phẩm bị loại" in message.text
-    assert "VietShare: dữ liệu mới; 1 sản phẩm" in message.text
+    assert "2 sản phẩm bị loại vì thiếu dữ liệu bắt buộc" in message.text
+    assert "Một phần danh mục đang sử dụng dữ liệu cache đã cũ" in message.text
+    _assert_seller_facing(message.text)
 
 
 async def test_aggregate_catalog_error_keeps_empty_and_failed_source_evidence() -> None:
@@ -526,11 +519,11 @@ async def test_aggregate_catalog_error_keeps_empty_and_failed_source_evidence() 
         CatalogRegistry({"khommo": khommo, "vietshare": vietshare}),
     )
 
-    assert "Không nguồn catalog nào trả về dữ liệu dùng được" in message.text
-    assert "KhoMMO: phản hồi thành công; catalog trống" in message.text
-    assert "VietShare: không khả dụng" in message.text
+    assert "Không thể tải danh mục sản phẩm dùng được" in message.text
+    assert "Một phần dữ liệu tạm thời không khả dụng" in message.text
     assert message.markup is None
     assert "NEVER-PRINT" not in message.text
+    _assert_seller_facing(message.text)
 
 
 async def test_legacy_callback_in_multi_mode_fails_closed_without_guessing_source() -> None:

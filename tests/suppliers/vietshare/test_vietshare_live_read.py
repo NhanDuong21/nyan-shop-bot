@@ -225,12 +225,13 @@ async def test_fastapi_admin_contract_and_telegram_use_the_same_reader() -> None
     assert api_catalog["mode"] == "vietshare-readonly"
     assert api_detail["state"] == "found"
     assert api_detail["item"] == api_catalog["items"][0]
-    assert "DANH MỤC — VIETSHARE / CHỈ ĐỌC" in catalog_message.answers[0][0]
+    assert "DANH MỤC — NYAN SHOP / CHỈ ĐỌC" in catalog_message.answers[0][0]
     assert "Synthetic VietShare item" not in catalog_message.answers[0][0]
     markup = catalog_message.answers[0][1].get("reply_markup")
     assert isinstance(markup, InlineKeyboardMarkup)
-    assert markup.inline_keyboard[0][0].text == "Synthetic VietShare item · 32.000đ · Còn 9"
-    assert "CHI TIẾT SẢN PHẨM — VIETSHARE / CHỈ ĐỌC" in detail_message.answers[0][0]
+    assert markup.inline_keyboard[0][0].text == "Synthetic Nyan Shop item · 32.000đ · Còn 9"
+    assert "CHI TIẾT SẢN PHẨM — NYAN SHOP / CHỈ ĐỌC" in detail_message.answers[0][0]
+    assert "vietshare" not in detail_message.answers[0][0].casefold()
     assert "amount_minor=32000; currency=VND; unit=minor" in detail_message.answers[0][0]
     assert callback.answers == 1
 

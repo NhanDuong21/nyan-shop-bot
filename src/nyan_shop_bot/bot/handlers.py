@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Sequence
 from typing import Final, Protocol
@@ -16,13 +17,11 @@ from nyan_shop_bot.bot.callbacks import (
     decode_callback,
     encode_detail_callback,
     encode_quote_callback,
-    encode_source_callback,
 )
 from nyan_shop_bot.catalog.mock import FakeCatalogReader
 from nyan_shop_bot.catalog.models import (
     AggregateCatalogResponse,
     AggregateCatalogState,
-    AggregateSourceReport,
     CatalogDetailFound,
     CatalogDetailNotFound,
     CatalogDetailResponse,
@@ -31,7 +30,6 @@ from nyan_shop_bot.catalog.models import (
     CatalogResponse,
     CatalogState,
     CatalogVariant,
-    LiveCatalogSelection,
     LiveCatalogSupplier,
     Money,
 )
@@ -46,6 +44,11 @@ MAX_MESSAGE_CHARS: Final = 3_500
 MAX_BUTTON_TEXT_CHARS: Final = 64
 MAX_CATALOG_ITEMS: Final = 20
 MAX_DETAIL_VARIANTS: Final = 20
+SELLER_CATALOG_LABEL: Final = "NYAN SHOP / CHỈ ĐỌC"
+_UPSTREAM_BRAND_PATTERN: Final = re.compile(
+    r"\b(?:kho[\s_-]*mmo|viet[\s_-]*share)\b",
+    flags=re.IGNORECASE,
+)
 
 SAFE_REFRESH_MESSAGE: Final = (
     "Nút này không còn hợp lệ hoặc dữ liệu đã thay đổi. "
@@ -97,6 +100,12 @@ def _bounded_display(value: str, limit: int, *, fallback: str) -> str:
     return f"{visible[: limit - 1].rstrip()}…"
 
 
+def _seller_display(value: str, limit: int, *, fallback: str) -> str:
+    """White-label known upstream brands only in customer-visible copy."""
+    branded = _UPSTREAM_BRAND_PATTERN.sub("Nyan Shop", value)
+    return _bounded_display(branded, limit, fallback=fallback)
+
+
 def _bounded_message(lines: Sequence[str]) -> str:
     text = "\n".join(lines)
     if len(text) <= MAX_MESSAGE_CHARS:
@@ -116,24 +125,6 @@ def _format_catalog_button_price(money: Money) -> str:
     return f"{money.amount_minor:,} {money.currency}"
 
 
-def _source_label(supplier: str) -> str:
-    """Render only the public source identity, never supplier mapping details."""
-    return {
-        "mock": "MOCK / CHỈ ĐỌC",
-        "khommo": "KHOMMO / CHỈ ĐỌC",
-        "vietshare": "VIETSHARE / CHỈ ĐỌC",
-        "aggregate": "KHOMMO + VIETSHARE / CHỈ ĐỌC",
-    }.get(supplier, "NGUỒN KHÔNG XÁC ĐỊNH / CHỈ ĐỌC")
-
-
-def _source_name(supplier: str) -> str:
-    return {
-        "khommo": "KhoMMO",
-        "vietshare": "VietShare",
-        "aggregate": "KhoMMO + VietShare",
-    }.get(supplier, "supplier")
-
-
 def _live_source(supplier: str) -> LiveCatalogSupplier | None:
     if supplier == "khommo":
         return "khommo"
@@ -146,12 +137,11 @@ def _button_text(prefix: str, value: str) -> str:
     return _bounded_display(f"{prefix}{value}", MAX_BUTTON_TEXT_CHARS, fallback=prefix.rstrip())
 
 
-def _catalog_button_text(product: CatalogProduct, *, include_source: bool = False) -> str:
+def _catalog_button_text(product: CatalogProduct) -> str:
     price = _format_catalog_button_price(product.price)
     availability = (
         "Hết hàng" if product.available_quantity == 0 else f"Còn {product.available_quantity}"
     )
-    source_prefix = f"[{_source_name(product.supplier)}] " if include_source else ""
     suffix = f" · {price} · {availability}"
     if len(suffix) >= MAX_BUTTON_TEXT_CHARS:
         return _bounded_display(
@@ -159,8 +149,8 @@ def _catalog_button_text(product: CatalogProduct, *, include_source: bool = Fals
             MAX_BUTTON_TEXT_CHARS,
             fallback="Xem chi tiết",
         )
-    name = _bounded_display(
-        f"{source_prefix}{product.name}",
+    name = _seller_display(
+        product.name,
         MAX_BUTTON_TEXT_CHARS - len(suffix),
         fallback="Sản phẩm",
     )
@@ -191,24 +181,22 @@ async def start_handler(message: AnswerableMessage) -> None:
         (
             "Nyan Shop Bot — LOCAL / CHỈ ĐỌC.",
             "Bot chỉ cho phép xem danh mục; thanh toán và mua hàng thật hiện bị vô hiệu hóa.",
-            "Menu: /catalog chọn nguồn và xem danh mục · /orders xem trạng thái đơn · "
-            "/support xem trợ giúp.",
+            "Menu: /catalog xem danh mục · /orders xem trạng thái đơn · /support xem trợ giúp.",
         ),
     )
 
 
 def _catalog_lines(response: CatalogResponse) -> list[str]:
-    source_label = _source_label(response.supplier)
     if response.state is CatalogState.EMPTY:
         return [
-            f"DANH MỤC — {source_label}",
+            f"DANH MỤC — {SELLER_CATALOG_LABEL}",
             "Danh mục hiện trống; không có sản phẩm nào để hiển thị.",
             "Không có đơn hàng hoặc giao dịch nào được tạo.",
         ]
     if response.state is CatalogState.ERROR:
         return [SAFE_CATALOG_ERROR_MESSAGE]
 
-    lines = [f"DANH MỤC — {source_label}"]
+    lines = [f"DANH MỤC — {SELLER_CATALOG_LABEL}"]
     if response.state is CatalogState.STALE:
         lines.append(
             "⚠ CẢNH BÁO: đang hiển thị dữ liệu bộ nhớ đệm đã cũ; lần làm mới gần nhất thất bại."
@@ -219,7 +207,7 @@ def _catalog_lines(response: CatalogResponse) -> list[str]:
     if response.partial:
         lines.append(
             "⚠ CATALOG PARTIAL: "
-            f"{response.omitted_count} sản phẩm bị loại vì supplier thiếu mô tả hoặc tồn kho; "
+            f"{response.omitted_count} sản phẩm bị loại vì nguồn dữ liệu thiếu mô tả hoặc tồn kho; "
             "bot không suy đoán giá trị."
         )
 
@@ -230,9 +218,8 @@ def _catalog_lines(response: CatalogResponse) -> list[str]:
         lines.append("Giá và tồn kho chỉ là thông tin MOCK hiện tại, không phải cam kết bán hàng.")
     else:
         lines.append(
-            f"Giá và tồn kho là snapshot chỉ đọc từ {_source_name(response.supplier)}; "
-            "không phải cam kết bán hàng "
-            "và không cấp quyền mua."
+            "Giá và tồn kho là snapshot chỉ đọc tại thời điểm hiện tại; "
+            "không phải cam kết bán hàng và không cấp quyền mua."
         )
     return lines
 
@@ -284,36 +271,29 @@ async def catalog_handler(
     )
 
 
-def _aggregate_source_line(report: AggregateSourceReport) -> str:
-    """Render complete sanitized evidence for one aggregate source."""
-    source_name = _source_name(report.supplier)
-    if report.state is CatalogState.ERROR:
-        return f"{source_name}: không khả dụng; không suy đoán sản phẩm bị thiếu."
-    if report.state is CatalogState.EMPTY:
-        return f"{source_name}: phản hồi thành công; catalog trống."
-
-    freshness = "dữ liệu cache đã cũ" if report.state is CatalogState.STALE else "dữ liệu mới"
-    line = f"{source_name}: {freshness}; {report.item_count} sản phẩm"
-    if report.partial:
-        line += f"; {report.omitted_count} sản phẩm bị loại vì dữ liệu bắt buộc bị thiếu"
-    return f"{line}."
-
-
 def _aggregate_catalog_lines(response: AggregateCatalogResponse) -> list[str]:
-    title = "DANH MỤC TỔNG HỢP — KHOMMO + VIETSHARE / CHỈ ĐỌC"
+    title = f"DANH MỤC — {SELLER_CATALOG_LABEL}"
     lines = [title]
     if response.state is AggregateCatalogState.ERROR:
-        lines.append("Không nguồn catalog nào trả về dữ liệu dùng được lúc này.")
+        lines.append("Không thể tải danh mục sản phẩm dùng được lúc này.")
     elif response.state is AggregateCatalogState.EMPTY:
-        lines.append("Cả hai nguồn phản hồi thành công nhưng catalog hiện trống.")
+        lines.append("Danh mục hiện trống; không có sản phẩm nào để hiển thị.")
     elif response.state is AggregateCatalogState.PARTIAL:
-        lines.append(
-            "CẢNH BÁO: catalog tổng hợp đang hiển thị một phần; xem trạng thái từng nguồn bên dưới."
-        )
+        lines.append("⚠ CẢNH BÁO: danh mục đang hiển thị một phần dữ liệu hiện có.")
     else:
-        lines.append("Dữ liệu từ cả hai nguồn đã được tải · Chọn sản phẩm để xem chi tiết.")
+        lines.append("Dữ liệu mới · Chọn một sản phẩm để xem chi tiết.")
 
-    lines.extend(_aggregate_source_line(report) for report in response.sources)
+    if response.omitted_count:
+        lines.append(
+            f"{response.omitted_count} sản phẩm bị loại vì thiếu dữ liệu bắt buộc; "
+            "bot không suy đoán giá trị."
+        )
+    if any(report.state is CatalogState.STALE for report in response.sources):
+        lines.append("Một phần danh mục đang sử dụng dữ liệu cache đã cũ.")
+    if any(report.state is CatalogState.ERROR for report in response.sources):
+        lines.append(
+            "Một phần dữ liệu tạm thời không khả dụng; sản phẩm bị thiếu không được suy đoán."
+        )
     if response.state in {AggregateCatalogState.ERROR, AggregateCatalogState.EMPTY}:
         lines.append("Không có đơn hàng hoặc giao dịch nào được tạo.")
         return lines
@@ -323,8 +303,8 @@ def _aggregate_catalog_lines(response: AggregateCatalogResponse) -> list[str]:
         lines.append(f"Chỉ hiển thị {len(visible_items)} sản phẩm đầu tiên trong menu này.")
     lines.extend(
         (
-            "Các sản phẩm chỉ được xếp chung để xem; không tự ghép hoặc dedupe theo tên/giá.",
-            "Giá và tồn kho là snapshot chỉ đọc theo từng nguồn; không cấp quyền mua.",
+            "Các mục có tên hoặc giá giống nhau chưa được tự động hợp nhất.",
+            "Giá và tồn kho là snapshot chỉ đọc tại thời điểm hiện tại; không cấp quyền mua.",
         )
     )
     return lines
@@ -347,7 +327,7 @@ def _aggregate_catalog_keyboard(
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=_catalog_button_text(product, include_source=True),
+                    text=_catalog_button_text(product),
                     callback_data=callback_data,
                     style="danger" if product.available_quantity == 0 else "success",
                 )
@@ -360,7 +340,7 @@ async def aggregate_catalog_handler(
     message: AnswerableMessage,
     catalogs: CatalogRegistry,
 ) -> None:
-    """Render a source-qualified combined view without creating synthetic SKUs."""
+    """Render a seller-facing combined view while preserving source-qualified routing."""
     try:
         response = await catalogs.read_aggregate()
     except Exception:
@@ -370,55 +350,6 @@ async def aggregate_catalog_handler(
         message,
         _aggregate_catalog_lines(response),
         keyboard=_aggregate_catalog_keyboard(response),
-    )
-
-
-def _source_menu_keyboard(catalogs: CatalogRegistry) -> InlineKeyboardMarkup | None:
-    rows: list[list[InlineKeyboardButton]] = []
-    if catalogs.aggregate_available:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="Tất cả nguồn · CHỈ ĐỌC",
-                    callback_data=encode_source_callback("all"),
-                    style="primary",
-                )
-            ]
-        )
-    labels: dict[LiveCatalogSelection, str] = {
-        "all": "Tất cả nguồn · CHỈ ĐỌC",
-        "khommo": "KhoMMO · CHỈ ĐỌC",
-        "vietshare": "VietShare · CHỈ ĐỌC",
-    }
-    for source in catalogs.sources:
-        if source not in labels:
-            continue
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=labels[source],
-                    callback_data=encode_source_callback(source),
-                    style="primary",
-                )
-            ]
-        )
-    return _keyboard(rows)
-
-
-async def catalog_source_menu_handler(
-    message: AnswerableMessage,
-    catalogs: CatalogRegistry,
-) -> None:
-    """Ask the user to choose a live source without contacting either supplier."""
-    await _send(
-        message,
-        (
-            "CHỌN NGUỒN DANH MỤC — CHỈ ĐỌC",
-            "Có thể xem catalog tổng hợp hoặc lọc riêng KhoMMO/VietShare.",
-            "Bản tổng hợp vẫn giữ nguồn trên từng sản phẩm và không tự dedupe.",
-            "Chọn một mục bên dưới. Thao tác này không tạo đơn hoặc thanh toán.",
-        ),
-        keyboard=_source_menu_keyboard(catalogs),
     )
 
 
@@ -449,14 +380,14 @@ async def support_handler(message: AnswerableMessage) -> None:
 
 def _detail_lines(product: CatalogProduct) -> list[str]:
     lines = [
-        f"CHI TIẾT SẢN PHẨM — {_source_label(product.supplier)}",
-        f"Tên: {_bounded_display(product.name, 120, fallback='Sản phẩm không có tên hiển thị')}",
-        f"Mô tả: {_bounded_display(product.description, 500, fallback='Không có mô tả hiển thị')}",
+        f"CHI TIẾT SẢN PHẨM — {SELLER_CATALOG_LABEL}",
+        f"Tên: {_seller_display(product.name, 120, fallback='Sản phẩm không có tên hiển thị')}",
+        f"Mô tả: {_seller_display(product.description, 500, fallback='Không có mô tả hiển thị')}",
         "Các biến thể hiện tại:",
     ]
     visible_variants = product.variants[:MAX_DETAIL_VARIANTS]
     for variant in visible_variants:
-        name = _bounded_display(variant.name, 96, fallback="Biến thể không có tên hiển thị")
+        name = _seller_display(variant.name, 96, fallback="Biến thể không có tên hiển thị")
         lines.append(
             f"• {name} — {_format_money(variant.price)}; "
             f"available_quantity={variant.available_quantity}"
@@ -485,7 +416,11 @@ def _detail_keyboard(
                 InlineKeyboardButton(
                     text=_button_text(
                         "Báo giá mô phỏng: " if product.supplier == "mock" else "Xem giá: ",
-                        variant.name,
+                        _seller_display(
+                            variant.name,
+                            96,
+                            fallback="Biến thể không có tên hiển thị",
+                        ),
                     ),
                     callback_data=callback_data,
                 )
@@ -495,12 +430,12 @@ def _detail_keyboard(
 
 
 def _quote_lines(product: CatalogProduct, variant: CatalogVariant) -> list[str]:
-    product_name = _bounded_display(
+    product_name = _seller_display(
         product.name,
         120,
         fallback="Sản phẩm không có tên hiển thị",
     )
-    variant_name = _bounded_display(
+    variant_name = _seller_display(
         variant.name,
         96,
         fallback="Biến thể không có tên hiển thị",
@@ -508,7 +443,7 @@ def _quote_lines(product: CatalogProduct, variant: CatalogVariant) -> list[str]:
     title = (
         "BÁO GIÁ MÔ PHỎNG — MOCK / CHỈ ĐỌC"
         if product.supplier == "mock"
-        else f"THÔNG TIN GIÁ — {_source_label(product.supplier)}"
+        else f"THÔNG TIN GIÁ — {SELLER_CATALOG_LABEL}"
     )
     lines = [
         title,
@@ -623,11 +558,19 @@ async def callback_handler(
 
     access = _catalog_access_or_default(catalog)
     if isinstance(access, CatalogRegistry):
-        if payload.action is CallbackAction.SOURCE and payload.source == "all":
-            if not access.aggregate_available:
+        if payload.action is CallbackAction.SOURCE:
+            if access.aggregate_available:
+                await aggregate_catalog_handler(message, access)
+                return
+            if payload.source is None or payload.source == "all":
                 await _send(message, (SAFE_REFRESH_MESSAGE,))
                 return
-            await aggregate_catalog_handler(message, access)
+            try:
+                reader = access.resolve(payload.source)
+            except (CatalogSourceSelectionRequired, CatalogSourceUnavailable):
+                await _send(message, (SAFE_REFRESH_MESSAGE,))
+                return
+            await catalog_handler(message, reader, source=payload.source)
             return
         if payload.source == "all":
             await _send(message, (SAFE_REFRESH_MESSAGE,))
@@ -647,10 +590,7 @@ async def callback_handler(
         reader = access
 
     if payload.action is CallbackAction.SOURCE:
-        if payload.source is None:
-            await _send(message, (SAFE_REFRESH_MESSAGE,))
-            return
-        await catalog_handler(message, reader, source=payload.source)
+        await _send(message, (SAFE_REFRESH_MESSAGE,))
         return
     if payload.product_id is None:
         await _send(message, (SAFE_REFRESH_MESSAGE,))
@@ -673,8 +613,11 @@ def build_router(catalog: CatalogReader | CatalogRegistry | None = None) -> Rout
 
     async def injected_catalog_handler(message: AnswerableMessage) -> None:
         if isinstance(access, CatalogRegistry):
+            if access.aggregate_available:
+                await aggregate_catalog_handler(message, access)
+                return
             if access.selection_required:
-                await catalog_source_menu_handler(message, access)
+                await _send(message, (SAFE_CATALOG_ERROR_MESSAGE,))
                 return
             configured_source = access.sources[0]
             await catalog_handler(

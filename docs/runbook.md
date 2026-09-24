@@ -121,18 +121,20 @@ $env:PYTHONPATH = (Join-Path (Get-Location) "src")
 ```
 
 Stop it with `Ctrl+C`. This runtime is for local owner verification only; do not start it in CI or
-production. `/catalog` identifies KhoMMO as the source, marks stale/partial state, and reports the
-exact omitted count. `/orders` remains unavailable, and no purchase, payment, top-up, refund, or
-delivery operation exists in this runtime.
+production. The Telegram customer surface uses Nyan Shop branding and does not expose the
+upstream supplier name. It still marks stale/partial state and reports the exact omitted count.
+The callback keeps the source identity internally so detail reads cannot cross suppliers.
+`/orders` remains unavailable, and no purchase, payment, top-up, refund, or delivery operation
+exists in this runtime.
 
 To return to the synthetic catalog, stop both processes, set `SUPPLIER_MODE=mock`, remove the
 supplier and Telegram tokens from `.env`, and restart. Never commit `.env`.
 
 ### VietShare local read-only source
 
-VietShare uses the same FastAPI, admin, and Telegram `CatalogReader` path without combining its
-products with KhoMMO. In the ignored local `.env`, select the source and keep both independent
-write guards closed:
+VietShare uses the same FastAPI, admin, and Telegram `CatalogReader` path. It can run alone or as
+part of the owner-approved `multi-readonly` catalog. In the ignored local `.env`, configure its
+credentials and keep both independent write guards closed:
 
 ```text
 APP_ENV=local
@@ -169,6 +171,12 @@ Run FastAPI and the admin with the same commands above, then verify `/healthz` b
 opening `/api/v1/catalog`. Telegram polling uses the same owner-confirmed command after
 `TELEGRAM_BOT_TOKEN` is present locally. `/orders` stays informational and no supplier order,
 payment, top-up, refund, or delivery operation is implemented.
+
+For the combined seller catalog, set `SUPPLIER_MODE=multi-readonly` and provide both suppliers'
+local read-only credentials in the ignored `.env`. Telegram `/catalog` then opens the aggregate
+view directly. Customer-visible catalog, detail, and price messages contain only Nyan Shop
+branding; source names remain available in the loopback FastAPI/admin operations view for audit
+and are retained internally in callback routing. Products are not deduplicated by name or price.
 
 ## Troubleshooting
 

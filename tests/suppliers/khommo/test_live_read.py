@@ -279,7 +279,8 @@ async def test_observed_detail_envelope_reaches_fastapi_and_telegram_consistentl
     assert api_detail["item"]["read_only"] is True
     assert callback.answered is True
     assert len(message.answers) == 1
-    assert "CHI TIẾT SẢN PHẨM — KHOMMO / CHỈ ĐỌC" in message.answers[0]
+    assert "CHI TIẾT SẢN PHẨM — NYAN SHOP / CHỈ ĐỌC" in message.answers[0]
+    assert "khommo" not in message.answers[0].casefold()
     assert f"Tên: {api_detail['item']['name']}" in message.answers[0]
     assert "amount_minor=25000; currency=VND; unit=minor" in message.answers[0]
     assert "available_quantity=4" in message.answers[0]
