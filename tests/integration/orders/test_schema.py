@@ -52,7 +52,7 @@ async def test_order_migration_is_head_with_expected_tables_and_constraints(
             ).scalars()
         )
 
-    assert revision == "20260924_0003"
+    assert revision == "20260925_0004"
     assert table_names == {name: name for name in table_names}
     assert {
         "uq_order_intents_idempotency_key",
