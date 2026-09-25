@@ -36,12 +36,17 @@ from nyan_shop_bot.suppliers.vietshare.write_orders import (
 
 _KEY = re.compile(r"[A-Za-z0-9._:-]{8,128}\Z")
 _ID = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
+_OPAQUE_REF = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _MAX_BIGINT = (1 << 63) - 1
 _PATH = "/v1/orders"
 
 
 def _canonical_bytes(timestamp: int, nonce: str, body_sha256: str) -> bytes:
     return f"{timestamp}|{nonce}|POST|{_PATH}|{body_sha256}".encode()
+
+
+def _valid_evidence_ref(value: str) -> bool:
+    return type(value) is str and _OPAQUE_REF.fullmatch(value) is not None
 
 
 class GateError(ValueError):
@@ -108,6 +113,7 @@ class GateRecord:
     state: GateState
     retry_not_before: datetime | None = None
     supplier_order_code: str | None = field(default=None, repr=False)
+    secret_delivery_ref: str | None = field(default=None, repr=False)
     last_error_code: str | None = None
 
     def __repr__(self) -> str:
@@ -127,7 +133,7 @@ class GateOutcome:
 _RECORD_COLUMNS = """
     test_id, idempotency_key, raw_body, body_sha256, product_id, quantity,
     max_unit_price_vnd, absolute_spend_cap_vnd, wallet_id, operator_id,
-    state, retry_not_before, supplier_order_code, last_error_code
+    state, retry_not_before, supplier_order_code, secret_delivery_ref, last_error_code
 """
 
 
@@ -148,6 +154,7 @@ def _record(row: object) -> GateRecord:
         state=GateState(values["state"]),
         retry_not_before=values["retry_not_before"],
         supplier_order_code=values["supplier_order_code"],
+        secret_delivery_ref=values["secret_delivery_ref"],
         last_error_code=values["last_error_code"],
     )
 
@@ -233,6 +240,119 @@ class VietSharePgGate:
                 raise GateError("Test identity or Idempotency-Key conflict")
             return record
 
+    async def arm(
+        self,
+        *,
+        test_id: str,
+        product_id: int,
+        quantity: int,
+        max_unit_price_vnd: int,
+        absolute_spend_cap_vnd: int,
+        wallet_id: str,
+        operator_id: str,
+        approved_by: str,
+        approval_ref: str,
+    ) -> None:
+        """Arm exactly one prepared/reconciling tuple after a separate owner decision."""
+        if (
+            type(approved_by) is not str
+            or _ID.fullmatch(approved_by) is None
+            or type(approval_ref) is not str
+            or _OPAQUE_REF.fullmatch(approval_ref) is None
+        ):
+            raise GateError("Owner approval reference is required")
+        async with self._sessions() as session, session.begin():
+            control = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT enabled FROM vietshare_write_gate_control WHERE id=1 FOR UPDATE"
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            if control["enabled"]:
+                raise GateError("VietShare capped gate is already armed")
+            result = await session.execute(
+                text(f"""
+                    SELECT {_RECORD_COLUMNS} FROM vietshare_write_journal
+                    WHERE test_id=:id FOR UPDATE
+                """),
+                {"id": test_id},
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                raise GateError("Test was not durably prepared")
+            record = _record(row)
+            if record.state not in {GateState.PREPARED, GateState.RECONCILING}:
+                raise GateError("Test state does not permit arming")
+            if record.last_error_code in {"IDEMPOTENCY_MISMATCH", "SPEND_CAP_EXCEEDED"}:
+                raise GateError("Supplier result is frozen for reconciliation")
+            if (
+                record.product_id != product_id
+                or record.quantity != quantity
+                or record.max_unit_price_vnd != max_unit_price_vnd
+                or record.absolute_spend_cap_vnd != absolute_spend_cap_vnd
+                or record.wallet_id != wallet_id
+                or record.operator_id != operator_id
+                or hashlib.sha256(record.raw_body).hexdigest() != record.body_sha256
+                or record.raw_body
+                != OrderPurchase(
+                    product_id=record.product_id,
+                    quantity=record.quantity,
+                    max_unit_price=record.max_unit_price_vnd,
+                    currency="VND",
+                ).raw_body()
+            ):
+                raise GateError("Approved tuple does not match the prepared obligation")
+            unresolved = await session.scalar(
+                text("""
+                    SELECT test_id FROM vietshare_write_journal
+                    WHERE source='vietshare' AND test_id<>:id
+                        AND state IN ('DISPATCHING','UNKNOWN','RECONCILING','SUCCEEDED')
+                """),
+                {"id": test_id},
+            )
+            if unresolved is not None:
+                raise GateError("Another VietShare test is unresolved or completed")
+            await session.execute(
+                text("""
+                    UPDATE vietshare_write_gate_control SET
+                        enabled=true, allowed_operator_ids=ARRAY[:operator]::varchar[],
+                        approved_test_id=:id, approved_product_id=:product,
+                        approved_quantity=:quantity,
+                        approved_max_unit_price_vnd=:unit_price,
+                        approved_spend_cap_vnd=:cap,
+                        approved_wallet_id=:wallet, approved_currency='VND',
+                        approved_by=:approved_by, approval_ref=:approval_ref,
+                        updated_at=now()
+                    WHERE id=1
+                """),
+                {
+                    "operator": operator_id,
+                    "id": test_id,
+                    "product": product_id,
+                    "quantity": quantity,
+                    "unit_price": max_unit_price_vnd,
+                    "cap": absolute_spend_cap_vnd,
+                    "wallet": wallet_id,
+                    "approved_by": approved_by,
+                    "approval_ref": approval_ref,
+                },
+            )
+
+    async def disarm(self) -> None:
+        """Immediate local kill switch; retain approval metadata for audit/recovery."""
+        async with self._sessions() as session, session.begin():
+            await session.execute(
+                text("""
+                    UPDATE vietshare_write_gate_control SET enabled=false, updated_at=now()
+                    WHERE id=1
+                """)
+            )
+
     async def claim(
         self,
         *,
@@ -317,12 +437,12 @@ class VietSharePgGate:
                 text("""
                 SELECT test_id FROM vietshare_write_journal
                 WHERE source='vietshare' AND test_id<>:id
-                    AND state IN ('DISPATCHING','UNKNOWN','RECONCILING')
+                    AND state IN ('DISPATCHING','UNKNOWN','RECONCILING','SUCCEEDED')
             """),
                 {"id": test_id},
             )
             if unresolved is not None:
-                raise GateError("Another VietShare test is unresolved")
+                raise GateError("Another VietShare test is unresolved or completed")
             canonical_sha256 = hashlib.sha256(
                 _canonical_bytes(timestamp, nonce, record.body_sha256)
             ).hexdigest()
@@ -364,6 +484,7 @@ class VietSharePgGate:
         http_status: int | None = None,
         retry_after_header: str | None = None,
         order_code: str | None = None,
+        secret_delivery_ref: str | None = None,
         error_code: str | None = None,
     ) -> None:
         if state not in {
@@ -382,6 +503,12 @@ class VietSharePgGate:
             type(retry_after_header) is not str or len(retry_after_header) > 256
         ):
             raise GateError("Invalid Retry-After evidence")
+        if secret_delivery_ref is not None and (
+            state not in {GateState.SUCCEEDED, GateState.RECONCILING}
+            or type(secret_delivery_ref) is not str
+            or re.fullmatch(r"[0-9a-f]{32}", secret_delivery_ref) is None
+        ):
+            raise GateError("Invalid secret delivery reference")
         async with self._sessions() as session, session.begin():
             await session.execute(
                 text("""
@@ -395,7 +522,7 @@ class VietSharePgGate:
                     retry_not_before=CASE WHEN CAST(:delay AS double precision) IS NULL
                         THEN NULL ELSE clock_timestamp() +
                         CAST(:delay AS double precision) * INTERVAL '1 second' END,
-                    supplier_order_code=:code,
+                    supplier_order_code=:code, secret_delivery_ref=:delivery_ref,
                     last_error_code=:error, updated_at=now()
                 WHERE test_id=:id AND state='DISPATCHING' RETURNING test_id
             """),
@@ -404,6 +531,7 @@ class VietSharePgGate:
                     "state": state.value,
                     "delay": retry_delay_seconds,
                     "code": order_code,
+                    "delivery_ref": secret_delivery_ref,
                     "error": error_code,
                 },
             )
@@ -436,8 +564,66 @@ class VietSharePgGate:
             """)
             )
 
-    async def mark_reconciling(self, test_id: str, *, operator_id: str) -> None:
+    async def mark_dispatch_lost(
+        self, test_id: str, *, operator_id: str, evidence_ref: str
+    ) -> None:
+        """Operator-attested stop of a lost dispatcher; never sends a request."""
+        if not _valid_evidence_ref(evidence_ref):
+            raise GateError("Recovery evidence reference is required")
+        async with self._sessions() as session, session.begin():
+            allowed = await session.scalar(
+                text("""
+                    SELECT allowed_operator_ids FROM vietshare_write_gate_control
+                    WHERE id=1 FOR UPDATE
+                """)
+            )
+            if type(operator_id) is not str or operator_id not in allowed:
+                raise GateError("Operator is not currently allowed to recover")
+            updated = await session.execute(
+                text("""
+                    UPDATE vietshare_write_journal SET state='UNKNOWN',
+                        last_error_code='DISPATCH_LOST', updated_at=now()
+                    WHERE test_id=:id AND operator_id=:operator
+                        AND state='DISPATCHING'
+                    RETURNING test_id
+                """),
+                {"id": test_id, "operator": operator_id},
+            )
+            if updated.scalar_one_or_none() is None:
+                raise GateError("Active matching dispatch is required")
+            attempt = await session.execute(
+                text("""
+                    UPDATE vietshare_write_auth_attempts SET
+                        response_code='DISPATCH_LOST', outcome_state='UNKNOWN',
+                        completed_at=clock_timestamp()
+                    WHERE test_id=:id AND outcome_state IS NULL
+                    RETURNING nonce
+                """),
+                {"id": test_id},
+            )
+            if attempt.scalar_one_or_none() is None:
+                raise GateError("Active signing attempt is required")
+            await session.execute(
+                text("""
+                    UPDATE vietshare_write_gate_control SET enabled=false, updated_at=now()
+                    WHERE id=1
+                """)
+            )
+            await session.execute(
+                text("""
+                    INSERT INTO vietshare_recovery_events
+                        (test_id, operator_id, action, evidence_ref)
+                    VALUES (:id, :operator, 'DISPATCH_LOST', :evidence)
+                """),
+                {"id": test_id, "operator": operator_id, "evidence": evidence_ref},
+            )
+
+    async def mark_reconciling(
+        self, test_id: str, *, operator_id: str, evidence_ref: str | None = None
+    ) -> None:
         """Record deliberate investigation; this does not authorize a new POST."""
+        if evidence_ref is not None and not _valid_evidence_ref(evidence_ref):
+            raise GateError("Recovery evidence reference is invalid")
         async with self._sessions() as session, session.begin():
             allowed = await session.scalar(
                 text("""
@@ -457,6 +643,15 @@ class VietSharePgGate:
             )
             if result.scalar_one_or_none() is None:
                 raise GateError("UNKNOWN test and matching operator are required")
+            if evidence_ref is not None:
+                await session.execute(
+                    text("""
+                        INSERT INTO vietshare_recovery_events
+                            (test_id, operator_id, action, evidence_ref)
+                        VALUES (:id, :operator, 'UNKNOWN_TO_RECONCILING', :evidence)
+                    """),
+                    {"id": test_id, "operator": operator_id, "evidence": evidence_ref},
+                )
 
 
 class VietSharePgOfflineExecutor:
