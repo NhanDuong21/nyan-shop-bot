@@ -75,18 +75,21 @@ class FakeTransport:
 
 
 def subject(
-    tmp_path: Path, outcomes: Iterable[VietShareResponse | Exception]
+    tmp_path: Path,
+    outcomes: Iterable[VietShareResponse | Exception],
+    *,
+    timestamps: tuple[int, ...] = (1000, 1001, 1002),
 ) -> tuple[VietShareOfflineWriteAdapter, FakeTransport, SqliteWriteJournal]:
     transport = FakeTransport(outcomes)
     journal = SqliteWriteJournal(tmp_path / "write-journal.sqlite3")
     transport.journal = journal
-    timestamps = iter((1000, 1001, 1002))
+    clock_values = iter(timestamps)
     nonces = iter(("synthetic-nonce-0001", "synthetic-nonce-0002", "synthetic-nonce-0003"))
     adapter = VietShareOfflineWriteAdapter(
         credentials=VietShareCredentials("synthetic-id", "synthetic-secret"),
         transport=transport,
         journal=journal,
-        clock=lambda: next(timestamps),
+        clock=lambda: next(clock_values),
         nonce_source=lambda: next(nonces),
     )
     adapter.prepare("local-operation-1", "local-order-0001", OrderPurchase(7, 1, 20_000))
@@ -150,12 +153,20 @@ async def test_202_and_request_in_progress_preserve_retry_after(tmp_path: Path) 
             ),
             VietShareResponse(200, body=completed_body()),
         ],
+        timestamps=(1000, 1001, 1008, 1009, 1013),
     )
     first = await adapter.submit("local-operation-1")
+    blocked_first = await adapter.submit("local-operation-1")
     second = await adapter.submit("local-operation-1")
+    blocked_second = await adapter.submit("local-operation-1")
     third = await adapter.submit("local-operation-1")
     assert (first.state, first.retry_after_seconds) == (WriteState.IN_PROGRESS, 7.0)
+    assert (blocked_first.state, blocked_first.retry_after_seconds) == (WriteState.IN_PROGRESS, 6.0)
     assert (second.state, second.retry_after_seconds) == (WriteState.IN_PROGRESS, 4.0)
+    assert (blocked_second.state, blocked_second.retry_after_seconds) == (
+        WriteState.IN_PROGRESS,
+        3.0,
+    )
     assert third.state is WriteState.COMPLETED
     assert len({r.headers["Idempotency-Key"] for r in transport.requests}) == 1
     assert len({r.body for r in transport.requests}) == 1
@@ -179,6 +190,85 @@ async def test_mismatch_is_explicit_and_never_retried(tmp_path: Path) -> None:
     assert journal.get("local-operation-1").state == "MISMATCH"  # type: ignore[union-attr]
 
 
+@pytest.mark.asyncio
+async def test_replayed_request_requires_new_auth_but_preserves_commercial_key(
+    tmp_path: Path,
+) -> None:
+    adapter, transport, journal = subject(
+        tmp_path,
+        [
+            VietShareResponse(
+                409, body=b'{"detail":{"code":"REPLAYED_REQUEST","message":"private"}}'
+            ),
+            VietShareResponse(200, body=completed_body()),
+        ],
+    )
+    first = await adapter.submit("local-operation-1")
+    assert first.state is WriteState.REPLAYED_REQUEST
+    assert journal.get("local-operation-1").state == "REPLAYED_REQUEST"  # type: ignore[union-attr]
+    assert (await adapter.submit("local-operation-1")).state is WriteState.COMPLETED
+    assert transport.requests[0].body == transport.requests[1].body
+    assert (
+        transport.requests[0].headers["Idempotency-Key"]
+        == (transport.requests[1].headers["Idempotency-Key"])
+    )
+    assert transport.requests[0].headers["X-Nonce"] != transport.requests[1].headers["X-Nonce"]
+
+
+@pytest.mark.asyncio
+async def test_restart_cannot_reuse_timestamp_or_nonce(tmp_path: Path) -> None:
+    adapter, transport, journal = subject(
+        tmp_path,
+        [
+            TimeoutError(),
+            VietShareResponse(200, body=completed_body()),
+        ],
+    )
+    assert (await adapter.submit("local-operation-1")).state is WriteState.UNKNOWN
+
+    def recovered(*, timestamp: int, nonce: str) -> VietShareOfflineWriteAdapter:
+        return VietShareOfflineWriteAdapter(
+            credentials=VietShareCredentials("synthetic-id", "synthetic-secret"),
+            transport=transport,
+            journal=SqliteWriteJournal(tmp_path / "write-journal.sqlite3"),
+            clock=lambda: timestamp,
+            nonce_source=lambda: nonce,
+        )
+
+    with pytest.raises(WriteContractError):
+        await recovered(timestamp=1000, nonce="fresh-nonce-000001").submit("local-operation-1")
+    with pytest.raises(WriteContractError):
+        await recovered(timestamp=1001, nonce="synthetic-nonce-0001").submit("local-operation-1")
+    assert len(transport.requests) == 1
+    assert journal.get("local-operation-1").state == "UNKNOWN"  # type: ignore[union-attr]
+    outcome = await recovered(timestamp=1002, nonce="fresh-nonce-000002").submit(
+        "local-operation-1"
+    )
+    assert outcome.state is WriteState.COMPLETED
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_usd_wallet_does_not_relabel_supplier_total_as_usd(tmp_path: Path) -> None:
+    _, transport, _ = subject(tmp_path, [])
+    journal = SqliteWriteJournal(tmp_path / "usd-journal.sqlite3")
+    usd_adapter = VietShareOfflineWriteAdapter(
+        credentials=VietShareCredentials("synthetic-id", "synthetic-secret"),
+        transport=transport,
+        journal=journal,
+        clock=lambda: 2000,
+        nonce_source=lambda: "usd-nonce-000001",
+    )
+    usd_adapter.prepare("usd-operation", "usd-order-000001", OrderPurchase(7, 1, 20_000, "USD"))
+    transport.outcomes = iter([VietShareResponse(200, body=completed_body(key="usd-order-000001"))])
+    outcome = await usd_adapter.submit("usd-operation")
+    assert outcome.state is WriteState.COMPLETED
+    assert outcome.order is not None
+    assert outcome.order.wallet_currency == "USD"
+    assert outcome.order.supplier_reported_total == 20_000
+    assert outcome.order.supplier_total_currency == "UNSPECIFIED_BY_SUPPLIER_DOCUMENTATION"
+
+
 def test_same_key_cannot_bind_changed_payload_or_operation(tmp_path: Path) -> None:
     adapter, _, journal = subject(tmp_path, [])
     adapter.prepare("local-operation-1", "local-order-0001", OrderPurchase(7, 1, 20_000))
@@ -192,7 +282,7 @@ def test_same_key_cannot_bind_changed_payload_or_operation(tmp_path: Path) -> No
 @pytest.mark.asyncio
 async def test_interrupted_dispatch_requires_explicit_reconciliation(tmp_path: Path) -> None:
     adapter, transport, journal = subject(tmp_path, [VietShareResponse(200, body=completed_body())])
-    assert journal.begin_attempt("local-operation-1") is not None
+    assert journal.begin_attempt("local-operation-1", now=999) is not None
     assert (await adapter.submit("local-operation-1")).state is WriteState.IN_PROGRESS
     assert transport.requests == []
     journal.mark_interrupted_unknown("local-operation-1")

@@ -22,11 +22,14 @@ not an authorization to connect a live transport.
 - POST `/v1/orders` signs `timestamp|nonce|POST|/v1/orders|sha256(raw_body)`.
   The raw body is sent unchanged after signing.
 - Explicit retry or recovery reads the saved key and bytes. A new timestamp, nonce,
-  and HMAC signature are made for every attempt. A concurrent dispatch of the same
+  and HMAC signature are made for every attempt; timestamp and nonce uniqueness is
+  recorded durably across adapter restarts. A concurrent dispatch of the same
   operation is refused. A crash in `DISPATCHING` requires an operator to establish
   that the old dispatcher has stopped and mark it UNKNOWN before recovery.
 - Timeout, transport failure, 5xx, and an invalid 200 schema stay UNKNOWN. HTTP 202
-  and `REQUEST_IN_PROGRESS` stay IN_PROGRESS with parsed `Retry-After` when present.
+  and `REQUEST_IN_PROGRESS` stay IN_PROGRESS; their `Retry-After` deadline is
+  persisted and blocks early resubmission, including after restart. `REPLAYED_REQUEST`
+  permits another attempt only with fresh auth and the saved commercial key/bytes.
   `IDEMPOTENCY_MISMATCH` is a terminal mismatch. Only a documented completed
   HTTP 200 envelope becomes COMPLETED. No response triggers an automatic POST retry.
 - Completed order lookup uses signed GET `/v1/orders/{order_code}` and parses the
@@ -35,6 +38,9 @@ not an authorization to connect a live transport.
 - Delivered account strings are returned through an explicit secret field; object
   representations, parse errors, and adapter logs do not render them. The journal
   stores the order code, not account material.
+- `total_amount` has no separately documented unit for a USD wallet. The parser
+  retains the integer as a supplier-reported value with currency explicitly
+  unspecified; it must not be used as USD minor units for accounting.
 
 ## Still required before any live POST
 

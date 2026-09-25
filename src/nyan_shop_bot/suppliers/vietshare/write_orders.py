@@ -19,7 +19,7 @@ from nyan_shop_bot.suppliers.vietshare.models import (
     VietShareRequest,
     VietShareResponse,
 )
-from nyan_shop_bot.suppliers.vietshare.write_journal import SqliteWriteJournal
+from nyan_shop_bot.suppliers.vietshare.write_journal import JournalConflict, SqliteWriteJournal
 
 _KEY = re.compile(r"[A-Za-z0-9._:-]{8,128}\Z")
 _ORDER_CODE = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
@@ -35,6 +35,7 @@ class WriteState(StrEnum):
     IN_PROGRESS = "IN_PROGRESS"
     UNKNOWN = "UNKNOWN"
     MISMATCH = "IDEMPOTENCY_MISMATCH"
+    REPLAYED_REQUEST = "REPLAYED_REQUEST"
     REJECTED = "REJECTED"
 
 
@@ -114,9 +115,10 @@ class CompletedOrder:
     order_code: str
     product_id: int
     quantity: int
-    currency: str
-    total_amount_minor: int
+    wallet_currency: str
+    supplier_reported_total: int
     accounts: DeliveredAccounts = field(repr=False)
+    supplier_total_currency: str = "UNSPECIFIED_BY_SUPPLIER_DOCUMENTATION"
 
     def __repr__(self) -> str:
         return "CompletedOrder(status=completed, order=<redacted>, delivery=<redacted>)"
@@ -204,8 +206,8 @@ def parse_order_response(raw_body: bytes, *, key: str, purchase: OrderPurchase) 
             order_code=code,
             product_id=purchase.product_id,
             quantity=purchase.quantity,
-            currency=purchase.currency,
-            total_amount_minor=total,
+            wallet_currency=purchase.currency,
+            supplier_reported_total=total,
             accounts=DeliveredAccounts(tuple(accounts)),
         )
     except (TypeError, ValueError, UnicodeDecodeError):
@@ -246,8 +248,6 @@ class VietShareOfflineWriteAdapter:
         self._clock = clock
         self._nonce_source = nonce_source
         self._timeout = timeout_seconds
-        self._last_nonce: str | None = None
-        self._last_timestamp: int | None = None
 
     def __repr__(self) -> str:
         return "VietShareOfflineWriteAdapter(<redacted>)"
@@ -258,23 +258,29 @@ class VietShareOfflineWriteAdapter:
         self._journal.prepare(operation_id, key, purchase.raw_body())
 
     def _request(
-        self, *, method: str, path: str, raw_body: bytes, key: str | None = None
+        self,
+        *,
+        operation_id: str,
+        method: str,
+        path: str,
+        raw_body: bytes,
+        now: int,
+        key: str | None = None,
     ) -> tuple[VietShareRequest, int]:
-        now = self._clock()
         nonce = self._nonce_source()
         if (
             type(now) is not int
             or now < 0
-            or now == self._last_timestamp
             or type(nonce) is not str
             or not 12 <= len(nonce) <= 128
             or "\r" in nonce
             or "\n" in nonce
-            or nonce == self._last_nonce
         ):
             raise WriteContractError("Invalid or reused signing timestamp/nonce")
-        self._last_nonce = nonce
-        self._last_timestamp = now
+        try:
+            self._journal.reserve_auth(operation_id, timestamp=now, nonce=nonce)
+        except JournalConflict:
+            raise WriteContractError("Signing timestamp or nonce was previously used") from None
         canonical = f"{now}|{nonce}|{method}|{path}|{hashlib.sha256(raw_body).hexdigest()}"
         signature = hmac.new(
             self._credentials.secret_bytes, canonical.encode("utf-8"), hashlib.sha256
@@ -298,7 +304,10 @@ class VietShareOfflineWriteAdapter:
         return request, now
 
     async def submit(self, operation_id: str) -> WriteOutcome:
-        record = self._journal.begin_attempt(operation_id)
+        now = self._clock()
+        if type(now) is not int or now < 0:
+            raise WriteContractError("Invalid signing timestamp")
+        record = self._journal.begin_attempt(operation_id, now=now)
         if record is None:
             previous = self._journal.get(operation_id)
             if previous is None:
@@ -309,10 +318,20 @@ class VietShareOfflineWriteAdapter:
                 return WriteOutcome(WriteState.MISMATCH)
             if previous.state == "REJECTED":
                 return WriteOutcome(WriteState.REJECTED)
-            return WriteOutcome(WriteState.IN_PROGRESS)
+            wait = (
+                max(0.0, previous.retry_not_before - now)
+                if previous.retry_not_before is not None
+                else None
+            )
+            return WriteOutcome(WriteState.IN_PROGRESS, retry_after_seconds=wait)
         try:
             request, now = self._request(
-                method="POST", path=_PATH, raw_body=record.body, key=record.idempotency_key
+                operation_id=operation_id,
+                method="POST",
+                path=_PATH,
+                raw_body=record.body,
+                now=now,
+                key=record.idempotency_key,
             )
         except WriteContractError:
             self._journal.finish_attempt(operation_id, "UNKNOWN")
@@ -324,12 +343,19 @@ class VietShareOfflineWriteAdapter:
             return WriteOutcome(WriteState.UNKNOWN)
         retry_after = _retry_after(response.headers, now)
         if response.status_code == 202:
-            self._journal.finish_attempt(operation_id, "IN_PROGRESS")
+            self._journal.finish_attempt(
+                operation_id, "IN_PROGRESS", retry_not_before=now + (retry_after or 1.0)
+            )
             return WriteOutcome(WriteState.IN_PROGRESS, retry_after_seconds=retry_after)
         code = _error_code(response.body)
         if code == "REQUEST_IN_PROGRESS":
-            self._journal.finish_attempt(operation_id, "IN_PROGRESS")
+            self._journal.finish_attempt(
+                operation_id, "IN_PROGRESS", retry_not_before=now + (retry_after or 1.0)
+            )
             return WriteOutcome(WriteState.IN_PROGRESS, retry_after_seconds=retry_after)
+        if code == "REPLAYED_REQUEST":
+            self._journal.finish_attempt(operation_id, "REPLAYED_REQUEST")
+            return WriteOutcome(WriteState.REPLAYED_REQUEST, error_code=code)
         if code == "IDEMPOTENCY_MISMATCH":
             self._journal.finish_attempt(operation_id, "MISMATCH")
             return WriteOutcome(WriteState.MISMATCH, error_code=code)
@@ -366,8 +392,13 @@ class VietShareOfflineWriteAdapter:
             raise WriteContractError("A completed order code is required for delivery lookup")
         if _ORDER_CODE.fullmatch(record.order_code) is None:
             raise WriteContractError("Invalid stored order code")
+        now = self._clock()
         request, now = self._request(
-            method="GET", path=f"{_PATH}/{record.order_code}", raw_body=b""
+            operation_id=operation_id,
+            method="GET",
+            path=f"{_PATH}/{record.order_code}",
+            raw_body=b"",
+            now=now,
         )
         try:
             response = await self._transport.send(request, timeout_seconds=self._timeout)
