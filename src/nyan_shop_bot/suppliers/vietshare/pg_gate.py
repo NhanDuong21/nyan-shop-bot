@@ -79,6 +79,9 @@ class CappedTestIntent:
             or not 0 < self.absolute_spend_cap_vnd <= _MAX_BIGINT
             or self.purchase.max_unit_price > _MAX_BIGINT
             or self.purchase.quantity * self.purchase.max_unit_price > self.absolute_spend_cap_vnd
+            or self.purchase.supplier_emails
+            or self.purchase.coupon_code is not None
+            or self.purchase.flash_sale_id is not None
             or type(self.wallet_id) is not str
             or _ID.fullmatch(self.wallet_id) is None
             or type(self.operator_id) is not str
@@ -297,6 +300,14 @@ class VietSharePgGate:
                 raise GateError("Supplier result is frozen for reconciliation")
             if hashlib.sha256(record.raw_body).hexdigest() != record.body_sha256:
                 raise GateError("Stored request body hash does not match exact bytes")
+            expected_body = OrderPurchase(
+                product_id=record.product_id,
+                quantity=record.quantity,
+                max_unit_price=record.max_unit_price_vnd,
+                currency="VND",
+            ).raw_body()
+            if record.raw_body != expected_body:
+                raise GateError("Stored request body does not match approved commercial fields")
             now = await session.scalar(text("SELECT clock_timestamp()"))
             if not isinstance(now, datetime):
                 raise GateError("Database clock is unavailable")

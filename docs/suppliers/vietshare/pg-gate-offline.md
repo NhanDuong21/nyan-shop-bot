@@ -24,7 +24,10 @@ source, product, quantity, spend bounds, VND wallet, operator identity, and
 idempotency key. A partial unique index also permits only one unresolved
 VietShare dispatch across local tests. The body and commercial identity fields
 cannot be updated. Repeating `prepare` accepts only the same test, key, body,
-and commercial fields.
+and commercial fields. The capped test permits only the four owner-approved
+POST fields: product ID, quantity, integer max unit price, and VND currency.
+`claim` compares the stored raw bytes with that exact canonical body, so a
+correctly hashed but commercially inconsistent journal row also fails closed.
 
 `claim` locks the singleton control and journal row in one PostgreSQL
 transaction. It reserves the attempt timestamp and nonce, records

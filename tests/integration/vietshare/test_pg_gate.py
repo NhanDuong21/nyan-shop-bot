@@ -761,3 +761,53 @@ async def test_malformed_stored_body_hash_blocks_dispatch(
             nonce="synthetic-nonce-0001",
         )
     assert await auth_count(engine) == 0
+
+
+async def test_hashed_body_with_unapproved_product_blocks_dispatch(
+    gate: VietSharePgGate,
+    engine: AsyncEngine,
+) -> None:
+    candidate = intent()
+    unapproved_body = OrderPurchase(8, 100, 20_000, "VND").raw_body()
+    async with engine.begin() as connection:
+        await connection.execute(
+            text("""
+            INSERT INTO vietshare_write_journal (
+                test_id, idempotency_key, raw_body, body_sha256, source,
+                product_id, quantity, max_unit_price_vnd, absolute_spend_cap_vnd,
+                wallet_id, currency, operator_id, state
+            ) VALUES (
+                :id, :key, :body, :hash, 'vietshare', 7, 1, 20000, 20000,
+                'synthetic-vnd-wallet', 'VND', 'synthetic-operator', 'PREPARED'
+            )
+        """),
+            {
+                "id": candidate.test_id,
+                "key": candidate.idempotency_key,
+                "body": unapproved_body,
+                "hash": hashlib.sha256(unapproved_body).hexdigest(),
+            },
+        )
+    await arm(engine)
+    with pytest.raises(GateError, match="approved commercial fields"):
+        await gate.claim(
+            test_id="synthetic-test-one",
+            operator_id="synthetic-operator",
+            timestamp=1000,
+            nonce="synthetic-nonce-0001",
+        )
+    assert await auth_count(engine) == 0
+
+
+def test_capped_intent_rejects_unapproved_optional_order_fields() -> None:
+    with pytest.raises(GateError, match="Invalid capped"):
+        CappedTestIntent(
+            test_id="synthetic-test-one",
+            idempotency_key="synthetic-key-one",
+            purchase=OrderPurchase(
+                7, 1, 20_000, "VND", supplier_emails=("synthetic@example.invalid",)
+            ),
+            absolute_spend_cap_vnd=20_000,
+            wallet_id="synthetic-vnd-wallet",
+            operator_id="synthetic-operator",
+        )
