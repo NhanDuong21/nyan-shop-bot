@@ -224,7 +224,7 @@ def _error_code(raw_body: bytes) -> str | None:
         return None
 
 
-def _retry_after(headers: Mapping[str, str], now: int) -> float | None:
+def _retry_after(headers: Mapping[str, str], now: int | float) -> float | None:
     value = next((v for k, v in headers.items() if k.casefold() == "retry-after"), None)
     return parse_retry_after(value, now=now)
 

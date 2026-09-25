@@ -48,7 +48,8 @@ async def engine() -> AsyncIterator[AsyncEngine]:
     async with db.begin() as connection:
         await connection.execute(
             text("""
-            TRUNCATE vietshare_write_auth_attempts, vietshare_write_journal
+            TRUNCATE vietshare_write_auth_attempts, vietshare_write_journal,
+                vietshare_write_gate_events
         """)
         )
         await connection.execute(
@@ -57,16 +58,19 @@ async def engine() -> AsyncIterator[AsyncEngine]:
                 allowed_operator_ids=ARRAY[]::varchar[], approved_test_id=NULL,
                 approved_product_id=NULL, approved_quantity=NULL,
                 approved_max_unit_price_vnd=NULL, approved_spend_cap_vnd=NULL,
-                approved_wallet_id=NULL, approved_currency=NULL WHERE id=1
+                approved_wallet_id=NULL, approved_currency=NULL,
+                approved_by=NULL, approval_ref=NULL WHERE id=1
         """)
         )
+        await connection.execute(text("TRUNCATE vietshare_write_gate_events"))
     try:
         yield db
     finally:
         async with db.begin() as connection:
             await connection.execute(
                 text("""
-                TRUNCATE vietshare_write_auth_attempts, vietshare_write_journal
+                TRUNCATE vietshare_write_auth_attempts, vietshare_write_journal,
+                    vietshare_write_gate_events
             """)
             )
             await connection.execute(
@@ -75,9 +79,11 @@ async def engine() -> AsyncIterator[AsyncEngine]:
                     allowed_operator_ids=ARRAY[]::varchar[], approved_test_id=NULL,
                     approved_product_id=NULL, approved_quantity=NULL,
                     approved_max_unit_price_vnd=NULL, approved_spend_cap_vnd=NULL,
-                    approved_wallet_id=NULL, approved_currency=NULL WHERE id=1
+                    approved_wallet_id=NULL, approved_currency=NULL,
+                    approved_by=NULL, approval_ref=NULL WHERE id=1
             """)
             )
+            await connection.execute(text("TRUNCATE vietshare_write_gate_events"))
         await db.dispose()
 
 
@@ -112,7 +118,8 @@ async def arm(engine: AsyncEngine, test_id: str = "synthetic-test-one") -> None:
                 allowed_operator_ids=ARRAY['synthetic-operator']::varchar[],
                 approved_test_id=:id, approved_product_id=7, approved_quantity=1,
                 approved_max_unit_price_vnd=20000, approved_spend_cap_vnd=20000,
-                approved_wallet_id='synthetic-vnd-wallet', approved_currency='VND'
+                approved_wallet_id='synthetic-vnd-wallet', approved_currency='VND',
+                approved_by='synthetic-approver', approval_ref='synthetic-approval'
             WHERE id=1
         """),
             {"id": test_id},
@@ -240,6 +247,18 @@ async def test_prepare_is_durable_immutable_and_defaults_off(
                 )
         finally:
             await transaction.rollback()
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            with pytest.raises(Exception, match="cannot be deleted"):
+                await connection.execute(
+                    text("""
+                    DELETE FROM vietshare_write_journal
+                    WHERE test_id='synthetic-test-one'
+                """)
+                )
+        finally:
+            await transaction.rollback()
 
 
 async def test_exact_match_allowlist_cap_and_concurrent_claim(
@@ -338,6 +357,56 @@ async def test_success_hmac_and_no_delivery_material_in_journal(
     assert b"private-delivery-marker" not in bytes(row.raw_body)
     assert row.supplier_order_code == "SYNTHETIC-ORDER-1"
     assert row.last_error_code is None
+    async with engine.connect() as connection:
+        arm_event = (
+            await connection.execute(
+                text("""
+            SELECT approved_by, approval_ref, approved_spend_cap_vnd
+            FROM vietshare_write_gate_events WHERE enabled=true
+        """)
+            )
+        ).one()
+        attempt = (
+            await connection.execute(
+                text("""
+            SELECT canonical_sha256, http_status, response_code, outcome_state,
+                retry_after_header FROM vietshare_write_auth_attempts
+        """)
+            )
+        ).one()
+        debit = (
+            await connection.execute(
+                text("""
+            SELECT wallet_debit_vnd, wallet_debit_evidence_ref
+            FROM vietshare_write_journal WHERE test_id='synthetic-test-one'
+        """)
+            )
+        ).one()
+    assert (arm_event.approved_by, arm_event.approval_ref) == (
+        "synthetic-approver",
+        "synthetic-approval",
+    )
+    assert arm_event.approved_spend_cap_vnd == 20_000
+    assert attempt.canonical_sha256 == hashlib.sha256(canonical).hexdigest()
+    assert (attempt.http_status, attempt.response_code, attempt.outcome_state) == (
+        200,
+        None,
+        "SUCCEEDED",
+    )
+    assert attempt.retry_after_header is None
+    assert (debit.wallet_debit_vnd, debit.wallet_debit_evidence_ref) == (None, None)
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            with pytest.raises(Exception, match="immutable"):
+                await connection.execute(
+                    text("""
+                    UPDATE vietshare_write_gate_events SET enabled=false
+                    WHERE enabled=true
+                """)
+                )
+        finally:
+            await transaction.rollback()
 
 
 @pytest.mark.parametrize(
@@ -379,8 +448,29 @@ async def test_202_or_request_in_progress_freezes_new_key_until_recovery(
         await gate.claim(
             test_id="synthetic-test-one",
             operator_id="synthetic-operator",
-            timestamp=1007,
+            timestamp=4_000_000_000,
             nonce="synthetic-nonce-0003",
+        )
+    async with engine.connect() as connection:
+        attempt = (
+            await connection.execute(
+                text("""
+            SELECT http_status, response_code, retry_after_header, outcome_state
+            FROM vietshare_write_auth_attempts
+        """)
+            )
+        ).one()
+    assert attempt.http_status == response.status_code
+    assert attempt.response_code == ("REQUEST_IN_PROGRESS" if response.status_code == 409 else None)
+    assert attempt.retry_after_header == "7"
+    assert attempt.outcome_state == "RECONCILING"
+    async with engine.begin() as connection:
+        await connection.execute(
+            text("""
+            UPDATE vietshare_write_journal
+            SET retry_not_before=clock_timestamp()-INTERVAL '1 second'
+            WHERE test_id='synthetic-test-one'
+        """)
         )
     second = await worker.submit("synthetic-test-one", operator_id="synthetic-operator")
     assert second.state is GateState.SUCCEEDED
@@ -416,6 +506,17 @@ async def test_uncertain_and_mismatch_fail_closed(
     assert result.state is GateState.UNKNOWN
     assert "private timeout marker" not in repr(result)
     assert not await control_enabled(engine)
+    async with engine.connect() as connection:
+        attempt = (
+            await connection.execute(
+                text("""
+            SELECT http_status, response_code, outcome_state
+            FROM vietshare_write_auth_attempts
+        """)
+            )
+        ).one()
+    assert attempt.http_status == (502 if isinstance(uncertain, VietShareResponse) else None)
+    assert attempt.outcome_state == "UNKNOWN"
     await gate.prepare(intent(test_id="synthetic-test-two", key="synthetic-key-two"))
     await arm(engine, "synthetic-test-two")
     with pytest.raises(GateError, match="unresolved"):
@@ -472,13 +573,29 @@ async def test_database_rejects_incomplete_arm_and_reused_auth(
         finally:
             await transaction.rollback()
     await arm(engine)
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            with pytest.raises(IntegrityError):
+                await connection.execute(
+                    text("""
+                    UPDATE vietshare_write_gate_control
+                    SET approved_currency=NULL WHERE id=1
+                """)
+                )
+        finally:
+            await transaction.rollback()
     await gate.claim(
         test_id="synthetic-test-one",
         operator_id="synthetic-operator",
         timestamp=1000,
         nonce="synthetic-nonce-0001",
     )
-    await gate.finish("synthetic-test-one", GateState.RECONCILING)
+    await gate.finish(
+        "synthetic-test-one",
+        GateState.RECONCILING,
+        nonce="synthetic-nonce-0001",
+    )
     await arm(engine)
     with pytest.raises(GateError, match="previously used"):
         await gate.claim(
@@ -544,3 +661,103 @@ async def test_spend_cap_violation_is_not_called_success(
             timestamp=1002,
             nonce="synthetic-nonce-0002",
         )
+
+
+async def test_removed_operator_cannot_move_unknown_to_reconciling(
+    gate: VietSharePgGate,
+    engine: AsyncEngine,
+) -> None:
+    await gate.prepare(intent())
+    await arm(engine)
+    await gate.claim(
+        test_id="synthetic-test-one",
+        operator_id="synthetic-operator",
+        timestamp=1000,
+        nonce="synthetic-nonce-0001",
+    )
+    await gate.finish("synthetic-test-one", GateState.UNKNOWN, nonce="synthetic-nonce-0001")
+    async with engine.begin() as connection:
+        await connection.execute(
+            text("""
+            UPDATE vietshare_write_gate_control
+            SET allowed_operator_ids=ARRAY[]::varchar[] WHERE id=1
+        """)
+        )
+    with pytest.raises(GateError, match="not currently allowed"):
+        await gate.mark_reconciling("synthetic-test-one", operator_id="synthetic-operator")
+    async with engine.begin() as connection:
+        await connection.execute(
+            text("""
+            UPDATE vietshare_write_gate_control
+            SET allowed_operator_ids=ARRAY['synthetic-operator']::varchar[] WHERE id=1
+        """)
+        )
+    await gate.mark_reconciling("synthetic-test-one", operator_id="synthetic-operator")
+    assert (await gate.get("synthetic-test-one")).state is GateState.RECONCILING  # type: ignore[union-attr]
+
+
+async def test_replayed_request_keeps_same_key_and_freezes_new_key(
+    gate: VietSharePgGate,
+    engine: AsyncEngine,
+) -> None:
+    saved = await gate.prepare(intent())
+    await arm(engine)
+    result = await executor(
+        gate,
+        FakeTransport(
+            [
+                VietShareResponse(
+                    409,
+                    body=b'{"detail":{"code":"REPLAYED_REQUEST"}}',
+                )
+            ]
+        ),
+    ).submit("synthetic-test-one", operator_id="synthetic-operator")
+    assert result.state is GateState.RECONCILING
+    assert result.error_code == "REPLAYED_REQUEST"
+    assert not await control_enabled(engine)
+    assert await gate.prepare(intent()) == await gate.get(saved.test_id)
+    await gate.prepare(intent(test_id="synthetic-test-two", key="synthetic-key-two"))
+    await arm(engine, "synthetic-test-two")
+    with pytest.raises(GateError, match="unresolved"):
+        await gate.claim(
+            test_id="synthetic-test-two",
+            operator_id="synthetic-operator",
+            timestamp=1002,
+            nonce="synthetic-nonce-0002",
+        )
+
+
+async def test_malformed_stored_body_hash_blocks_dispatch(
+    gate: VietSharePgGate,
+    engine: AsyncEngine,
+) -> None:
+    candidate = intent()
+    async with engine.begin() as connection:
+        await connection.execute(
+            text("""
+            INSERT INTO vietshare_write_journal (
+                test_id, idempotency_key, raw_body, body_sha256, source,
+                product_id, quantity, max_unit_price_vnd, absolute_spend_cap_vnd,
+                wallet_id, currency, operator_id, state
+            ) VALUES (
+                :id, :key, :body, :hash, 'vietshare', 7, 1, 20000, 20000,
+                'synthetic-vnd-wallet', 'VND', 'synthetic-operator', 'PREPARED'
+            )
+        """),
+            {
+                "id": candidate.test_id,
+                "key": candidate.idempotency_key,
+                "body": candidate.purchase.raw_body(),
+                "hash": "0" * 64,
+            },
+        )
+    await arm(engine)
+    with pytest.raises(GateError, match="hash does not match"):
+        await gate.claim(
+            test_id="synthetic-test-one",
+            operator_id="synthetic-operator",
+            timestamp=1000,
+            nonce="synthetic-nonce-0001",
+        )
+    assert await auth_count(engine) == 0

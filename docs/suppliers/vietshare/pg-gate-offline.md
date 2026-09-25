@@ -13,7 +13,10 @@ and signing attempt reservations. The control row is seeded `enabled=false` with
 an empty operator allowlist. The database refuses an incomplete arm. The
 approved test ID, product ID, quantity, integer VND max unit price, integer VND
 absolute spend cap, wallet ID, and allowed operator must all match the prepared
-journal row before a dispatch claim commits.
+journal row before a dispatch claim commits. Arming also requires an approver ID
+and an opaque approval reference. A database trigger records each control change
+with its complete approved configuration in an immutable audit event. Synthetic
+test values are not owner approval.
 
 `prepare` commits the exact UTF-8 JSON bytes and their SHA-256, idempotency key,
 source, product, quantity, spend bounds, VND wallet, operator identity, and
@@ -26,7 +29,11 @@ and commercial fields.
 `claim` locks the singleton control and journal row in one PostgreSQL
 transaction. It reserves the attempt timestamp and nonce, records
 `DISPATCHING`, and commits before the injected transport sees a request. The
-request signs the journal's unchanged raw bytes and reuses its key. A recovery
+claim rehashes the stored body and refuses a mismatch. The request signs the
+journal's unchanged raw bytes and reuses its key. The attempt stores a SHA-256
+of the exact HMAC canonical input, never the secret or plaintext signature.
+Each attempt records its HTTP status/code, raw `Retry-After` header, outcome,
+and completion time. A recovery
 attempt must use a new timestamp and nonce; the signature therefore changes.
 Concurrent claims leave at most one dispatch. A crash in `DISPATCHING` does not
 cause an automatic retry.
@@ -39,6 +46,7 @@ cause an automatic retry.
 | HTTP 202 or `REQUEST_IN_PROGRESS` | `RECONCILING` | Persist `Retry-After`, disarm gate, freeze new keys. |
 | Timeout, transport loss, 502, or malformed response | `UNKNOWN` | Disarm gate, freeze new keys; investigate before recovery. |
 | `IDEMPOTENCY_MISMATCH` | `RECONCILING` | Disarm gate; never dispatch this key automatically again. |
+| `REPLAYED_REQUEST` | `RECONCILING` | Disarm gate; any recovery uses only the stored key and bytes with fresh auth. |
 | Supplier total exceeds absolute cap | `RECONCILING` | Keep order code for investigation; never call it successful or failed. |
 | Verified absence of commercial obligation | `FAILED_SAFE` | Reserved terminal state; this offline module cannot assert the evidence. |
 
@@ -46,7 +54,12 @@ Recovery from `UNKNOWN` must be explicitly moved to `RECONCILING`. A new
 dispatch then requires the control row to be deliberately rearmed for the same
 test. The old key and byte-identical body are mandatory. New-key dispatch
 remains blocked while any VietShare test is `DISPATCHING`, `UNKNOWN`, or
-`RECONCILING`. Reaching `SUCCEEDED` does not arm another test.
+`RECONCILING`. The `Retry-After` deadline is established and checked using the
+PostgreSQL server clock, separate from the outbound signing timestamp. A
+removed operator cannot mark an `UNKNOWN` test as reconciling. Reaching
+`SUCCEEDED` does not arm another test. Wallet debit amount, evidence reference,
+and verification time are nullable journal fields reserved for the later
+supplier wallet reconciliation; the offline tests do not claim a debit.
 
 ## Remaining gate before capped live test
 

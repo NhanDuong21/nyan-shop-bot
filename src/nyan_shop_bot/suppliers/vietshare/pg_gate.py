@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from enum import StrEnum
 
 from sqlalchemy import text
@@ -37,6 +38,10 @@ _KEY = re.compile(r"[A-Za-z0-9._:-]{8,128}\Z")
 _ID = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _MAX_BIGINT = (1 << 63) - 1
 _PATH = "/v1/orders"
+
+
+def _canonical_bytes(timestamp: int, nonce: str, body_sha256: str) -> bytes:
+    return f"{timestamp}|{nonce}|POST|{_PATH}|{body_sha256}".encode()
 
 
 class GateError(ValueError):
@@ -162,6 +167,13 @@ class VietSharePgGate:
             row = result.mappings().one_or_none()
             return _record(row) if row is not None else None
 
+    async def server_now_seconds(self) -> float:
+        async with self._sessions() as session:
+            value = await session.scalar(text("SELECT clock_timestamp()"))
+            if not isinstance(value, datetime):
+                raise GateError("Database clock is unavailable")
+            return value.timestamp()
+
     async def prepare(self, intent: CappedTestIntent) -> GateRecord:
         body = intent.purchase.raw_body()
         digest = hashlib.sha256(body).hexdigest()
@@ -283,7 +295,11 @@ class VietSharePgGate:
                 "SPEND_CAP_EXCEEDED",
             }:
                 raise GateError("Supplier result is frozen for reconciliation")
-            now = datetime.fromtimestamp(timestamp, UTC)
+            if hashlib.sha256(record.raw_body).hexdigest() != record.body_sha256:
+                raise GateError("Stored request body hash does not match exact bytes")
+            now = await session.scalar(text("SELECT clock_timestamp()"))
+            if not isinstance(now, datetime):
+                raise GateError("Database clock is unavailable")
             if record.retry_not_before is not None and now < record.retry_not_before:
                 raise GateError("Retry-After has not elapsed")
             unresolved = await session.scalar(
@@ -296,18 +312,23 @@ class VietSharePgGate:
             )
             if unresolved is not None:
                 raise GateError("Another VietShare test is unresolved")
+            canonical_sha256 = hashlib.sha256(
+                _canonical_bytes(timestamp, nonce, record.body_sha256)
+            ).hexdigest()
             try:
                 await session.execute(
                     text("""
                         INSERT INTO vietshare_write_auth_attempts
-                            (nonce, test_id, timestamp, method, body_sha256)
-                        VALUES (:nonce, :id, :timestamp, 'POST', :hash)
+                            (nonce, test_id, timestamp, method, body_sha256,
+                             canonical_sha256)
+                        VALUES (:nonce, :id, :timestamp, 'POST', :hash, :canonical)
                     """),
                     {
                         "nonce": nonce,
                         "id": test_id,
                         "timestamp": timestamp,
                         "hash": record.body_sha256,
+                        "canonical": canonical_sha256,
                     },
                 )
             except IntegrityError:
@@ -327,7 +348,10 @@ class VietSharePgGate:
         test_id: str,
         state: GateState,
         *,
-        retry_not_before: datetime | None = None,
+        nonce: str,
+        retry_delay_seconds: float | None = None,
+        http_status: int | None = None,
+        retry_after_header: str | None = None,
         order_code: str | None = None,
         error_code: str | None = None,
     ) -> None:
@@ -337,6 +361,16 @@ class VietSharePgGate:
             GateState.SUCCEEDED,
         }:
             raise GateError("Invalid automatic completion state")
+        if retry_delay_seconds is not None and (
+            type(retry_delay_seconds) not in {int, float}
+            or not math.isfinite(retry_delay_seconds)
+            or not 0 <= retry_delay_seconds <= 1_000_000_000
+        ):
+            raise GateError("Invalid Retry-After duration")
+        if retry_after_header is not None and (
+            type(retry_after_header) is not str or len(retry_after_header) > 256
+        ):
+            raise GateError("Invalid Retry-After evidence")
         async with self._sessions() as session, session.begin():
             await session.execute(
                 text("""
@@ -346,20 +380,44 @@ class VietSharePgGate:
             result = await session.execute(
                 text("""
                 UPDATE vietshare_write_journal
-                SET state=:state, retry_not_before=:retry, supplier_order_code=:code,
+                SET state=:state,
+                    retry_not_before=CASE WHEN CAST(:delay AS double precision) IS NULL
+                        THEN NULL ELSE clock_timestamp() +
+                        CAST(:delay AS double precision) * INTERVAL '1 second' END,
+                    supplier_order_code=:code,
                     last_error_code=:error, updated_at=now()
                 WHERE test_id=:id AND state='DISPATCHING' RETURNING test_id
             """),
                 {
                     "id": test_id,
                     "state": state.value,
-                    "retry": retry_not_before,
+                    "delay": retry_delay_seconds,
                     "code": order_code,
                     "error": error_code,
                 },
             )
             if result.scalar_one_or_none() is None:
                 raise GateError("Dispatch state changed before completion")
+            attempt = await session.execute(
+                text("""
+                UPDATE vietshare_write_auth_attempts
+                SET http_status=:status, response_code=:error,
+                    retry_after_header=:retry_header, outcome_state=:state,
+                    completed_at=clock_timestamp()
+                WHERE test_id=:id AND nonce=:nonce AND outcome_state IS NULL
+                RETURNING nonce
+            """),
+                {
+                    "id": test_id,
+                    "nonce": nonce,
+                    "status": http_status,
+                    "error": error_code,
+                    "retry_header": retry_after_header,
+                    "state": state.value,
+                },
+            )
+            if attempt.scalar_one_or_none() is None:
+                raise GateError("Signing attempt was not reserved before dispatch")
             await session.execute(
                 text("""
                 UPDATE vietshare_write_gate_control SET enabled=false, updated_at=now()
@@ -370,6 +428,14 @@ class VietSharePgGate:
     async def mark_reconciling(self, test_id: str, *, operator_id: str) -> None:
         """Record deliberate investigation; this does not authorize a new POST."""
         async with self._sessions() as session, session.begin():
+            allowed = await session.scalar(
+                text("""
+                SELECT allowed_operator_ids FROM vietshare_write_gate_control
+                WHERE id=1 FOR UPDATE
+            """)
+            )
+            if type(operator_id) is not str or operator_id not in allowed:
+                raise GateError("Operator is not currently allowed to reconcile")
             result = await session.execute(
                 text("""
                 UPDATE vietshare_write_journal SET state='RECONCILING', updated_at=now()
@@ -415,7 +481,7 @@ class VietSharePgOfflineExecutor:
             nonce=nonce,
         )
         try:
-            canonical = f"{timestamp}|{nonce}|POST|{_PATH}|{record.body_sha256}".encode()
+            canonical = _canonical_bytes(timestamp, nonce, record.body_sha256)
             signature = hmac.new(
                 self._credentials.secret_bytes,
                 canonical,
@@ -439,27 +505,57 @@ class VietSharePgOfflineExecutor:
             )
             response = await self._transport.send(request, timeout_seconds=self._timeout)
         except Exception:
-            await self._gate.finish(test_id, GateState.UNKNOWN)
+            await self._gate.finish(
+                test_id,
+                GateState.UNKNOWN,
+                nonce=nonce,
+                error_code="TRANSPORT_ERROR",
+            )
             return GateOutcome(GateState.UNKNOWN)
         if not isinstance(response, VietShareResponse):
-            await self._gate.finish(test_id, GateState.UNKNOWN)
+            await self._gate.finish(
+                test_id,
+                GateState.UNKNOWN,
+                nonce=nonce,
+                error_code="INVALID_RESPONSE",
+            )
             return GateOutcome(GateState.UNKNOWN)
         code = _error_code(response.body)
-        received_at = self._clock()
+        received_at = await self._gate.server_now_seconds()
         retry = _retry_after(response.headers, received_at)
+        retry_header = next(
+            (value for name, value in response.headers.items() if name.casefold() == "retry-after"),
+            None,
+        )
         if response.status_code == 202 or code == "REQUEST_IN_PROGRESS":
             wait = retry if retry is not None else 1.0
             await self._gate.finish(
                 test_id,
                 GateState.RECONCILING,
-                retry_not_before=datetime.fromtimestamp(received_at, UTC) + timedelta(seconds=wait),
+                nonce=nonce,
+                retry_delay_seconds=wait,
+                http_status=response.status_code,
+                retry_after_header=retry_header,
                 error_code=code,
             )
             return GateOutcome(GateState.RECONCILING, retry_after_seconds=retry, error_code=code)
+        if code == "REPLAYED_REQUEST":
+            await self._gate.finish(
+                test_id,
+                GateState.RECONCILING,
+                nonce=nonce,
+                http_status=response.status_code,
+                retry_after_header=retry_header,
+                error_code=code,
+            )
+            return GateOutcome(GateState.RECONCILING, error_code=code)
         if code == "IDEMPOTENCY_MISMATCH":
             await self._gate.finish(
                 test_id,
                 GateState.RECONCILING,
+                nonce=nonce,
+                http_status=response.status_code,
+                retry_after_header=retry_header,
                 error_code=code,
             )
             return GateOutcome(GateState.RECONCILING, error_code=code)
@@ -477,12 +573,22 @@ class VietSharePgOfflineExecutor:
                     purchase=purchase,
                 )
             except (WriteContractError, ValueError, TypeError):
-                await self._gate.finish(test_id, GateState.UNKNOWN)
+                await self._gate.finish(
+                    test_id,
+                    GateState.UNKNOWN,
+                    nonce=nonce,
+                    http_status=response.status_code,
+                    retry_after_header=retry_header,
+                    error_code="INVALID_RESPONSE",
+                )
                 return GateOutcome(GateState.UNKNOWN)
             if order.supplier_reported_total > record.absolute_spend_cap_vnd:
                 await self._gate.finish(
                     test_id,
                     GateState.RECONCILING,
+                    nonce=nonce,
+                    http_status=response.status_code,
+                    retry_after_header=retry_header,
                     order_code=order.order_code,
                     error_code="SPEND_CAP_EXCEEDED",
                 )
@@ -490,8 +596,18 @@ class VietSharePgOfflineExecutor:
             await self._gate.finish(
                 test_id,
                 GateState.SUCCEEDED,
+                nonce=nonce,
+                http_status=response.status_code,
+                retry_after_header=retry_header,
                 order_code=order.order_code,
             )
             return GateOutcome(GateState.SUCCEEDED)
-        await self._gate.finish(test_id, GateState.UNKNOWN, error_code=code)
+        await self._gate.finish(
+            test_id,
+            GateState.UNKNOWN,
+            nonce=nonce,
+            http_status=response.status_code,
+            retry_after_header=retry_header,
+            error_code=code,
+        )
         return GateOutcome(GateState.UNKNOWN, error_code=code)

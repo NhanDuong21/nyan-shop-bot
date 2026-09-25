@@ -34,6 +34,8 @@ def upgrade() -> None:
         sa.Column("approved_spend_cap_vnd", sa.BigInteger(), nullable=True),
         sa.Column("approved_wallet_id", sa.String(128), nullable=True),
         sa.Column("approved_currency", sa.String(3), nullable=True),
+        sa.Column("approved_by", sa.String(128), nullable=True),
+        sa.Column("approval_ref", sa.String(256), nullable=True),
         sa.Column(
             "updated_at", sa.DateTime(timezone=True), nullable=False,
             server_default=sa.func.now(),
@@ -50,7 +52,10 @@ def upgrade() -> None:
             "AND approved_max_unit_price_vnd IS NOT NULL AND approved_max_unit_price_vnd > 0 "
             "AND approved_spend_cap_vnd IS NOT NULL AND approved_spend_cap_vnd > 0 "
             "AND (approved_quantity::numeric * approved_max_unit_price_vnd) <= approved_spend_cap_vnd "
-            "AND approved_wallet_id IS NOT NULL AND approved_currency = 'VND' "
+            "AND approved_wallet_id IS NOT NULL "
+            "AND approved_currency IS NOT NULL AND approved_currency = 'VND' "
+            "AND approved_by IS NOT NULL AND length(approved_by) > 0 "
+            "AND approval_ref IS NOT NULL AND length(approval_ref) > 0 "
             "AND cardinality(allowed_operator_ids) > 0)",
             name="ck_vietshare_gate_armed_complete",
         ),
@@ -58,6 +63,59 @@ def upgrade() -> None:
     op.execute(
         "INSERT INTO vietshare_write_gate_control (id, enabled, allowed_operator_ids) "
         "VALUES (1, false, ARRAY[]::varchar[])"
+    )
+    op.create_table(
+        "vietshare_write_gate_events",
+        sa.Column("event_id", sa.BigInteger(), sa.Identity(), primary_key=True),
+        sa.Column("enabled", sa.Boolean(), nullable=False),
+        sa.Column("allowed_operator_ids", postgresql.ARRAY(sa.String(128)), nullable=False),
+        sa.Column("approved_test_id", sa.String(64), nullable=True),
+        sa.Column("approved_product_id", sa.BigInteger(), nullable=True),
+        sa.Column("approved_quantity", sa.Integer(), nullable=True),
+        sa.Column("approved_max_unit_price_vnd", sa.BigInteger(), nullable=True),
+        sa.Column("approved_spend_cap_vnd", sa.BigInteger(), nullable=True),
+        sa.Column("approved_wallet_id", sa.String(128), nullable=True),
+        sa.Column("approved_currency", sa.String(3), nullable=True),
+        sa.Column("approved_by", sa.String(128), nullable=True),
+        sa.Column("approval_ref", sa.String(256), nullable=True),
+        sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.func.now()),
+    )
+    op.execute(
+        """CREATE FUNCTION audit_vietshare_gate_control()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+            INSERT INTO vietshare_write_gate_events (
+                enabled, allowed_operator_ids, approved_test_id,
+                approved_product_id, approved_quantity,
+                approved_max_unit_price_vnd, approved_spend_cap_vnd,
+                approved_wallet_id, approved_currency, approved_by, approval_ref
+            ) VALUES (
+                NEW.enabled, NEW.allowed_operator_ids, NEW.approved_test_id,
+                NEW.approved_product_id, NEW.approved_quantity,
+                NEW.approved_max_unit_price_vnd, NEW.approved_spend_cap_vnd,
+                NEW.approved_wallet_id, NEW.approved_currency, NEW.approved_by,
+                NEW.approval_ref
+            );
+            RETURN NEW;
+        END; $$"""
+    )
+    op.execute(
+        "CREATE TRIGGER trg_vietshare_gate_audit "
+        "AFTER UPDATE ON vietshare_write_gate_control FOR EACH ROW "
+        "EXECUTE FUNCTION audit_vietshare_gate_control()"
+    )
+    op.execute(
+        """CREATE FUNCTION prevent_vietshare_gate_event_mutation()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+            RAISE EXCEPTION 'VietShare gate audit events are immutable';
+        END; $$"""
+    )
+    op.execute(
+        "CREATE TRIGGER trg_vietshare_gate_events_immutable "
+        "BEFORE UPDATE OR DELETE ON vietshare_write_gate_events FOR EACH ROW "
+        "EXECUTE FUNCTION prevent_vietshare_gate_event_mutation()"
     )
 
     op.create_table(
@@ -78,6 +136,9 @@ def upgrade() -> None:
         sa.Column("retry_not_before", sa.DateTime(timezone=True), nullable=True),
         sa.Column("supplier_order_code", sa.String(128), nullable=True),
         sa.Column("last_error_code", sa.String(64), nullable=True),
+        sa.Column("wallet_debit_vnd", sa.BigInteger(), nullable=True),
+        sa.Column("wallet_debit_evidence_ref", sa.String(256), nullable=True),
+        sa.Column("wallet_debit_checked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), nullable=False,
             server_default=sa.func.now(),
@@ -109,6 +170,10 @@ def upgrade() -> None:
             "'SUCCEEDED','FAILED_SAFE')",
             name="ck_vietshare_journal_state",
         ),
+        sa.CheckConstraint(
+            "wallet_debit_vnd IS NULL OR wallet_debit_vnd >= 0",
+            name="ck_vietshare_journal_wallet_debit",
+        ),
     )
     op.create_index(
         "uq_vietshare_unresolved_test", "vietshare_write_journal", ["source"],
@@ -122,6 +187,12 @@ def upgrade() -> None:
         sa.Column("timestamp", sa.BigInteger(), nullable=False),
         sa.Column("method", sa.String(8), nullable=False),
         sa.Column("body_sha256", sa.String(64), nullable=False),
+        sa.Column("canonical_sha256", sa.String(64), nullable=False),
+        sa.Column("http_status", sa.Integer(), nullable=True),
+        sa.Column("response_code", sa.String(64), nullable=True),
+        sa.Column("retry_after_header", sa.String(256), nullable=True),
+        sa.Column("outcome_state", sa.String(32), nullable=True),
+        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), nullable=False,
             server_default=sa.func.now(),
@@ -133,6 +204,18 @@ def upgrade() -> None:
         sa.CheckConstraint("method = 'POST'", name="ck_vietshare_auth_method"),
         sa.CheckConstraint(
             "body_sha256 ~ '^[0-9a-f]{64}$'", name="ck_vietshare_auth_hash"
+        ),
+        sa.CheckConstraint(
+            "canonical_sha256 ~ '^[0-9a-f]{64}$'", name="ck_vietshare_auth_canonical_hash"
+        ),
+        sa.CheckConstraint(
+            "http_status IS NULL OR http_status BETWEEN 100 AND 599",
+            name="ck_vietshare_auth_http_status",
+        ),
+        sa.CheckConstraint(
+            "outcome_state IS NULL OR outcome_state IN "
+            "('UNKNOWN','RECONCILING','SUCCEEDED')",
+            name="ck_vietshare_auth_outcome",
         ),
     )
     op.execute(
@@ -157,6 +240,18 @@ def upgrade() -> None:
         "BEFORE UPDATE ON vietshare_write_journal FOR EACH ROW "
         "EXECUTE FUNCTION prevent_vietshare_write_identity_update()"
     )
+    op.execute(
+        """CREATE FUNCTION prevent_vietshare_write_journal_delete()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+            RAISE EXCEPTION 'VietShare write journal rows cannot be deleted';
+        END; $$"""
+    )
+    op.execute(
+        "CREATE TRIGGER trg_vietshare_write_no_delete "
+        "BEFORE DELETE ON vietshare_write_journal FOR EACH ROW "
+        "EXECUTE FUNCTION prevent_vietshare_write_journal_delete()"
+    )
 
 
 def downgrade() -> None:
@@ -164,4 +259,9 @@ def downgrade() -> None:
     op.drop_index("uq_vietshare_unresolved_test", table_name="vietshare_write_journal")
     op.drop_table("vietshare_write_journal")
     op.execute("DROP FUNCTION prevent_vietshare_write_identity_update()")
+    op.execute("DROP FUNCTION IF EXISTS prevent_vietshare_write_journal_delete()")
+    op.execute("DROP TRIGGER IF EXISTS trg_vietshare_gate_audit ON vietshare_write_gate_control")
+    op.execute("DROP FUNCTION IF EXISTS audit_vietshare_gate_control()")
+    op.execute("DROP FUNCTION IF EXISTS prevent_vietshare_gate_event_mutation() CASCADE")
+    op.execute("DROP TABLE IF EXISTS vietshare_write_gate_events")
     op.drop_table("vietshare_write_gate_control")

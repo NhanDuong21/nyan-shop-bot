@@ -28,6 +28,7 @@ async def test_migrations_are_at_head_and_tables_exist() -> None:
                     "delivery_attempts",
                     "catalog_curation_documents",
                     "vietshare_write_gate_control",
+                    "vietshare_write_gate_events",
                     "vietshare_write_journal",
                     "vietshare_write_auth_attempts",
                 )
