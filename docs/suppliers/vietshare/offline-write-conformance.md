@@ -28,7 +28,8 @@ not an authorization to connect a live transport.
   that the old dispatcher has stopped and mark it UNKNOWN before recovery.
 - Timeout, transport failure, 5xx, and an invalid 200 schema stay UNKNOWN. HTTP 202
   and `REQUEST_IN_PROGRESS` stay IN_PROGRESS; their `Retry-After` deadline is
-  persisted and blocks early resubmission, including after restart. `REPLAYED_REQUEST`
+  measured from response receipt, persisted, and blocks early resubmission,
+  including after restart. `REPLAYED_REQUEST`
   permits another attempt only with fresh auth and the saved commercial key/bytes.
   `IDEMPOTENCY_MISMATCH` is a terminal mismatch. Only a documented completed
   HTTP 200 envelope becomes COMPLETED. No response triggers an automatic POST retry.

@@ -153,7 +153,7 @@ async def test_202_and_request_in_progress_preserve_retry_after(tmp_path: Path) 
             ),
             VietShareResponse(200, body=completed_body()),
         ],
-        timestamps=(1000, 1001, 1008, 1009, 1013),
+        timestamps=(1000, 1001, 1002, 1008, 1009, 1010, 1013),
     )
     first = await adapter.submit("local-operation-1")
     blocked_first = await adapter.submit("local-operation-1")
@@ -171,6 +171,25 @@ async def test_202_and_request_in_progress_preserve_retry_after(tmp_path: Path) 
     assert len({r.headers["Idempotency-Key"] for r in transport.requests}) == 1
     assert len({r.body for r in transport.requests}) == 1
     assert journal.get("local-operation-1").state == "COMPLETED"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_retry_after_starts_when_delayed_response_arrives(tmp_path: Path) -> None:
+    adapter, transport, journal = subject(
+        tmp_path,
+        [
+            VietShareResponse(202, headers={"Retry-After": "7"}),
+            VietShareResponse(200, body=completed_body()),
+        ],
+        timestamps=(1000, 1010, 1011, 1016, 1017),
+    )
+    assert (await adapter.submit("local-operation-1")).state is WriteState.IN_PROGRESS
+    assert journal.get("local-operation-1").retry_not_before == 1017  # type: ignore[union-attr]
+    assert (await adapter.submit("local-operation-1")).retry_after_seconds == 6
+    assert (await adapter.submit("local-operation-1")).retry_after_seconds == 1
+    assert len(transport.requests) == 1
+    assert (await adapter.submit("local-operation-1")).state is WriteState.COMPLETED
+    assert len(transport.requests) == 2
 
 
 @pytest.mark.asyncio

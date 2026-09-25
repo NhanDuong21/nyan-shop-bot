@@ -341,16 +341,22 @@ class VietShareOfflineWriteAdapter:
         except Exception:
             self._journal.finish_attempt(operation_id, "UNKNOWN")
             return WriteOutcome(WriteState.UNKNOWN)
-        retry_after = _retry_after(response.headers, now)
+        code = _error_code(response.body)
+        has_retry_after = any(name.casefold() == "retry-after" for name in response.headers)
+        received_at = (
+            self._clock()
+            if response.status_code == 202 or code == "REQUEST_IN_PROGRESS" or has_retry_after
+            else now
+        )
+        retry_after = _retry_after(response.headers, received_at)
         if response.status_code == 202:
             self._journal.finish_attempt(
-                operation_id, "IN_PROGRESS", retry_not_before=now + (retry_after or 1.0)
+                operation_id, "IN_PROGRESS", retry_not_before=received_at + (retry_after or 1.0)
             )
             return WriteOutcome(WriteState.IN_PROGRESS, retry_after_seconds=retry_after)
-        code = _error_code(response.body)
         if code == "REQUEST_IN_PROGRESS":
             self._journal.finish_attempt(
-                operation_id, "IN_PROGRESS", retry_not_before=now + (retry_after or 1.0)
+                operation_id, "IN_PROGRESS", retry_not_before=received_at + (retry_after or 1.0)
             )
             return WriteOutcome(WriteState.IN_PROGRESS, retry_after_seconds=retry_after)
         if code == "REPLAYED_REQUEST":
