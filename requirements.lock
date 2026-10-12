@@ -33,8 +33,12 @@ certifi==2026.7.22
     #   aiogram
     #   httpcore
     #   httpx
+cffi==2.1.1
+    # via cryptography
 click==8.5.0
     # via uvicorn
+cryptography==50.0.1
+    # via nyan-shop-bot (pyproject.toml)
 fastapi==0.141.1
     # via nyan-shop-bot (pyproject.toml)
 frozenlist==1.8.0
@@ -70,6 +74,8 @@ propcache==0.5.4
     # via
     #   aiohttp
     #   yarl
+pycparser==3.0
+    # via cffi
 pydantic==2.13.5
     # via
     #   aiogram

@@ -31,12 +31,14 @@ async def test_migrations_are_at_head_and_tables_exist() -> None:
                     "vietshare_write_gate_events",
                     "vietshare_write_journal",
                     "vietshare_write_auth_attempts",
+                    "vietshare_secret_deliveries",
+                    "vietshare_recovery_events",
                 )
             }
     finally:
         await engine.dispose()
 
-    assert revision == "20260925_0004"
+    assert revision == "20260925_0005"
     assert table_names == {name: name for name in table_names}
 
 

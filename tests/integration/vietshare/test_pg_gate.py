@@ -48,7 +48,8 @@ async def engine() -> AsyncIterator[AsyncEngine]:
     async with db.begin() as connection:
         await connection.execute(
             text("""
-            TRUNCATE vietshare_write_auth_attempts, vietshare_write_journal,
+            TRUNCATE vietshare_secret_deliveries, vietshare_recovery_events,
+                vietshare_write_auth_attempts, vietshare_write_journal,
                 vietshare_write_gate_events
         """)
         )
@@ -69,7 +70,8 @@ async def engine() -> AsyncIterator[AsyncEngine]:
         async with db.begin() as connection:
             await connection.execute(
                 text("""
-                TRUNCATE vietshare_write_auth_attempts, vietshare_write_journal,
+                TRUNCATE vietshare_secret_deliveries, vietshare_recovery_events,
+                    vietshare_write_auth_attempts, vietshare_write_journal,
                     vietshare_write_gate_events
             """)
             )
